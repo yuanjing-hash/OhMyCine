@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { navigateLayoutBack } from '@/services/layoutBackNavigation'
 import { usePlayerChromeStore } from '@/stores/playerChrome'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
 
-defineProps<{
+const props = defineProps<{
   hideNav?: boolean
 }>()
 
@@ -19,21 +19,28 @@ const searchWorkspace = useSearchWorkspaceStore()
 const playerChrome = usePlayerChromeStore()
 
 let disposed = false
+let windowStateGeneration = 0
 const windowEventUnlisteners: Array<() => void> = []
 const isMaximized = ref(false)
 const isFullscreen = ref(false)
+const fullscreenActive = computed(() => isFullscreen.value || Boolean(props.hideNav && playerChrome.fullscreen))
+const dragSurfaceAvailable = computed(() => !fullscreenActive.value && !playerChrome.fullscreenTransitioning && (!props.hideNav || playerChrome.visible))
+const windowControlsAvailable = computed(() => !fullscreenActive.value && !playerChrome.fullscreenTransitioning)
 
 async function syncWindowState() {
   if (!appWindow)
     return
+  const generation = ++windowStateGeneration
   try {
     const [maximized, fullscreen] = await Promise.all([
       appWindow.isMaximized(),
       appWindow.isFullscreen(),
     ])
+    if (disposed || generation !== windowStateGeneration)
+      return
     isMaximized.value = maximized
     isFullscreen.value = fullscreen
-    syncNativeWindowClasses(maximized, fullscreen)
+    syncNativeWindowClasses(maximized, fullscreenActive.value)
   }
   catch {
     // Browser development mode has no native window state.
@@ -61,7 +68,7 @@ async function minimize() {
 }
 
 async function toggleMaximize() {
-  if (!appWindow)
+  if (!appWindow || !windowControlsAvailable.value)
     return
   if (await appWindow.isFullscreen())
     return
@@ -81,7 +88,7 @@ function goBack() {
 }
 
 function beginDrag(event: MouseEvent) {
-  if (event.button !== 0 || !appWindow)
+  if (event.button !== 0 || !appWindow || !dragSurfaceAvailable.value)
     return
   event.preventDefault()
   event.stopPropagation()
@@ -104,8 +111,11 @@ onMounted(() => {
   }
 })
 
+watch(fullscreenActive, fullscreen => syncNativeWindowClasses(isMaximized.value, fullscreen))
+
 onBeforeUnmount(() => {
   disposed = true
+  windowStateGeneration += 1
   for (const unlisten of windowEventUnlisteners)
     unlisten()
   windowEventUnlisteners.length = 0
@@ -118,10 +128,10 @@ onBeforeUnmount(() => {
     class="window-chrome pointer-events-none fixed inset-x-0 top-0 h-16"
     :class="{ 'is-player-chrome-hidden': hideNav && !playerChrome.visible }"
   >
-    <!-- full-width invisible drag region so the top area still drags above route/loading content -->
+    <!-- Window dragging is available only while the desktop chrome is visible and the window is not fullscreen. -->
     <div
+      v-show="dragSurfaceAvailable"
       class="desktop-window-drag pointer-events-auto absolute inset-x-0 top-0 z-0 h-16"
-      :class="{ hidden: isFullscreen }"
       @dblclick="toggleMaximize"
       @mousedown="beginDrag"
     />
@@ -129,7 +139,7 @@ onBeforeUnmount(() => {
     <!-- Player route keeps a compact back affordance above the drag region without restoring the full nav. -->
     <button
       v-if="hideNav && route.path !== '/'"
-      v-show="!isFullscreen"
+      v-show="windowControlsAvailable"
       class="glass-panel player-window-back pointer-events-auto absolute left-6 top-3 z-20 flex h-10 items-center gap-2 rounded-2xl px-3 text-sm font-semibold transition-all duration-200"
       type="button"
       title="返回"
@@ -143,7 +153,7 @@ onBeforeUnmount(() => {
     </button>
 
     <!-- Center navigation glass panel -->
-    <nav v-if="!hideNav" v-show="!isFullscreen" class="desktop-window-nav glass-panel pointer-events-auto absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5">
+    <nav v-if="!hideNav" v-show="windowControlsAvailable" class="desktop-window-nav glass-panel pointer-events-auto absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl px-2 py-1.5">
       <button
         class="gp-btn flex h-10 items-center gap-2 rounded-xl px-5 text-sm font-semibold transition-all duration-200"
         :class="route.path === '/' || route.path.startsWith('/source') ? 'is-active' : ''"
@@ -197,7 +207,7 @@ onBeforeUnmount(() => {
     </nav>
 
     <!-- Separate window controls glass panel -->
-    <div v-show="!isFullscreen" class="desktop-window-controls glass-panel pointer-events-auto absolute right-6 top-3 z-10 flex items-center gap-1 rounded-2xl px-2 py-1.5">
+    <div v-show="windowControlsAvailable" class="desktop-window-controls glass-panel pointer-events-auto absolute right-6 top-3 z-10 flex items-center gap-1 rounded-2xl px-2 py-1.5">
       <button
         class="gp-btn gp-win-ctrl flex h-10 w-10 items-center justify-center rounded-xl transition-colors"
         @click.stop="minimize"

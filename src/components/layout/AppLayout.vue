@@ -142,8 +142,7 @@ watch(() => route.fullPath, scrollContentToTop, { flush: 'post' })
     <!-- Floating back navigation for non-home pages — hidden on player page -->
     <BackButton v-if="!isPlayerRoute" />
 
-    <!-- Floating glass top bar: always visible (drag region + window controls).
-         On player page, hide center nav buttons only. -->
+    <!-- Floating desktop window chrome; Player fullscreen and auto-hide control its drag surface. -->
     <WindowChrome v-if="!isNativeAndroid" :hide-nav="isPlayerRoute" />
 
     <!-- Bottom-right floating controls (player + theme) -->

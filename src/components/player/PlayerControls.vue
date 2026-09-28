@@ -77,6 +77,7 @@ const emit = defineEmits<{
   updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
   setOrientationMode: [mode: MpvOrientationMode]
   fullscreenChanged: [fullscreen: boolean]
+  fullscreenTransitioning: [transitioning: boolean]
   interactionChange: [active: boolean]
   toggleDanmaku: []
   updateDanmakuSettings: [settings: DanmakuSettings]
@@ -98,6 +99,7 @@ const fullscreenBusy = ref(false)
 const fullscreenError = ref<string | null>(null)
 let restoreMaximizedOnExit = false
 let disposed = false
+let fullscreenSyncGeneration = 0
 let pointerLeaveTimer: number | undefined
 let pointerOwnsFocus = false
 const windowEventUnlisteners: Array<() => void> = []
@@ -375,6 +377,9 @@ function subtitleSourceLabel(track: SubtitleTrackOption): string {
 }
 
 async function syncFullscreenState() {
+  const generation = ++fullscreenSyncGeneration
+  if (fullscreenBusy.value)
+    return
   if (!appWindow) {
     const nextFullscreen = document.fullscreenElement !== null
     const previousFullscreen = isFullscreen.value
@@ -385,14 +390,20 @@ async function syncFullscreenState() {
   }
   try {
     const nextFullscreen = await appWindow.isFullscreen()
-    const previousFullscreen = isFullscreen.value
-    if (fullscreenBusy.value) {
-      isFullscreen.value = nextFullscreen
+    if (disposed || generation !== fullscreenSyncGeneration || fullscreenBusy.value)
       return
-    }
+
+    const previousFullscreen = isFullscreen.value
     if (previousFullscreen && !nextFullscreen && restoreMaximizedOnExit) {
+      // A resize/focus query can finish after a newer fullscreen transition.
+      // Confirm the native state again before restoring a maximized window.
+      const stillWindowed = !(await appWindow.isFullscreen())
+      if (disposed || generation !== fullscreenSyncGeneration || fullscreenBusy.value || !stillWindowed)
+        return
       restoreMaximizedOnExit = false
-      await appWindow.maximize()
+      await appWindow.maximize().catch(() => undefined)
+      if (disposed || generation !== fullscreenSyncGeneration)
+        return
     }
     isFullscreen.value = nextFullscreen
     fullscreenError.value = null
@@ -400,11 +411,8 @@ async function syncFullscreenState() {
       emit('fullscreenChanged', nextFullscreen)
   }
   catch {
-    const nextFullscreen = document.fullscreenElement !== null
-    const previousFullscreen = isFullscreen.value
-    isFullscreen.value = nextFullscreen
-    if (previousFullscreen !== nextFullscreen)
-      emit('fullscreenChanged', nextFullscreen)
+    // A failed native query says nothing about the Tauri window's fullscreen state.
+    // document.fullscreenElement tracks browser fullscreen, not this native window.
   }
 }
 
@@ -440,6 +448,8 @@ async function toggleFullscreen(silent = false) {
   if (!silent)
     closeMenus()
   fullscreenBusy.value = true
+  fullscreenSyncGeneration += 1
+  emit('fullscreenTransitioning', true)
   if (!silent)
     emitInteractionState()
   try {
@@ -479,7 +489,9 @@ async function toggleFullscreen(silent = false) {
     }
   }
   finally {
+    fullscreenSyncGeneration += 1
     fullscreenBusy.value = false
+    emit('fullscreenTransitioning', false)
     if (!silent)
       emitInteractionState()
   }
@@ -534,6 +546,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   disposed = true
+  fullscreenSyncGeneration += 1
   clearPointerLeaveTimer()
   for (const unlisten of windowEventUnlisteners)
     unlisten()

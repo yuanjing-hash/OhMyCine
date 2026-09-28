@@ -177,6 +177,7 @@ const renderStrategy = ref<MpvZOrderStrategy>('transparentOverlay')
 let hideTimer: number | undefined
 let nativeWindowFocusUnlisten: (() => void) | undefined
 let playerViewDisposed = false
+let fullscreenStateGeneration = 0
 let renderInitPromise: Promise<void> | null = null
 let boundsUpdateInFlight = false
 let pendingRenderBounds: RenderSurfaceBounds | null = null
@@ -310,6 +311,7 @@ const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length 
 const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
 const canPlayNext = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex < playbackQueue.value.items.length - 1 && !isQueueSwitching.value))
 const shouldShowChrome = computed(() => !chromeManuallyHidden.value && (chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value || danmakuSearchOpen.value || danmakuLoading.value))
+const shouldHideCursor = computed(() => !isNativeAndroidPlayer && isPlayerFullscreen.value && !shouldShowChrome.value && !contextMenuOpen.value && !playbackDetailOpen.value && !subtitleSearchOpen.value && !danmakuSearchOpen.value && !diagnosticsOpen.value)
 const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready' && videoReady.value)
 const contextMenuTitle = computed(() => safeMenuText(mediaTitle.value || currentQueueItem.value?.title || currentQueueItem.value?.name, '未命名影片'))
 const contextMenuSource = computed(() => currentSafeSourceLabel())
@@ -2408,7 +2410,7 @@ function showQueueKeyboardOsd() {
 async function executePlayerShortcutFromKeyboard(target: PlayerShortcutTarget) {
   if (target === 'hideControls') {
     hideChromeFromKeyboard()
-    showKeyboardOsd('控制界面已隐藏 · 移动鼠标可恢复')
+    showKeyboardOsd('控制界面已隐藏 · 移到播放控制区可恢复')
     return
   }
 
@@ -2608,7 +2610,9 @@ function scheduleRenderBoundsSync() {
 }
 
 async function handleFullscreenChanged(fullscreen: boolean) {
+  fullscreenStateGeneration += 1
   isPlayerFullscreen.value = fullscreen
+  playerChromeStore.setFullscreen(fullscreen)
   await nextTick()
   scheduleRenderBoundsSync()
 }
@@ -2868,6 +2872,15 @@ onMounted(() => {
   document.body.classList.add('player-render-surface-active')
   syncTransparentRootClass(isTransparentRootActive.value)
   playerChromeStore.setVisible(shouldShowChrome.value)
+  if (appWindow) {
+    const stateGeneration = fullscreenStateGeneration
+    void appWindow.isFullscreen().then((fullscreen) => {
+      if (!playerViewDisposed && fullscreenStateGeneration === stateGeneration) {
+        isPlayerFullscreen.value = fullscreen
+        playerChromeStore.setFullscreen(fullscreen)
+      }
+    }).catch(() => undefined)
+  }
   window.addEventListener('blur', handleWindowBlur)
   window.addEventListener('focus', handleWindowFocus)
   window.addEventListener('resize', handleWindowResize)
@@ -2907,6 +2920,8 @@ onBeforeUnmount(() => {
   document.documentElement.classList.remove('player-render-surface-transparent')
   document.body.classList.remove('player-render-surface-transparent')
   playerChromeStore.setVisible(true)
+  playerChromeStore.setFullscreen(false)
+  playerChromeStore.setFullscreenTransitioning(false)
   clearHideTimer()
   clearMediaPreferenceSaveTimer()
   void releaseHeldArrow(false)
@@ -2956,11 +2971,10 @@ watch(
   <div
     class="player-view theme-adaptive relative h-screen w-full overflow-hidden"
     :class="[
-      { 'cursor-none': !shouldShowChrome },
+      { 'player-view--cursor-hidden': shouldHideCursor },
       { 'player-view--native-mobile': isNativeAndroidPlayer },
       isTransparentRootActive ? 'player-view--transparent' : 'bg-black',
     ]"
-    @mousemove="revealChromeFromPointer"
     @mouseleave="scheduleChromeHide"
     @pointerdown="handlePlayerTouchPointerDown"
     @pointermove="handlePlayerTouchPointerMove"
@@ -3008,17 +3022,17 @@ watch(
     />
 
     <div
-      v-if="hasMedia && !isNativeAndroidPlayer"
+      v-if="hasMedia && !isNativeAndroidPlayer && !isPlayerFullscreen"
       class="pointer-events-auto absolute inset-x-0 top-0 z-5 h-24"
       aria-hidden="true"
-      @mouseenter="revealChromeFromPointer"
+      data-player-click-ignore
       @mousemove="revealChromeFromPointer"
     />
     <div
       v-if="hasMedia && !isNativeAndroidPlayer"
-      class="pointer-events-auto absolute inset-x-0 bottom-0 z-5 h-32"
+      class="pointer-events-auto absolute inset-x-0 bottom-0 z-5 mx-auto h-28 max-w-7xl"
       aria-hidden="true"
-      @mouseenter="revealChromeFromPointer"
+      data-player-click-ignore
       @mousemove="revealChromeFromPointer"
     />
 
@@ -3166,6 +3180,7 @@ watch(
         @update-fsr-settings="handleUpdateFsrSettings"
         @set-orientation-mode="handleSetOrientationMode"
         @fullscreen-changed="handleFullscreenChanged"
+        @fullscreen-transitioning="playerChromeStore.setFullscreenTransitioning"
         @interaction-change="handleControlsInteraction"
         @toggle-danmaku="toggleDanmaku"
         @update-danmaku-settings="updateDanmakuSettings"
@@ -3417,6 +3432,10 @@ watch(
 
 .player-view {
   cursor: default;
+}
+
+.player-view.player-view--cursor-hidden {
+  cursor: none;
 }
 
 .player-top-chrome {
