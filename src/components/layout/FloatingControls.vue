@@ -6,11 +6,13 @@ import { useTheme } from '@/composables/useTheme'
 import { createLocalPlaylistContext, listLocalFolderVideos, VIDEO_FILE_EXTENSIONS } from '@/services/localPlaylist'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { useDownloadStore } from '@/stores/downloads'
+import { usePlayerChromeStore } from '@/stores/playerChrome'
 
 const router = useRouter()
 const route = useRoute()
 const { theme, toggle: toggleTheme } = useTheme()
 const downloads = useDownloadStore()
+const playerChrome = usePlayerChromeStore()
 const isTouchUi = window.matchMedia('(hover: none) and (pointer: coarse)').matches
 const isHovered = ref(isTouchUi)
 const isOpeningFile = ref(false)
@@ -84,6 +86,18 @@ async function openLocalVideo(directory = false) {
 
         <!-- Navigation buttons — only on player page (top bar/sidebar hidden there) -->
         <template v-if="isPlayerRoute">
+          <button
+            class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200"
+            title="截取当前画面"
+            aria-label="截取当前画面"
+            @click="playerChrome.requestScreenshot()"
+          >
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 7h3l1.4-2h7.2L17 7h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+              <circle cx="12" cy="12.5" r="3.2" stroke="currentColor" stroke-width="1.6" />
+            </svg>
+          </button>
+
           <button
             class="gp-btn flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200"
             title="返回主页"

@@ -3,6 +3,8 @@ import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
+import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { resolveEpisodePlaybackQueue } from '@/services/episodePlayback'
 import { savePlaybackMediaContext } from '@/services/playbackContext'
 import { listPlaybackHistoryPage, PLAYED_STATE_CHANGED_EVENT, toContinueWatchingMediaItem } from '@/services/playbackHistory'
 import { syncPlaybackHistory } from '@/services/playbackHistorySync'
@@ -17,6 +19,7 @@ const total = ref(0)
 const hasMore = ref(false)
 const loading = ref(true)
 const items = ref<MediaItem[]>([])
+const errorMessage = ref<string | null>(null)
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
 
 onMounted(async () => {
@@ -48,16 +51,28 @@ async function loadPage(nextPage: number) {
 async function playItem(item: MediaItem | MediaLibrary) {
   if (!('path' in item))
     return
-  const contextId = savePlaybackMediaContext({
-    sourceId: item.sourceId,
-    itemId: item.id,
-    title: item.name,
-    currentItem: item,
-  })
-  await router.push({
-    name: 'player',
-    query: createPlaybackRouteQuery({ sourceId: item.sourceId, itemId: item.id, contextId }),
-  })
+
+  errorMessage.value = null
+  try {
+    store.loadConfigs()
+    await store.syncManager()
+    const source = store.getSource(item.sourceId)
+    const queue = source && item.type === 'episode' ? await resolveEpisodePlaybackQueue(source, item) : undefined
+    const contextId = savePlaybackMediaContext({
+      sourceId: item.sourceId,
+      itemId: item.id,
+      title: item.name,
+      currentItem: item,
+      queue,
+    })
+    await router.push({
+      name: 'player',
+      query: createPlaybackRouteQuery({ sourceId: item.sourceId, itemId: item.id, contextId }),
+    })
+  }
+  catch (error) {
+    errorMessage.value = toSafeErrorMessage(error, '无法打开这条观看记录。')
+  }
 }
 </script>
 
@@ -80,6 +95,10 @@ async function playItem(item: MediaItem | MediaLibrary) {
           共 {{ total }} 条 · 第 {{ page }} / {{ totalPages }} 页
         </p>
       </header>
+
+      <p v-if="errorMessage" role="alert" class="mb-5 rounded-2xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-200">
+        {{ errorMessage }}
+      </p>
 
       <MediaGrid :items="items" :loading="loading" action-context="history" empty-title="还没有观看历史" empty-description="开始播放后会先保存在本机；连接 Server 后将自动同步到同一账号的其他设备。" @select="playItem" @play="playItem" />
 

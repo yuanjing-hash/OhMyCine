@@ -1,5 +1,6 @@
-use std::{fs, path::PathBuf};
+use std::{fs, fs::OpenOptions, io::{Read, Seek, SeekFrom}, path::{Path, PathBuf}, time::Duration};
 use tauri::{AppHandle, State};
+use serde::Serialize;
 
 use super::player_shared::{
     prepare_external_subtitle, sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings,
@@ -13,6 +14,119 @@ use crate::mpv::{
 };
 use crate::storage;
 const FSR_SHADER_BYTES: &[u8] = include_bytes!("../../resources/shaders/ohmycine-fsr-v1.glsl");
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenshotResult {
+    name: String,
+    path: String,
+}
+
+fn screenshot_directory(directory: Option<&str>) -> Result<PathBuf, String> {
+    match directory.filter(|value| !value.trim().is_empty()) {
+        Some(value) => {
+            let path = PathBuf::from(value.trim());
+            if !path.is_absolute() {
+                return Err("截图目录必须是绝对路径。".to_string());
+            }
+            Ok(path)
+        }
+        None => std::env::current_exe()
+            .map_err(|_| "无法读取程序所在目录。".to_string())?
+            .parent()
+            .map(|parent| parent.join("截图"))
+            .ok_or_else(|| "无法读取程序所在目录。".to_string()),
+    }
+}
+
+fn screenshot_stem(title: &str, season_number: Option<i32>, episode_number: Option<i32>) -> String {
+    let cleaned: String = title
+        .chars()
+        .filter(|value| !value.is_control())
+        .map(|value| if r#"<>:"/\|?*"#.contains(value) { ' ' } else { value })
+        .take(80)
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim();
+    let title = if cleaned.is_empty() { "未命名视频" } else { cleaned };
+    let episode = match (season_number.filter(|value| *value >= 0), episode_number.filter(|value| *value >= 0)) {
+        (Some(season), Some(number)) => format!("-S{season:02}E{number:02}"),
+        (None, Some(number)) => format!("-E{number:02}"),
+        _ => String::new(),
+    };
+    format!("{title}{episode}-截图")
+}
+
+fn screenshot_file_complete(path: &Path, format: &str) -> bool {
+    let Ok(mut file) = fs::File::open(path) else { return false };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else { return false };
+    let marker: &[u8] = if format == "png" { b"IEND\xaeB\x60\x82" } else { b"\xff\xd9" };
+    if length < marker.len() as u64 {
+        return false;
+    }
+    let mut tail = vec![0; marker.len()];
+    file.seek(SeekFrom::End(-(marker.len() as i64))).is_ok()
+        && file.read_exact(&mut tail).is_ok()
+        && tail == marker
+}
+
+#[tauri::command]
+pub fn player_screenshot_directory_label(directory: String) -> Result<String, String> {
+    let path = screenshot_directory(Some(&directory))?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+pub async fn mpv_capture_screenshot(
+    title: String,
+    season_number: Option<i32>,
+    episode_number: Option<i32>,
+    directory: Option<String>,
+    format: String,
+    state: State<'_, MpvState>,
+) -> Result<ScreenshotResult, String> {
+    if format != "png" && format != "jpg" {
+        return Err("不支持的截图格式。".to_string());
+    }
+    let player_state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = screenshot_directory(directory.as_deref())?;
+        fs::create_dir_all(&directory).map_err(|_| "无法创建截图目录，请在设置中选择可写目录。".to_string())?;
+        let directory = directory.canonicalize().map_err(|_| "截图目录不可访问。".to_string())?;
+        let stem = screenshot_stem(&title, season_number, episode_number);
+        for number in 1..=9999 {
+            let name = format!("{stem}{number:04}.{format}");
+            let path = directory.join(&name);
+            let reserved = match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return Err("截图目录不可写，请在设置中选择其他目录。".to_string()),
+            };
+            drop(reserved);
+            let result = player_state
+                .lock()
+                .map_err(|_| "播放器暂不可用。".to_string())?
+                .capture_screenshot(&path);
+            if let Err(error) = result {
+                let _ = fs::remove_file(&path);
+                return Err(error);
+            }
+            for _ in 0..200 {
+                if screenshot_file_complete(&path, &format) {
+                    return Ok(ScreenshotResult { name, path: path.display().to_string() });
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // A backend may fail after accepting the asynchronous screenshot command.
+            if fs::metadata(&path).map(|value| value.len() == 0).unwrap_or(false) {
+                let _ = fs::remove_file(&path);
+            }
+            return Err("截图写入超时，请检查目录权限和播放器日志。".to_string());
+        }
+        Err("截图目录中的同名编号已用完。".to_string())
+    })
+    .await
+    .map_err(|_| "截图任务异常结束。".to_string())?
+}
 
 #[tauri::command]
 pub fn mpv_playback_diagnostics(

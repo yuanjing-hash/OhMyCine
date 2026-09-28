@@ -9,6 +9,7 @@ import ServerLibraryUpdateNotice from '@/components/media/ServerLibraryUpdateNot
 import { requestAppScrollTop } from '@/services/appScroll'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { normalizeWorkLevelSearchResults } from '@/services/datasource/searchAggregation'
+import { resolveEpisodePlaybackQueue } from '@/services/episodePlayback'
 import { registerLayoutBackHandler } from '@/services/layoutBackNavigation'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
@@ -269,18 +270,28 @@ async function handlePlay(item: MediaItem) {
     await openDetail(item)
     return
   }
-  await persistContext(true)
-  const id = savePlaybackMediaContext({
-    sourceId: sourceId.value,
-    itemId: item.id,
-    title: item.name,
-    currentItem: item,
-    queue: createPlaybackQueue(items.value, item.id),
-  })
-  await router.push({
-    name: 'player',
-    query: createPlaybackRouteQuery({ sourceId: sourceId.value, itemId: item.id, contextId: id }),
-  })
+
+  errorMessage.value = null
+  try {
+    await persistContext(true)
+    const queue = item.type === 'episode' && source.value
+      ? await resolveEpisodePlaybackQueue(source.value, item) ?? createPlaybackQueue(items.value, item.id)
+      : createPlaybackQueue(items.value, item.id)
+    const id = savePlaybackMediaContext({
+      sourceId: sourceId.value,
+      itemId: item.id,
+      title: item.name,
+      currentItem: item,
+      queue,
+    })
+    await router.push({
+      name: 'player',
+      query: createPlaybackRouteQuery({ sourceId: sourceId.value, itemId: item.id, contextId: id }),
+    })
+  }
+  catch (error) {
+    errorMessage.value = toSafeErrorMessage(error, '无法打开当前媒体。')
+  }
 }
 
 async function refreshCurrentServerView() {

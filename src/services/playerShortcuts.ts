@@ -16,6 +16,7 @@ export type PlayerShortcutTarget = 'hideControls'
   | 'toggleQueueMenu'
   | 'toggleSettings'
   | 'toggleFullscreen'
+  | 'captureScreenshot'
 
 export type PlayerShortcutBindings = Partial<Record<PlayerShortcutTarget, string>>
 
@@ -38,9 +39,11 @@ const PLAYER_SHORTCUT_TARGETS = new Set<PlayerShortcutTarget>([
   'toggleQueueMenu',
   'toggleSettings',
   'toggleFullscreen',
+  'captureScreenshot',
 ])
 const DEFAULT_BINDINGS: PlayerShortcutBindings = {
   hideControls: 'KeyH',
+  captureScreenshot: 'KeyS',
   playPrevious: 'KeyQ',
   seekBackward: 'KeyW',
   togglePause: 'KeyE',

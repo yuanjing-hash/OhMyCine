@@ -12,8 +12,10 @@ import androidx.activity.enableEdgeToEdge
 class MainActivity : TauriActivity() {
   private lateinit var localMediaPickerLauncher: ActivityResultLauncher<Intent>
   private lateinit var downloadDirectoryPickerLauncher: ActivityResultLauncher<Intent>
+  private lateinit var screenshotWritePermissionLauncher: ActivityResultLauncher<String>
   private var localMediaPickerCallback: ((ActivityResult) -> Unit)? = null
   private var downloadDirectoryPickerCallback: ((ActivityResult) -> Unit)? = null
+  private var screenshotWritePermissionCallback: ((Boolean) -> Unit)? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge(
@@ -35,6 +37,13 @@ class MainActivity : TauriActivity() {
       downloadDirectoryPickerCallback = null
       callback?.invoke(result)
     }
+    screenshotWritePermissionLauncher = registerForActivityResult(
+      ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+      val callback = screenshotWritePermissionCallback
+      screenshotWritePermissionCallback = null
+      callback?.invoke(granted)
+    }
   }
 
   fun launchLocalMediaPicker(intent: Intent, callback: (ActivityResult) -> Unit) {
@@ -47,6 +56,19 @@ class MainActivity : TauriActivity() {
       localMediaPickerLauncher.launch(intent)
     } catch (error: Exception) {
       localMediaPickerCallback = null
+      throw error
+    }
+  }
+
+  fun requestScreenshotWritePermission(callback: (Boolean) -> Unit) {
+    check(::screenshotWritePermissionLauncher.isInitialized) { "Android 截图权限请求尚未初始化。" }
+    check(screenshotWritePermissionCallback == null) { "已有截图权限请求正在进行。" }
+    check(!isFinishing && !isDestroyed) { "Android 页面已关闭，无法请求截图权限。" }
+    screenshotWritePermissionCallback = callback
+    try {
+      screenshotWritePermissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+    } catch (error: Exception) {
+      screenshotWritePermissionCallback = null
       throw error
     }
   }

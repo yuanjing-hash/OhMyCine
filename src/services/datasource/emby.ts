@@ -163,6 +163,7 @@ interface EmbyItemRecord {
   readonly ParentLogoImageTag?: string
   readonly PrimaryImageAspectRatio?: number
   readonly SeriesName?: string
+  readonly SeriesId?: string
   readonly IndexNumber?: number
   readonly ParentIndexNumber?: number
   readonly ChildCount?: number
@@ -1568,6 +1569,7 @@ export class EmbyDataSource implements DataSource {
       played: item.UserData?.Played === true || progress === 1,
       favorite: typeof item.UserData?.IsFavorite === 'boolean' ? item.UserData.IsFavorite : undefined,
       seriesName: item.Type === 'Episode' ? nonEmptyString(item.SeriesName) : undefined,
+      seriesId: item.Type === 'Episode' ? nonEmptyString(item.SeriesId) : undefined,
       seasonNumber: item.Type === 'Season' ? item.IndexNumber : item.Type === 'Episode' ? item.ParentIndexNumber : undefined,
       episodeNumber: item.Type === 'Episode' ? item.IndexNumber : undefined,
       workIdentity,

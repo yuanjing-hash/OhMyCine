@@ -19,6 +19,7 @@ import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
+import com.ohmycine.player.MainActivity
 
 @InvokeArg
 class LoadArgs {
@@ -74,6 +75,15 @@ class EngineSettingsArgs {
 @InvokeArg
 class BrightnessArgs {
     var level: Double = 50.0
+}
+
+@InvokeArg
+class ScreenshotArgs {
+    lateinit var title: String
+    var seasonNumber: Int? = null
+    var episodeNumber: Int? = null
+    var directoryUri: String? = null
+    var format: String = "png"
 }
 
 @TauriPlugin
@@ -172,6 +182,46 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     fun setProperty(invoke: Invoke) = resolve(invoke) {
         val args = invoke.parseArgs(PropertyArgs::class.java)
         MpvSurfaceHost.setProperty(args.prop, args.value ?: "")
+    }
+
+    @Command
+    fun captureScreenshot(invoke: Invoke) {
+        val args = try {
+            invoke.parseArgs(ScreenshotArgs::class.java)
+        } catch (error: Exception) {
+            invoke.reject(error.message ?: "截图参数无效。")
+            return
+        }
+        val capture = {
+            Thread {
+                try {
+                    invoke.resolveObject(ScreenshotStorage.capture(activity, args))
+                } catch (error: Exception) {
+                    invoke.reject(error.message ?: "Android 截图保存失败。")
+                }
+            }.start()
+        }
+        if (args.directoryUri.isNullOrBlank()
+            && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+            && ContextCompat.checkSelfPermission(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            val host = activity as? MainActivity
+            if (host == null) {
+                invoke.reject("Android 截图权限请求不可用。")
+                return
+            }
+            activity.runOnUiThread {
+                try {
+                    host.requestScreenshotWritePermission { granted ->
+                        if (granted) capture()
+                        else invoke.reject("请允许写入图片目录后重试截图。")
+                    }
+                } catch (error: Exception) {
+                    invoke.reject(error.message ?: "Android 截图权限请求失败。")
+                }
+            }
+            return
+        }
+        capture()
     }
 
     @Command

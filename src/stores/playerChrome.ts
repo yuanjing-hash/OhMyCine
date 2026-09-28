@@ -5,6 +5,7 @@ export const usePlayerChromeStore = defineStore('playerChrome', () => {
   const visible = ref(true)
   const fullscreen = ref(false)
   const fullscreenTransitioning = ref(false)
+  const screenshotRequest = ref(0)
 
   function setVisible(nextVisible: boolean) {
     visible.value = nextVisible
@@ -18,5 +19,9 @@ export const usePlayerChromeStore = defineStore('playerChrome', () => {
     fullscreenTransitioning.value = nextTransitioning
   }
 
-  return { visible, fullscreen, fullscreenTransitioning, setVisible, setFullscreen, setFullscreenTransitioning }
+  function requestScreenshot() {
+    screenshotRequest.value += 1
+  }
+
+  return { visible, fullscreen, fullscreenTransitioning, screenshotRequest, setVisible, setFullscreen, setFullscreenTransitioning, requestScreenshot }
 })

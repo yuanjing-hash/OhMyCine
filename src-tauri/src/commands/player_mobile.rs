@@ -54,6 +54,55 @@ struct BrightnessPayload {
     level: f64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenshotPayload {
+    title: String,
+    season_number: Option<i32>,
+    episode_number: Option<i32>,
+    directory_uri: Option<String>,
+    format: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenshotResult {
+    name: String,
+    path: String,
+}
+
+#[tauri::command]
+pub async fn player_screenshot_directory_label(
+    app: AppHandle,
+    directory: String,
+) -> Result<String, String> {
+    if directory.trim().is_empty() {
+        return Ok("Pictures/OhMyCine".to_string());
+    }
+    crate::commands::download_android::validate_directory(&app, &directory).await
+}
+
+#[tauri::command]
+pub async fn mpv_capture_screenshot(
+    title: String,
+    season_number: Option<i32>,
+    episode_number: Option<i32>,
+    directory: Option<String>,
+    format: String,
+    state: State<'_, AndroidMpvState>,
+) -> Result<ScreenshotResult, String> {
+    if format != "png" && format != "jpg" {
+        return Err("不支持的截图格式。".to_string());
+    }
+    state.run("captureScreenshot", ScreenshotPayload {
+        title: title.chars().take(160).collect(),
+        season_number,
+        episode_number,
+        directory_uri: directory.filter(|value| !value.trim().is_empty()),
+        format,
+    }).await
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MpvTrack {

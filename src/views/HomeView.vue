@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DataSource, HomeSection, MediaItem, SiteActionDescriptor } from '@/services/datasource/types'
+import type { HomeSection, MediaItem, SiteActionDescriptor } from '@/services/datasource/types'
 import type { HomeContributionPlacement, HomeContributionPreferences } from '@/services/homeContributionPreferences'
 import type { LocalMediaCollection } from '@/services/mediaCollections'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
@@ -8,6 +8,7 @@ import { useRouter } from 'vue-router'
 import CachedImage from '@/components/media/CachedImage.vue'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { listSeriesEpisodes, resolveEpisodePlaybackQueue } from '@/services/episodePlayback'
 import { contributionPreferenceKey, loadHomeContributionPreferences, saveHomeContributionPreferences } from '@/services/homeContributionPreferences'
 import { artworkCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, requestMediaActionConfirmation, suppressMediaActionClick } from '@/services/mediaActions'
@@ -323,7 +324,9 @@ async function playResolvedItem(item: MediaItem, resumePosition?: number, episod
       return
     }
 
-    const queue = episodes.length > 0 ? createPlaybackQueue(episodes, item.id) : undefined
+    const queue = episodes.length > 0
+      ? createPlaybackQueue(episodes, item.id)
+      : item.type === 'episode' && source ? await resolveEpisodePlaybackQueue(source, { ...item, resumePosition }) : undefined
     const contextId = savePlaybackMediaContext({
       sourceId: item.sourceId,
       itemId: item.id,
@@ -409,21 +412,6 @@ async function resolveSeriesPlaybackTarget(item: MediaItem): Promise<SeriesPlayb
   }
 }
 
-async function listSeriesEpisodes(source: DataSource, seriesId: string): Promise<MediaItem[]> {
-  const children = await source.list(seriesId)
-  const directEpisodes = sortSeriesEpisodes(children.filter(isPlayableEpisodeItem))
-  if (directEpisodes.length > 0)
-    return directEpisodes
-
-  const seasons = children.filter(item => item.type === 'season' || item.type === 'folder')
-  const seasonEpisodeGroups = await Promise.all(seasons.map(async season => (await source.list(season.id)).filter(isPlayableEpisodeItem)))
-  return sortSeriesEpisodes(seasonEpisodeGroups.flat())
-}
-
-function isPlayableEpisodeItem(item: MediaItem): boolean {
-  return item.type === 'episode' || item.type === 'file' || item.type === 'movie'
-}
-
 function newestLocalResume(entries: readonly (PlaybackHistoryEntry | null)[]): { index: number, entry: PlaybackHistoryEntry } | null {
   return entries.reduce<{ index: number, entry: PlaybackHistoryEntry } | null>((best, entry, index) => {
     if (!shouldResumePlayback(entry))
@@ -432,28 +420,6 @@ function newestLocalResume(entries: readonly (PlaybackHistoryEntry | null)[]): {
       return { index, entry }
     return best
   }, null)
-}
-
-function sortSeriesEpisodes(episodes: readonly MediaItem[]): MediaItem[] {
-  return episodes
-    .map((item, index) => ({ item, index }))
-    .sort((left, right) => compareEpisodeOrder(left.item, right.item) || left.index - right.index)
-    .map(({ item }) => item)
-}
-
-function compareEpisodeOrder(left: MediaItem, right: MediaItem): number {
-  const leftSeason = normalizedOrderNumber(left.seasonNumber)
-  const rightSeason = normalizedOrderNumber(right.seasonNumber)
-  if (leftSeason !== rightSeason)
-    return leftSeason - rightSeason
-
-  const leftEpisode = normalizedOrderNumber(left.episodeNumber)
-  const rightEpisode = normalizedOrderNumber(right.episodeNumber)
-  return leftEpisode - rightEpisode
-}
-
-function normalizedOrderNumber(value: number | undefined): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER
 }
 
 function isResumePosition(position: number | undefined, duration: number | undefined): position is number {

@@ -40,6 +40,7 @@ use commands::media_collections::{
     player_remove_media_collection_member, player_set_local_favorite,
 };
 use commands::player::{
+    mpv_capture_screenshot, player_screenshot_directory_label,
     mpv_add_subtitle, mpv_apply_engine_settings, mpv_display_brightness_state, mpv_get_property,
     mpv_init_render_surface, mpv_load, mpv_orientation_state, mpv_pause, mpv_playback_diagnostics,
     mpv_render_status, mpv_resume, mpv_seek, mpv_set_display_brightness, mpv_set_orientation,
@@ -91,6 +92,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingUpdate::default())
         .manage(OpenSubtitlesSessionState::default())
@@ -187,6 +189,8 @@ pub fn run() {
             local_file_stream_path,
             emby_post_playback_json,
             emby_request_json,
+            mpv_capture_screenshot,
+            player_screenshot_directory_label,
             mpv_apply_engine_settings,
             mpv_load,
             mpv_add_subtitle,

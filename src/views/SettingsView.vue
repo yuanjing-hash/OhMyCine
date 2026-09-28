@@ -23,6 +23,7 @@ import { getImageCacheStats, loadImageCacheSettings, saveImageCacheSettings } fr
 import { loadNavigationShortcutBindings, resetNavigationShortcutBindings, saveNavigationShortcutBindings, shortcutDisplayLabel, shortcutFromKeyboardEvent, validateUniqueNavigationShortcuts } from '@/services/navigationShortcuts'
 import { loadPlayerInteractionSettings, normalizeLongPressPlaybackSpeed, savePlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { loadPlayerShortcutBindings, resetPlayerShortcutBindings, savePlayerShortcutBindings, validateUniquePlayerShortcuts } from '@/services/playerShortcuts'
+import { loadScreenshotSettings, pickScreenshotDirectory, saveScreenshotSettings, screenshotDirectoryLabel } from '@/services/screenshotSettings'
 import { defaultDisplayName, isEditableDataSourceConfig, isEditableDataSourceType, sourceTypeLabel, SOURCE_TYPE_OPTIONS as sourceTypeOptions, SUBTITLE_LANGUAGE_OPTIONS as subtitleLanguageOptions } from '@/services/settingsSourceOptions'
 import { clearOpenSubtitlesCredentials, loadSubtitleSearchSettings, OPENSUBTITLES_CREDENTIAL_REF, readOpenSubtitlesCredentials, saveOpenSubtitlesCredentials, saveSubtitleSearchSettings, testOpenSubtitlesLogin } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -115,6 +116,10 @@ const subtitleForm = reactive<SubtitleSettingsFormState>({
 const openSubtitlesConfigured = ref(false)
 const openSubtitlesConfiguredAuthMode = ref<OpenSubtitlesAuthMode | null>(null)
 const isSavingSubtitleSettings = ref(false)
+const screenshotForm = reactive(loadScreenshotSettings())
+const screenshotDirectoryName = ref('')
+const screenshotFeedback = ref<{ type: 'success' | 'error', message: string } | null>(null)
+const isSavingScreenshots = ref(false)
 const subtitleFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const navigationShortcutForm = reactive<NavigationShortcutBindings>(loadNavigationShortcutBindings())
 const playerShortcutForm = reactive<PlayerShortcutBindings>(loadPlayerShortcutBindings())
@@ -177,6 +182,7 @@ const shortcutEntries = computed(() => [
 ])
 const playerShortcutEntries: Array<{ target: PlayerShortcutTarget, label: string, description: string }> = [
   { target: 'hideControls', label: '隐藏控制 UI', description: '立即隐藏控制界面，移动鼠标恢复。' },
+  { target: 'captureScreenshot', label: '截图', description: '保存当前视频画面，不包含播放器按钮与菜单。' },
   { target: 'playPrevious', label: '上一集', description: '对应控制栏第一个按钮。' },
   { target: 'seekBackward', label: '后退 10 秒', description: '对应控制栏后退按钮。' },
   { target: 'togglePause', label: '播放 / 暂停', description: '对应控制栏播放按钮。' },
@@ -312,6 +318,7 @@ const settingsEntries = computed<SettingsEntry[]>(() => [
 ])
 
 onMounted(() => {
+  void refreshScreenshotDirectoryName()
   store.loadConfigs()
   void refreshOpenSubtitlesCredentialState()
   void refreshStorageInfo()
@@ -737,6 +744,45 @@ async function savePlaybackSubtitleSettings() {
   }
   finally {
     isSavingSubtitleSettings.value = false
+  }
+}
+
+async function refreshScreenshotDirectoryName() {
+  try {
+    screenshotDirectoryName.value = await screenshotDirectoryLabel(screenshotForm.directory)
+  }
+  catch (error) {
+    screenshotDirectoryName.value = '所选目录授权已失效'
+    screenshotFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '无法读取截图目录。') }
+  }
+}
+
+async function chooseScreenshotDirectory() {
+  try {
+    const directory = await pickScreenshotDirectory()
+    if (!directory)
+      return
+    screenshotForm.directory = directory
+    await refreshScreenshotDirectoryName()
+    screenshotFeedback.value = null
+  }
+  catch (error) {
+    screenshotFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '选择截图目录失败。') }
+  }
+}
+
+async function saveScreenshotOptions() {
+  isSavingScreenshots.value = true
+  screenshotFeedback.value = null
+  try {
+    await saveScreenshotSettings(screenshotForm)
+    screenshotFeedback.value = { type: 'success', message: '截图设置已保存。' }
+  }
+  catch (error) {
+    screenshotFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '截图设置保存失败。') }
+  }
+  finally {
+    isSavingScreenshots.value = false
   }
 }
 
@@ -1746,6 +1792,51 @@ function selectSourceType(type: EditableDataSourceType) {
             >
               清除 OpenSubtitles 登录
             </button>
+          </div>
+        </div>
+
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div>
+            <p class="text-xs uppercase tracking-[0.2em] text-white/36">
+              Screenshots
+            </p>
+            <h3 class="mt-2 text-lg font-bold text-white">
+              画面截图
+            </h3>
+            <p class="mt-2 text-sm leading-6 text-white/48">
+              拍摄当前视频帧，可在播放或暂停时使用。截图保留字幕，不包含播放器菜单。Windows 默认保存到程序所在文件夹的“截图”目录；Android 默认保存到公共图片目录的 Pictures/OhMyCine 文件夹。
+            </p>
+          </div>
+          <div class="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_10rem]">
+            <div class="rounded-2xl bg-black/16 p-4">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">保存目录</span>
+              <p class="mt-2 break-all text-sm text-white/75">
+                {{ screenshotDirectoryName || '读取中…' }}
+              </p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button type="button" class="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white/75 hover:bg-white/16" @click="chooseScreenshotDirectory">
+                  选择目录
+                </button>
+                <button type="button" class="rounded-xl bg-white/6 px-3 py-2 text-xs font-semibold text-white/55 hover:bg-white/12" @click="screenshotForm.directory = ''; refreshScreenshotDirectoryName()">
+                  恢复默认
+                </button>
+              </div>
+            </div>
+            <label class="rounded-2xl bg-black/16 p-4">
+              <span class="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">图片格式</span>
+              <select v-model="screenshotForm.format" class="mt-3 w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-sm text-white">
+                <option value="png">PNG</option>
+                <option value="jpg">JPG</option>
+              </select>
+            </label>
+          </div>
+          <div class="mt-4 flex flex-wrap items-center gap-3">
+            <button type="button" class="rounded-xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white hover:bg-primary disabled:opacity-55" :disabled="isSavingScreenshots" @click="saveScreenshotOptions">
+              {{ isSavingScreenshots ? '保存中…' : '保存截图设置' }}
+            </button>
+            <p v-if="screenshotFeedback" role="status" class="text-sm" :class="screenshotFeedback.type === 'success' ? 'text-emerald-200' : 'text-red-200'">
+              {{ screenshotFeedback.message }}
+            </p>
           </div>
         </div>
 

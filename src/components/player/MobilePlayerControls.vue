@@ -60,6 +60,7 @@ const emit = defineEmits<{
   back: []
   playPrevious: []
   togglePause: []
+  captureScreenshot: []
   playNext: []
   selectQueueItem: [index: number]
   seek: [position: number]
@@ -268,6 +269,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
       </div>
 
       <nav class="mobile-top-tools" aria-label="播放工具">
+        <button type="button" class="mobile-icon-button" aria-label="截取当前画面" @click="emit('captureScreenshot')">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l1.4-2h7.2L17 7h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1Z" /><circle cx="12" cy="12.5" r="3.2" /></svg>
+        </button>
         <button type="button" class="mobile-icon-button" aria-label="画面设置" @click="openPanel('picture')">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v10H4V7Zm3-3v3m10-3v3M7 17v3m10-3v3" /></svg>
         </button>

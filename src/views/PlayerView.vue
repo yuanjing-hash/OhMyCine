@@ -39,6 +39,7 @@ import { loadPlayerShortcutBindings, PLAYER_SHORTCUTS_CHANGED_EVENT, playerShort
 import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerticalLevel } from '@/services/playerTouchGestures'
 import { matchPlaybackTrackPreference } from '@/services/playerTrackPreferences'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
+import { captureVideoFrame, notifyScreenshotSaved } from '@/services/screenshotSettings'
 import { usableStreamVariants } from '@/services/streamVariants'
 import { describeLocalSubtitleSearchProviders, downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -128,6 +129,7 @@ const isQueueSwitching = ref(false)
 let autoAdvancedLocalQueueItem = ''
 const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
 const chromeVisible = ref(true)
+const cursorVisible = ref(true)
 const chromeManuallyHidden = ref(false)
 const controlsInteracting = ref(false)
 const playerControlsRef = ref<{
@@ -171,10 +173,12 @@ const providerSyncError = ref<string | null>(null)
 const providerSyncDiagnostics = ref<ProviderPlaybackSyncDiagnostic[]>([])
 const resumeMessage = ref<string | null>(null)
 const isPlayerFullscreen = ref(false)
+const screenshotPending = ref(false)
 // Single active strategy for this slice: transparent Tauri/WebView overlay above a full-bleed mpv
 // video underlay. Legacy top/bottom occlusion strategies are neutralized in Rust.
 const renderStrategy = ref<MpvZOrderStrategy>('transparentOverlay')
 let hideTimer: number | undefined
+let cursorHideTimer: number | undefined
 let nativeWindowFocusUnlisten: (() => void) | undefined
 let playerViewDisposed = false
 let fullscreenStateGeneration = 0
@@ -311,7 +315,7 @@ const playbackQueueItemCount = computed(() => playbackQueue.value?.items.length 
 const canPlayPrevious = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex > 0 && !isQueueSwitching.value))
 const canPlayNext = computed(() => Boolean(playbackQueue.value && playbackQueue.value.currentIndex < playbackQueue.value.items.length - 1 && !isQueueSwitching.value))
 const shouldShowChrome = computed(() => !chromeManuallyHidden.value && (chromeVisible.value || !hasMedia.value || !isPlaying.value || controlsInteracting.value || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value || danmakuSearchOpen.value || danmakuLoading.value))
-const shouldHideCursor = computed(() => !isNativeAndroidPlayer && isPlayerFullscreen.value && !shouldShowChrome.value && !contextMenuOpen.value && !playbackDetailOpen.value && !subtitleSearchOpen.value && !danmakuSearchOpen.value && !diagnosticsOpen.value)
+const shouldHideCursor = computed(() => !isNativeAndroidPlayer && isPlayerFullscreen.value && !shouldShowChrome.value && !cursorVisible.value && !contextMenuOpen.value && !playbackDetailOpen.value && !subtitleSearchOpen.value && !danmakuSearchOpen.value && !diagnosticsOpen.value)
 const isTransparentRootActive = computed(() => hasMedia.value && renderStatus.value === 'ready' && videoReady.value)
 const contextMenuTitle = computed(() => safeMenuText(mediaTitle.value || currentQueueItem.value?.title || currentQueueItem.value?.name, '未命名影片'))
 const contextMenuSource = computed(() => currentSafeSourceLabel())
@@ -350,6 +354,27 @@ function clearHideTimer() {
     return
   window.clearTimeout(hideTimer)
   hideTimer = undefined
+}
+
+function clearCursorHideTimer() {
+  if (!cursorHideTimer)
+    return
+  window.clearTimeout(cursorHideTimer)
+  cursorHideTimer = undefined
+}
+
+function wakeCursorFromPointer(event: PointerEvent) {
+  if (isNativeAndroidPlayer || event.pointerType !== 'mouse' || !isPlayerFullscreen.value)
+    return
+
+  cursorVisible.value = true
+  clearCursorHideTimer()
+  if (!shouldShowChrome.value) {
+    cursorHideTimer = window.setTimeout(() => {
+      cursorVisible.value = false
+      cursorHideTimer = undefined
+    }, AUTO_HIDE_DELAY)
+  }
 }
 
 function canAutoHideChrome() {
@@ -513,6 +538,7 @@ function handlePlayerTouchPointerDown(event: PointerEvent) {
 }
 
 function handlePlayerTouchPointerMove(event: PointerEvent) {
+  wakeCursorFromPointer(event)
   const session = touchGestureSession
   if (!session || session.pointerId !== event.pointerId)
     return
@@ -2407,6 +2433,31 @@ function showQueueKeyboardOsd() {
   showKeyboardOsd(`播放队列 ${queue.currentIndex + 1}/${queue.items.length} · ${safeMenuText(item?.title || item?.name, '当前项目', 48)}`)
 }
 
+async function handleCaptureScreenshot() {
+  if (screenshotPending.value)
+    return
+  if (!hasMedia.value || !videoReady.value) {
+    showKeyboardOsd('视频画面尚未准备好，无法截图')
+    return
+  }
+
+  screenshotPending.value = true
+  try {
+    const item = currentPlaybackItem()
+    const title = item?.type === 'episode' ? item.seriesName || mediaTitle.value : mediaTitle.value
+    const result = await captureVideoFrame(title, item?.seasonNumber, item?.episodeNumber)
+    const notified = await notifyScreenshotSaved(result)
+    if (!notified)
+      showKeyboardOsd(`截图已保存 · ${result.name}`)
+  }
+  catch (error) {
+    showKeyboardOsd(toSafeErrorMessage(error, '截图失败'))
+  }
+  finally {
+    screenshotPending.value = false
+  }
+}
+
 async function executePlayerShortcutFromKeyboard(target: PlayerShortcutTarget) {
   if (target === 'hideControls') {
     hideChromeFromKeyboard()
@@ -2422,6 +2473,9 @@ async function executePlayerShortcutFromKeyboard(target: PlayerShortcutTarget) {
   try {
     await runKeyboardAction(async () => {
       switch (target) {
+        case 'captureScreenshot':
+          await handleCaptureScreenshot()
+          return
         case 'playPrevious': {
           const queue = playbackQueue.value
           if (!queue || !canPlayPrevious.value) {
@@ -2923,6 +2977,7 @@ onBeforeUnmount(() => {
   playerChromeStore.setFullscreen(false)
   playerChromeStore.setFullscreenTransitioning(false)
   clearHideTimer()
+  clearCursorHideTimer()
   clearMediaPreferenceSaveTimer()
   void releaseHeldArrow(false)
   clearResumeSeekTimers()
@@ -2958,9 +3013,15 @@ watch(
   { immediate: true },
 )
 
+watch(() => playerChromeStore.screenshotRequest, () => {
+  void handleCaptureScreenshot()
+})
+
 watch(
   shouldShowChrome,
   (visible) => {
+    clearCursorHideTimer()
+    cursorVisible.value = visible
     playerChromeStore.setVisible(visible)
   },
   { immediate: true },
@@ -3234,6 +3295,7 @@ watch(
         @back="handlePlayerBack"
         @play-previous="handlePlayPrevious"
         @toggle-pause="handleTogglePause"
+        @capture-screenshot="handleCaptureScreenshot"
         @play-next="handlePlayNext"
         @select-queue-item="playQueueItemAt"
         @seek="seek"

@@ -192,6 +192,15 @@ impl MpvPlayer {
         Ok(player)
     }
 
+    pub fn capture_screenshot(&self, path: &std::path::Path) -> Result<(), String> {
+        if !self.initialized || !self.file_loaded {
+            return Err("视频画面尚未加载，无法截图。".to_string());
+        }
+        let target = path.to_str().ok_or_else(|| "截图路径包含不支持的字符。".to_string())?;
+        // The array API passes the filename literally. subtitles excludes the WebView and mpv OSD.
+        self.command(&["screenshot-to-file", target, "subtitles"])
+    }
+
     pub fn load_file_with_headers(
         &mut self,
         path: &str,

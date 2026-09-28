@@ -26,6 +26,8 @@ export interface MediaItem {
   played?: boolean
   favorite?: boolean
   seriesName?: string
+  /** Provider-owned parent series ID used to restore the full episode queue. */
+  seriesId?: string
   seasonNumber?: number
   episodeNumber?: number
   /** Provider-owned identity used to merge playback history across routes and devices. */

@@ -269,6 +269,13 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
     }
 
+    @Synchronized
+    fun screenshotToFile(path: String) {
+        requireInitialized()
+        check(fileLoaded) { "视频画面尚未加载，无法截图。" }
+        MPVLib.command(arrayOf("screenshot-to-file", path, "subtitles"))
+    }
+
     fun snapshot(): MpvSnapshot = MpvSnapshot(
         time = if (initialized) MPVLib.getPropertyDouble("time-pos") ?: 0.0 else 0.0,
         duration = if (initialized) MPVLib.getPropertyDouble("duration") ?: 0.0 else 0.0,
