@@ -63,8 +63,8 @@ internal object ScreenshotStorage {
         val episode = when {
             args.seasonNumber != null && args.episodeNumber != null
                 && args.seasonNumber!! >= 0 && args.episodeNumber!! >= 0 ->
-                "-S" + args.seasonNumber.toString().padStart(2, '0')
-                    + "E" + args.episodeNumber.toString().padStart(2, '0')
+                "-S" + args.seasonNumber.toString().padStart(2, '0') +
+                    "E" + args.episodeNumber.toString().padStart(2, '0')
             args.episodeNumber != null && args.episodeNumber!! >= 0 ->
                 "-E" + args.episodeNumber.toString().padStart(2, '0')
             else -> ""
