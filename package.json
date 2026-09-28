@@ -42,7 +42,7 @@
     "verify:source-migration": "tsx scripts/verify-source-migration.ts"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/api": "2.11.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-notification": "2.4.0",
     "@tauri-apps/plugin-shell": "^2.0.0",
