@@ -1,4 +1,5 @@
 import type { ServerDataSource, ServerDiscoveryStreamHandle } from '@/services/datasource/server'
+import { ServerRequestError } from '@/services/datasource/server'
 
 export interface ServerDiscoveryWork {
   provider: 'tmdb' | 'douban'
@@ -56,6 +57,28 @@ export interface ServerResourceGroup {
 export interface ServerDownloadOption { id: string, name: string, type?: string }
 export interface ServerLibraryOption { id: number, name: string }
 export interface ServerProfileOption { id: number, name: string }
+export interface ServerRoutePair { downloaderId: string, libraryId: number }
+export interface ServerRouteChoice {
+  downloaderId: string
+  downloaderName: string
+  downloaderType: string
+  libraryId: number
+  libraryName: string
+  enabled: boolean
+  reasonCode?: string
+  reasonMessage?: string
+  routeKind?: string
+  routeLabel?: string
+}
+export interface ServerRouteRecommendation {
+  sourceKind: 'pt' | 'bt' | '115_share'
+  recommended: ServerRoutePair | null
+  choices: ServerRouteChoice[]
+}
+export interface ServerFollowRoutePreview {
+  available: boolean
+  routes: Array<{ siteId: number, siteName: string, sourceKind: string, recommended: ServerRoutePair | null, reasonCode?: string, reasonMessage?: string }>
+}
 export interface ServerCoverageSummary { status: string, present: number, missing: number, total: number }
 export interface ServerAcquisitionStatus {
   id?: string
@@ -82,9 +105,9 @@ export interface ServerAcquisitionStatus {
 export interface ServerAcquisitionPage { list: ServerAcquisitionStatus[], total: number, page: number, pageSize: number }
 export interface ServerFollowSnapshot {
   version: number
+  routing_policy: 'source_priority'
   seasons: number[]
   site_ids: number[]
-  downloader_id: string
   media_library_id: number
   schedule: { kind: string, minutes: number }
   filters: Record<string, unknown>
@@ -181,6 +204,8 @@ export async function getServerAcquisitions(source: ServerDataSource, page = 1, 
 export async function getServerFollowDefaults(source: ServerDataSource, tmdbId: number): Promise<ServerFollowDefaults> {
   const data = record(await source.getDiscoveryFollowDefaults(tmdbId))
   const snapshot = record(data.snapshot)
+  if ((number(snapshot.version) ?? 0) < 2 || snapshot.routing_policy !== 'source_priority')
+    throw new Error('当前 Server 不支持按资源来源自动选择下载器，请先升级 Server。')
   const schedule = record(snapshot.schedule)
   const sites = array(data.sites).flatMap((value) => {
     const item = record(value)
@@ -202,10 +227,10 @@ export async function getServerFollowDefaults(source: ServerDataSource, tmdbId: 
   })
   return {
     snapshot: {
-      version: number(snapshot.version) ?? 1,
+      version: number(snapshot.version) ?? 2,
+      routing_policy: 'source_priority',
       seasons: array(snapshot.seasons).flatMap(value => typeof value === 'number' ? [value] : []),
       site_ids: array(snapshot.site_ids).flatMap(value => typeof value === 'number' ? [value] : []),
-      downloader_id: text(snapshot.downloader_id) ?? '',
       media_library_id: number(snapshot.media_library_id) ?? 0,
       schedule: { kind: text(schedule.kind) ?? 'interval', minutes: number(schedule.minutes) ?? 360 },
       filters: record(snapshot.filters),
@@ -217,6 +242,71 @@ export async function getServerFollowDefaults(source: ServerDataSource, tmdbId: 
     mediaLibraries,
     subscribedSeasons: array(data.subscribed_seasons).flatMap(value => typeof value === 'number' ? [value] : []),
   }
+}
+
+export async function getServerRouteRecommendation(source: ServerDataSource, resultToken: string, libraryId?: number): Promise<ServerRouteRecommendation> {
+  let response: unknown
+  try {
+    response = await source.recommendDiscoveryRoute({ result_token: resultToken, ...(libraryId ? { media_library_id: libraryId } : {}) })
+  }
+  catch (reason) {
+    throw routeCapabilityError(reason)
+  }
+  const data = record(response)
+  const sourceKind = data.source_kind
+  if ((sourceKind !== 'pt' && sourceKind !== 'bt' && sourceKind !== '115_share') || !Array.isArray(data.choices))
+    throw new Error('Server 返回的入库路由无效，请升级 Server。')
+  const choices = data.choices.flatMap((value): ServerRouteChoice[] => {
+    const item = record(value)
+    const downloaderId = text(item.downloader_id)
+    const downloaderName = text(item.downloader_name)
+    const libraryId = number(item.media_library_id)
+    const libraryName = text(item.library_name)
+    if (!downloaderId || !downloaderName || !libraryId || !libraryName)
+      return []
+    return [{ downloaderId, downloaderName, downloaderType: text(item.downloader_type) ?? '', libraryId, libraryName, enabled: item.enabled === true, reasonCode: text(item.reason_code), reasonMessage: text(item.reason_message), routeKind: text(item.route_kind), routeLabel: text(item.route_label) }]
+  })
+  const recommended = parseRoutePair(data.recommended)
+  if (recommended && !choices.some(choice => choice.enabled && choice.downloaderId === recommended.downloaderId && choice.libraryId === recommended.libraryId))
+    throw new Error('Server 返回的推荐路由与可用选项不一致。')
+  return { sourceKind, recommended, choices }
+}
+
+export async function getServerFollowRoutePreview(source: ServerDataSource, siteIds: number[], libraryId: number): Promise<ServerFollowRoutePreview> {
+  let response: unknown
+  try {
+    response = await source.previewDiscoveryFollowRoutes({ site_ids: siteIds, media_library_id: libraryId })
+  }
+  catch (reason) {
+    throw routeCapabilityError(reason)
+  }
+  const data = record(response)
+  if (!Array.isArray(data.routes) || typeof data.available !== 'boolean')
+    throw new Error('Server 返回的订阅路由预览无效，请升级 Server。')
+  return {
+    available: data.available,
+    routes: data.routes.flatMap((value) => {
+      const item = record(value)
+      const siteId = number(item.site_id)
+      const siteName = text(item.site_name)
+      if (!siteId || !siteName)
+        return []
+      return [{ siteId, siteName, sourceKind: text(item.source_kind) ?? '', recommended: parseRoutePair(item.recommended), reasonCode: text(item.reason_code), reasonMessage: text(item.reason_message) }]
+    }),
+  }
+}
+
+function parseRoutePair(value: unknown): ServerRoutePair | null {
+  const item = record(value)
+  const downloaderId = text(item.downloader_id)
+  const libraryId = number(item.media_library_id)
+  return downloaderId && libraryId ? { downloaderId, libraryId } : null
+}
+
+function routeCapabilityError(reason: unknown): Error {
+  if (reason instanceof ServerRequestError && (reason.status === 404 || reason.status === 405))
+    return new Error('当前 Server 不支持按资源来源选择下载器，请先升级 Server。')
+  return reason instanceof Error ? reason : new Error('Server 路由请求失败。')
 }
 
 export async function searchServerResources(source: ServerDataSource, input: ServerResourceSearchInput): Promise<ServerResourceGroup[]> {

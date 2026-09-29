@@ -9,13 +9,31 @@ import { loginServerAndCreateConfig, logoutServerBestEffort, mapServerHistoryIte
 import { createPlaybackQueueItem } from '../src/services/playbackContext.ts'
 import { playbackProgressIdentityForMediaItem } from '../src/services/playbackHistory.ts'
 import { chunkServerHistoryChanges, createServerHistoryUploadChanges, mapServerHistoryChangeToLocalEntry, serverConfirmsHistoryDeletion } from '../src/services/playbackHistorySync.ts'
-import { getServerAcquisitions, searchServerResources } from '../src/services/serverDiscovery.ts'
+import { getServerAcquisitions, getServerFollowDefaults, getServerFollowRoutePreview, getServerRouteRecommendation, searchServerResources } from '../src/services/serverDiscovery.ts'
 
 const token = `omc_player_${'a'.repeat(43)}`
 const calls: Array<{ path: string, accessToken?: string, method?: string, body?: unknown }> = []
 const bridge = {
   async request(request: { path: string, accessToken?: string, method?: string, body?: unknown }) {
     calls.push({ path: request.path, accessToken: request.accessToken, method: request.method, body: request.body })
+    if (request.path === '/api/v1/player/discovery/routes/recommend') {
+      const target = (request.body as { media_library_id?: number }).media_library_id
+      const choices = [
+        { downloader_id: '115-offline', downloader_name: '115 离线', downloader_type: 'pan115_offline', media_library_id: 9, library_name: '115 电影', enabled: false, reason_code: 'source_incompatible', reason_message: 'PT 不支持 115 离线' },
+        { downloader_id: 'qb-first', downloader_name: '首选 qB', downloader_type: 'qbittorrent', media_library_id: 9, library_name: '115 电影', enabled: true, route_kind: 'upload', route_label: '下载后上传' },
+        { downloader_id: 'qb-first', downloader_name: '首选 qB', downloader_type: 'qbittorrent', media_library_id: 10, library_name: '本地电影', enabled: true, route_kind: 'local', route_label: '本地整理' },
+      ].filter(choice => !target || choice.media_library_id === target)
+      const data = { source_kind: 'pt', recommended: target === 10 ? { downloader_id: 'qb-first', media_library_id: 10 } : { downloader_id: 'qb-first', media_library_id: 9 }, choices }
+      return { status: 200, body: { code: 0, message: 'success', data } }
+    }
+    if (request.path === '/api/v1/player/discovery/follows/routes/preview') {
+      const data = { available: true, routes: [{ site_id: 7, site_name: 'PT 站点', source_kind: 'pt', recommended: { downloader_id: 'qb-first', media_library_id: 9 } }] }
+      return { status: 200, body: { code: 0, message: 'success', data } }
+    }
+    if (request.path.startsWith('/api/v1/player/discovery/follows/defaults?')) {
+      const data = { snapshot: { version: 2, routing_policy: 'source_priority', seasons: [1], site_ids: [7], media_library_id: 9, schedule: { kind: 'interval', minutes: 360 }, filters: {}, max_resources_per_run: 3, download_priority: 0 }, sites: [{ id: 7, name: 'PT 站点', site_type: 'pt' }], downloaders: [{ id: 'qb-first', name: '首选 qB' }], media_libraries: [{ id: 9, name: '115 电影' }], subscribed_seasons: [] }
+      return { status: 200, body: { code: 0, message: 'success', data } }
+    }
     const page = Number(new URL(`http://player.test${request.path}`).searchParams.get('page') ?? '1')
     const data = request.path === '/api/v1/player/discovery/acquisitions?page=2&page_size=12'
       ? { list: [{ id: 'acquisition-1', title: '七武士', media_type: 'movie', tmdb_id: 346, stage: 'download', status: 'running', progress: 62.5, bytes_completed: 625, bytes_total: 1000, download_speed: 100, eta_seconds: 4, processed_files: 1, total_files: 2, revision: 3, updated_at: '2026-09-02T00:00:00Z' }], total: 13, page: 2, page_size: 12 }
@@ -88,6 +106,23 @@ const resourceGroups = await searchServerResources(source, { mediaType: 'movie',
 assert.equal(resourceGroups[0]?.page, 2)
 assert.equal(resourceGroups[0]?.hasNext, true)
 assert.equal(resourceGroups[0]?.skipped, 4)
+const initialRoute = await getServerRouteRecommendation(source, 'opaque-result-token')
+assert.deepEqual(initialRoute.recommended, { downloaderId: 'qb-first', libraryId: 9 })
+assert.equal(initialRoute.choices[0]?.enabled, false)
+assert.equal(initialRoute.choices[0]?.reasonMessage, 'PT 不支持 115 离线')
+const changedTargetRoute = await getServerRouteRecommendation(source, 'opaque-result-token', 10)
+assert.deepEqual(changedTargetRoute.recommended, { downloaderId: 'qb-first', libraryId: 10 })
+assert.equal(changedTargetRoute.choices.every(choice => choice.libraryId === 10), true)
+assert.deepEqual(calls.filter(call => call.path === '/api/v1/player/discovery/routes/recommend').map(call => call.body), [
+  { result_token: 'opaque-result-token' },
+  { result_token: 'opaque-result-token', media_library_id: 10 },
+])
+const followDefaults = await getServerFollowDefaults(source, 346)
+assert.equal(followDefaults.snapshot.routing_policy, 'source_priority')
+assert.equal('downloader_id' in followDefaults.snapshot, false)
+const followRoutes = await getServerFollowRoutePreview(source, [7], 9)
+assert.deepEqual(followRoutes.routes[0]?.recommended, { downloaderId: 'qb-first', libraryId: 9 })
+assert.deepEqual(calls.find(call => call.path === '/api/v1/player/discovery/follows/routes/preview')?.body, { site_ids: [7], media_library_id: 9 })
 await source.createDiscoveryDownload({ result_token: 'opaque-result-token', downloader_id: 'downloader-1', media_library_id: 9, profile_id: 2, priority: 0, expected_tmdb_id: 346, expected_media_type: 'movie' })
 assert.deepEqual(calls.find(call => call.path === '/api/v1/player/discovery/downloads')?.body, {
   result_token: 'opaque-result-token',

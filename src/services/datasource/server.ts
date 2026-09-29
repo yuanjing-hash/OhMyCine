@@ -388,12 +388,20 @@ export class ServerDataSource implements DataSource {
     return { downloaders, libraries, profiles }
   }
 
-  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id: number, priority: number, expected_tmdb_id?: number, expected_media_type?: 'movie' | 'tv' }): Promise<unknown> {
+  async recommendDiscoveryRoute(payload: { result_token: string, media_library_id?: number }): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/routes/recommend', 'POST', payload)
+  }
+
+  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id?: number, priority: number, expected_tmdb_id?: number, expected_media_type?: 'movie' | 'tv' }): Promise<unknown> {
     return this.request('/api/v1/player/discovery/downloads', 'POST', payload)
   }
 
   async getDiscoveryFollowDefaults(tmdbId: number): Promise<unknown> {
     return this.request(`/api/v1/player/discovery/follows/defaults?media_type=tv&tmdb_id=${tmdbId}`)
+  }
+
+  async previewDiscoveryFollowRoutes(payload: { site_ids: number[], media_library_id: number }): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/follows/routes/preview', 'POST', payload)
   }
 
   async createDiscoveryFollow(payload: unknown): Promise<unknown> {

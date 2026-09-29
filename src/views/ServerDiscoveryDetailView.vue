@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ServerAcquisitionStatus, ServerCoverageSummary, ServerDiscoveryDetail, ServerDownloadOption, ServerFollowDefaults, ServerLibraryOption, ServerProfileOption, ServerResourceGroup, ServerResourceItem, ServerSearchProgress, ServerSearchSite } from '@/services/serverDiscovery'
+import type { ServerAcquisitionStatus, ServerCoverageSummary, ServerDiscoveryDetail, ServerFollowDefaults, ServerFollowRoutePreview, ServerLibraryOption, ServerResourceGroup, ServerResourceItem, ServerRouteRecommendation, ServerSearchProgress, ServerSearchSite } from '@/services/serverDiscovery'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaDetailHero from '@/components/media/MediaDetailHero.vue'
@@ -9,7 +9,7 @@ import DiscoverySitePickerDialog from '@/components/server/DiscoverySitePickerDi
 import { ServerDataSource } from '@/services/datasource/server'
 import { registerLayoutBackHandler } from '@/services/layoutBackNavigation'
 import { publishFeedback } from '@/services/mediaActions'
-import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerDownloadOptions, getServerFollowDefaults, getServerSearchSites, streamServerResources } from '@/services/serverDiscovery'
+import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerFollowDefaults, getServerFollowRoutePreview, getServerRouteRecommendation, getServerSearchSites, streamServerResources } from '@/services/serverDiscovery'
 import { useAcquisitionWorkspaceStore } from '@/stores/acquisitionWorkspace'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
@@ -26,9 +26,9 @@ const sites = ref<ServerSearchSite[]>([])
 const selectedSiteIds = ref<number[]>([])
 const groups = ref<ServerResourceGroup[]>([])
 const activeSiteId = ref<number>()
-const downloaders = ref<ServerDownloadOption[]>([])
 const libraries = ref<ServerLibraryOption[]>([])
-const profiles = ref<ServerProfileOption[]>([])
+const routeRecommendation = ref<ServerRouteRecommendation | null>(null)
+const routeError = ref('')
 const loading = ref(true)
 const searching = ref(false)
 const loadingSites = ref(false)
@@ -45,7 +45,10 @@ const followOpen = ref(false)
 const followLoading = ref(false)
 const subscribing = ref(false)
 const followDefaults = ref<ServerFollowDefaults | null>(null)
-const followForm = ref({ seasons: [] as number[], siteIds: [] as number[], downloaderId: '', libraryId: 0, minutes: 360, maxResources: 3, priority: 0 })
+const followRoutePreview = ref<ServerFollowRoutePreview | null>(null)
+const followRouteLoading = ref(false)
+const followRouteError = ref('')
+const followForm = ref({ seasons: [] as number[], siteIds: [] as number[], libraryId: 0, minutes: 360, maxResources: 3, priority: 0 })
 const pendingSearchMode = ref<'aggregate' | 'direct'>('aggregate')
 const directKind = ref<'title' | 'tmdb'>('title')
 const directQuery = ref('')
@@ -53,6 +56,8 @@ const searchProgress = ref<ServerSearchProgress>(emptyProgress())
 const backOwner = Symbol('server-discovery-detail')
 let unregisterBack: (() => void) | undefined
 let searchGeneration = 0
+let routeGeneration = 0
+let followRouteGeneration = 0
 let statusGeneration = 0
 let statusTimer: number | undefined
 let activeSearch: Awaited<ReturnType<typeof streamServerResources>> | null = null
@@ -66,6 +71,7 @@ const selectedAll = computed(() => searchableSites.value.length > 0 && searchabl
 const canSearch = computed(() => capabilities.value.has('discovery_search'))
 const canAcquire = computed(() => capabilities.value.has('acquisition_create'))
 const canSubscribe = computed(() => capabilities.value.has('subscription_create'))
+const followRoutesAvailable = computed(() => !followRouteLoading.value && !followRouteError.value && followRoutePreview.value?.available === true && followRoutePreview.value.routes.length === followForm.value.siteIds.length)
 const coverageLabel = computed(() => {
   if (!coverage.value)
     return '媒体库覆盖未知'
@@ -243,31 +249,44 @@ async function openAcquisition(item: ServerResourceItem) {
     return
   }
   selectedResource.value = item
+  routeRecommendation.value = null
+  routeError.value = ''
+  libraries.value = []
   acquisitionDialogOpen.value = true
+  await loadRouteRecommendation()
+}
+
+async function loadRouteRecommendation(libraryId?: number) {
+  const resource = selectedResource.value
+  if (!resource)
+    return
+  const generation = ++routeGeneration
+  loadingTargets.value = true
+  routeError.value = ''
+  routeRecommendation.value = null
   try {
-    await ensureDownloadOptions(await resolveSource())
+    const recommendation = await getServerRouteRecommendation(await resolveSource(), resource.token, libraryId)
+    if (generation !== routeGeneration)
+      return
+    routeRecommendation.value = recommendation
+    if (!libraryId) {
+      const byId = new Map<number, ServerLibraryOption>()
+      for (const choice of recommendation.choices)
+        byId.set(choice.libraryId, { id: choice.libraryId, name: choice.libraryName })
+      libraries.value = [...byId.values()]
+    }
   }
   catch (reason) {
-    publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
-  }
-}
-
-async function ensureDownloadOptions(source: ServerDataSource) {
-  if (downloaders.value.length || loadingTargets.value)
-    return
-  loadingTargets.value = true
-  try {
-    const options = await getServerDownloadOptions(source)
-    downloaders.value = options.downloaders
-    libraries.value = options.libraries
-    profiles.value = options.profiles
+    if (generation === routeGeneration)
+      routeError.value = message(reason)
   }
   finally {
-    loadingTargets.value = false
+    if (generation === routeGeneration)
+      loadingTargets.value = false
   }
 }
 
-async function submitAcquisition(options: { downloaderId: string, libraryId: number, profileId: number }) {
+async function submitAcquisition(options: { downloaderId: string, libraryId: number }) {
   const resource = selectedResource.value
   const work = detail.value?.work
   if (!resource || !work?.tmdbId)
@@ -280,7 +299,6 @@ async function submitAcquisition(options: { downloaderId: string, libraryId: num
       result_token: resource.token,
       downloader_id: options.downloaderId,
       media_library_id: options.libraryId,
-      profile_id: options.profileId,
       priority: 0,
       expected_tmdb_id: work.tmdbId,
       expected_media_type: mediaType.value,
@@ -351,10 +369,13 @@ async function openFollow() {
     return
   followOpen.value = true
   followLoading.value = true
+  followDefaults.value = null
+  followRoutePreview.value = null
+  followRouteError.value = ''
   try {
     const defaults = await getServerFollowDefaults(await resolveSource(), tmdbId)
     followDefaults.value = defaults
-    followForm.value = { seasons: [...defaults.snapshot.seasons], siteIds: [...defaults.snapshot.site_ids], downloaderId: defaults.snapshot.downloader_id, libraryId: defaults.snapshot.media_library_id, minutes: defaults.snapshot.schedule.minutes, maxResources: defaults.snapshot.max_resources_per_run, priority: defaults.snapshot.download_priority }
+    followForm.value = { seasons: [...defaults.snapshot.seasons], siteIds: [...defaults.snapshot.site_ids], libraryId: defaults.snapshot.media_library_id, minutes: defaults.snapshot.schedule.minutes, maxResources: defaults.snapshot.max_resources_per_run, priority: defaults.snapshot.download_priority }
   }
   catch (reason) {
     publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
@@ -364,6 +385,38 @@ async function openFollow() {
     followLoading.value = false
   }
 }
+
+async function refreshFollowRoutePreview() {
+  const generation = ++followRouteGeneration
+  const siteIds = [...followForm.value.siteIds]
+  const libraryId = followForm.value.libraryId
+  if (!followOpen.value || !followDefaults.value || !siteIds.length || !libraryId) {
+    followRoutePreview.value = null
+    followRouteError.value = ''
+    followRouteLoading.value = false
+    return
+  }
+  followRouteLoading.value = true
+  followRouteError.value = ''
+  followRoutePreview.value = null
+  try {
+    const preview = await getServerFollowRoutePreview(await resolveSource(), siteIds, libraryId)
+    if (generation === followRouteGeneration)
+      followRoutePreview.value = preview
+  }
+  catch (reason) {
+    if (generation === followRouteGeneration)
+      followRouteError.value = message(reason)
+  }
+  finally {
+    if (generation === followRouteGeneration)
+      followRouteLoading.value = false
+  }
+}
+
+watch(() => [followOpen.value, followDefaults.value, followForm.value.siteIds.join(','), followForm.value.libraryId], () => {
+  void refreshFollowRoutePreview()
+})
 
 function toggleFollowSite(id: number) {
   followForm.value.siteIds = followForm.value.siteIds.includes(id) ? followForm.value.siteIds.filter(value => value !== id) : [...followForm.value.siteIds, id]
@@ -375,13 +428,13 @@ function toggleSeason(season: number) {
 
 async function createFollow() {
   const work = detail.value?.work
-  if (!work?.tmdbId || !followDefaults.value)
+  if (!work?.tmdbId || !followDefaults.value || !followRoutesAvailable.value)
     return
   subscribing.value = true
   try {
     const source = await resolveSource()
     const base = followDefaults.value.snapshot
-    await source.createDiscoveryFollow({ tmdb_id: work.tmdbId, title: work.title, year: work.year, snapshot: { ...base, seasons: followForm.value.seasons, site_ids: followForm.value.siteIds, downloader_id: followForm.value.downloaderId, media_library_id: followForm.value.libraryId, schedule: { kind: 'interval', minutes: followForm.value.minutes }, max_resources_per_run: followForm.value.maxResources, download_priority: followForm.value.priority } })
+    await source.createDiscoveryFollow({ tmdb_id: work.tmdbId, title: work.title, year: work.year, snapshot: { ...base, seasons: followForm.value.seasons, site_ids: followForm.value.siteIds, media_library_id: followForm.value.libraryId, schedule: { kind: 'interval', minutes: followForm.value.minutes }, max_resources_per_run: followForm.value.maxResources, download_priority: followForm.value.priority } })
     acquisition.value = await getServerAcquisition(source, 'tv', work.tmdbId)
     followOpen.value = false
     scheduleStatusRefresh(true)
@@ -510,7 +563,7 @@ onBeforeUnmount(() => {
 
       <DiscoverySitePickerDialog :open="sitePickerOpen" :sites="sites" :selected-site-ids="selectedSiteIds" :loading="loadingSites" :mode="pendingSearchMode" :direct-kind="directKind" :direct-query="directQuery" :tmdb-id="detail.work.tmdbId" @close="sitePickerOpen = false" @search="runSearch()" @toggle-site="toggleSite" @toggle-all="toggleAllSites" @update-direct-kind="directKind = $event" @update-direct-query="directQuery = $event" />
       <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :groups="groups" :active-site-id="activeSiteId" :searching="searching" :progress="searchProgress" :can-acquire="canAcquire" :busy-token="busyToken" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="runSearch([$event], false)" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" />
-      <DiscoveryAcquisitionDialog :open="acquisitionDialogOpen" :resource="selectedResource" :downloaders="downloaders" :libraries="libraries" :profiles="profiles" :loading="loadingTargets" :submitting="submitting" @close="acquisitionDialogOpen = false" @confirm="submitAcquisition" />
+      <DiscoveryAcquisitionDialog :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" />
 
       <div v-if="followOpen" class="follow-layer fixed inset-0 z-[1210] grid place-items-center p-4" @click.self="!subscribing && (followOpen = false)">
         <section class="follow-card glass-panel max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-[28px] p-6 cinema-scrollbar">
@@ -550,10 +603,33 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="grid gap-3 md:grid-cols-2">
-              <label class="text-xs text-white/48">下载器<select v-model="followForm.downloaderId" class="follow-input mt-2 w-full rounded-2xl p-3 text-white"><option v-for="item in followDefaults.downloaders" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><label class="text-xs text-white/48">目标媒体库<select v-model="followForm.libraryId" class="follow-input mt-2 w-full rounded-2xl p-3 text-white"><option v-for="item in followDefaults.mediaLibraries" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><label class="text-xs text-white/48">检查间隔（分钟）<input v-model.number="followForm.minutes" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="10" max="10080"></label><label class="text-xs text-white/48">每次最多下载资源数<input v-model.number="followForm.maxResources" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="1" max="20"></label>
+              <label class="text-xs text-white/48">目标媒体库<select v-model="followForm.libraryId" class="follow-input mt-2 w-full rounded-2xl p-3 text-white"><option v-for="item in followDefaults.mediaLibraries" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><label class="text-xs text-white/48">检查间隔（分钟）<input v-model.number="followForm.minutes" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="10" max="10080"></label><label class="text-xs text-white/48">每次最多下载资源数<input v-model.number="followForm.maxResources" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="1" max="20"></label>
+            </div>
+            <div class="rounded-2xl border border-white/10 bg-white/[.035] p-4 text-sm">
+              <p class="font-semibold text-white/88">
+                按资源来源自动选择下载器
+              </p>
+              <p class="mt-1 text-xs leading-5 text-white/48">
+                115 分享走转存，PT 使用排序第一的 qBittorrent，公开 BT 按下载器顺序选择。Server 会针对每条结果和目标媒体库再次验证。
+              </p>
+              <p v-if="followRouteLoading" class="mt-3 text-xs text-white/55">
+                正在预览站点路由…
+              </p>
+              <p v-else-if="followRouteError" class="mt-3 text-xs text-red-200">
+                {{ followRouteError }}
+              </p>
+              <div v-else-if="followRoutePreview" class="mt-3 space-y-2">
+                <div v-for="item in followRoutePreview.routes" :key="item.siteId" class="flex justify-between gap-4 rounded-xl bg-white/[.035] px-3 py-2 text-xs">
+                  <span class="text-white/70">{{ item.siteName }}</span>
+                  <span :class="item.recommended ? 'text-emerald-200' : 'text-amber-200'">{{ item.recommended ? followDefaults.downloaders.find(downloader => downloader.id === item.recommended?.downloaderId)?.name || '推荐下载器' : item.reasonMessage || '当前目标库不可用' }}</span>
+                </div>
+              </div>
+              <p v-else class="mt-3 text-xs text-white/45">
+                请选择搜索站点和目标媒体库。
+              </p>
             </div>
             <footer class="flex justify-end">
-              <button class="rounded-full bg-white px-6 py-2.5 font-bold text-black" :disabled="subscribing || !followForm.seasons.length || !followForm.siteIds.length || !followForm.downloaderId || !followForm.libraryId" @click="createFollow">
+              <button class="rounded-full bg-white px-6 py-2.5 font-bold text-black disabled:opacity-50" :disabled="subscribing || !followForm.seasons.length || !followForm.siteIds.length || !followForm.libraryId || !followRoutesAvailable" @click="createFollow">
                 {{ subscribing ? '正在创建…' : '确认订阅' }}
               </button>
             </footer>
