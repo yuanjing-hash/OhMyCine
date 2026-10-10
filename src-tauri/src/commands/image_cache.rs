@@ -220,6 +220,12 @@ fn is_protected_server_artwork_url(url: &Url) -> bool {
         ["", "api", "v1", "player", "discovery", "images", provider, token] => {
             matches!(*provider, "tmdb" | "douban") && valid_artwork_token(token)
         }
+        ["", "api", "v1", "assets", "generated-library-covers", digest] => {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }
         _ => false,
     }
 }
@@ -505,6 +511,7 @@ mod tests {
         for path in [
             "/api/v1/player/artwork/opaque_123",
             "/api/v1/player/discovery/images/tmdb/opaque-123",
+            "/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ] {
             let url = Url::parse(&format!("https://server.example{path}")).expect("valid URL");
             assert!(is_protected_server_artwork_url(&url));
@@ -526,6 +533,9 @@ mod tests {
             "/api/v1/player/online-assets/asset",
             "/api/v1/player/artwork/opaque/other",
             "/api/v1/player/artwork/%2fsecret",
+            "/api/v1/assets/generated-library-covers/too-short",
+            "/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?sig=secret",
+            "/api/v1/assets/library-covers/library-local.png",
         ] {
             let url = Url::parse(&format!("https://server.example{path}")).expect("valid URL");
             assert!(!is_protected_server_artwork_url(&url));

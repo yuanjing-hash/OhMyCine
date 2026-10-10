@@ -47,7 +47,7 @@ const bridge = {
             { id: 10, name: '不安全封面', storage_type: 'local', entry_count: 0, artwork_url: 'https://attacker.example/cover.png' },
           ], total: 2 }
         : request.path === '/api/v1/player/media-libraries/9/categories'
-          ? { list: [{ id: 'category-movie', name: '外语电影', media_type: 'movie', item_count: 101, artwork_url: '/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', artwork_revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artwork_source: 'generated' }], total: 1 }
+          ? { list: [{ id: 'category-movie', name: '外语电影', media_type: 'movie', item_count: 101, artwork_url: '/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artwork_revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artwork_source: 'generated' }], total: 1 }
         : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${noPlayableItem().id}`)
           ? {
               item: noPlayableItem(),
@@ -160,7 +160,7 @@ await assert.rejects(partialLibrarySource.listLibrariesForMediaChangeRefresh(), 
 partialLibrarySource.destroy()
 const categories = await source.list('9')
 assert.deepEqual(categories.map(item => [item.type, item.name]), [['folder', '外语电影']])
-assert.equal(categories[0].posterUrl, 'http://127.0.0.1:3000/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+assert.equal(categories[0].posterUrl, 'http://127.0.0.1:3000/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 assert.equal(categories[0].artworkRevision, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 assert.equal(categories[0].artworkSource, 'generated')
 

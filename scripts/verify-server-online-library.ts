@@ -12,6 +12,12 @@ assert.equal(resolveServerArtworkURL(origin, '/api/v1/player/artwork/opaque-1?to
 assert.equal(resolveServerArtworkURL(origin, '/api/v1/player/online-assets/video'), undefined)
 assert.equal(isProtectedServerArtworkURL(`${origin}/api/v1/player/artwork/opaque-1`), true)
 assert.equal(isProtectedServerArtworkURL(`${origin}/api/v1/player/artwork/opaque-1?sig=secret`), false)
+const generatedCover = '/api/v1/assets/generated-library-covers/' + 'a'.repeat(64)
+assert.equal(resolveServerArtworkURL(origin, generatedCover), `${origin}${generatedCover}`)
+assert.equal(isProtectedServerArtworkURL(`${origin}${generatedCover}`), true)
+assert.equal(resolveServerArtworkURL(origin, `${generatedCover}?sig=secret`), undefined)
+assert.equal(resolveServerArtworkURL(origin, '/api/v1/assets/generated-library-covers/too-short'), undefined)
+assert.equal(isProtectedServerArtworkURL(`${origin}/api/v1/assets/library-covers/library-local.png`), false)
 assert.equal(parseOnlineWork({ ...onlineWork(), posterUrl: 'https://attacker.example/poster.jpg' }, origin)?.posterUrl, undefined)
 const calls: Array<{ path: string, method?: string, body?: unknown }> = []
 const source = new ServerDataSource({
@@ -38,7 +44,7 @@ const source = new ServerDataSource({
           { id: 'library-unsafe', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-unsafe', name: '不安全在线封面', providerLabel: 'Fixture', capabilities: ['site.feed'], available: true, homeContributions: [], artworkUrl: 'https://attacker.example/plugin-cover.png' },
         ] }
       else if (request.path.endsWith('/navigation'))
-        data = { version: 2, mode: 'hierarchical', nodes: [{ id: 'recommended', title: '推荐', kind: 'feed', routeKey: 'recommended', refreshable: true, artworkUrl: '/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?exp=1787565600&sig=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', artworkRevision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artworkSource: 'generated' }, { id: 'anime', title: '番剧', kind: 'branch', nodeToken: 'signed-anime-node', hasChildren: true, artworkUrl: '/api/v1/assets/generated-library-covers/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc?exp=1787565600&sig=ddddddddddddddddddddddddddddddddddddddddddd', artworkRevision: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', artworkSource: 'generated' }] }
+        data = { version: 2, mode: 'hierarchical', nodes: [{ id: 'recommended', title: '推荐', kind: 'feed', routeKey: 'recommended', refreshable: true, artworkUrl: '/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artworkRevision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artworkSource: 'generated' }, { id: 'anime', title: '番剧', kind: 'branch', nodeToken: 'signed-anime-node', hasChildren: true, artworkUrl: '/api/v1/assets/generated-library-covers/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', artworkRevision: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', artworkSource: 'generated' }] }
       else if (request.path.endsWith('/navigation/signed-anime-node/children'))
         data = { version: 2, mode: 'hierarchical', nodes: [{ id: 'anime-jp', title: '日本番剧', kind: 'feed', routeKey: 'recommended', refreshable: true }] }
       else if (request.path.includes('/feeds/recommended'))

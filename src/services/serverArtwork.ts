@@ -2,6 +2,7 @@
 export function isProtectedServerArtworkPath(pathname: string): boolean {
   return /^\/api\/v1\/player\/artwork\/[\w-]{1,4096}$/.test(pathname)
     || /^\/api\/v1\/player\/discovery\/images\/(?:tmdb|douban)\/[\w-]{1,4096}$/.test(pathname)
+    || /^\/api\/v1\/assets\/generated-library-covers\/[a-f0-9]{64}$/.test(pathname)
 }
 
 export function isProtectedServerArtworkURL(value: string): boolean {
@@ -29,9 +30,9 @@ export function resolveServerArtworkURL(baseUrl: string, value: unknown): string
       return undefined
     if (isProtectedServerArtworkPath(resolved.pathname))
       return resolved.search ? undefined : resolved.toString()
-    // Legacy library and category covers are Server assets. Their signed query
-    // values are preserved, while unrelated API and external URLs are rejected.
-    if (/^\/api\/v1\/assets\/(?:library-covers|plugin-covers|generated-library-covers)\/[\w.-]{1,256}$/.test(resolved.pathname)
+    // Built-in library and plugin covers remain public Server assets.
+    // Generated covers use authenticated requests and reject query credentials.
+    if (/^\/api\/v1\/assets\/(?:library-covers|plugin-covers)\/[\w.-]{1,256}$/.test(resolved.pathname)
       && !resolved.pathname.includes('..')) {
       return resolved.toString()
     }
