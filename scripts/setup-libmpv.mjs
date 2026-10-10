@@ -11,11 +11,11 @@ const targetDir = resolve(rootDir, 'src-tauri', 'lib')
 const tempDir = join(targetDir, 'temp')
 const wrapperRelease = 'v0.1.1'
 const wrapperBaseUrl = `https://github.com/nini22P/libmpv-wrapper/releases/download/${wrapperRelease}`
-const mpvRelease = '2026-08-30-e8673660ab'
+const mpvRelease = '2026-10-09-fd9265a905'
 const mpvBaseUrl = `https://github.com/zhongfly/mpv-winbuild/releases/download/${mpvRelease}`
 const windowsMpvArchive = {
-  fileName: 'mpv-dev-lgpl-x86_64-20260830-git-e8673660ab.7z',
-  sha256: '7659f968ccea69168aa8924ea1bf7c524e996946d184720d79f92241805f4724',
+  fileName: 'mpv-dev-lgpl-x86_64-20261009-git-fd9265a905.7z',
+  sha256: '7978aa8f00bcdbf21d300c97e96975e7a5b4a1c720d5ad331638cf9d21d7e73c',
 }
 const wrapperArchives = {
   'linux-x86_64': ['libmpv-wrapper-linux-x86_64.zip', '1583564042f10be25166b52b6fe02db6d87cf9cef34985ba517048c044b7eee0'],
@@ -57,7 +57,7 @@ function ensureDir(path) {
 }
 
 async function downloadFile(url, destPath) {
-  const res = await fetch(url)
+  const res = await fetch(url, { signal: AbortSignal.timeout(180_000) })
   if (!res.ok)
     throw new Error(`Failed to fetch ${url}: ${res.status} ${res.statusText}`)
   await pipeline(res.body, createWriteStream(destPath))

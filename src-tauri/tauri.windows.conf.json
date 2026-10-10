@@ -1,9 +1,11 @@
 {
+  "build": { "beforeBuildCommand": "npm run setup:remux && npm run build" },
   "bundle": {
     "resources": {
       "lib/libmpv-2.dll": "libmpv-2.dll",
       "lib/libmpv-wrapper.dll": "libmpv-wrapper.dll",
       "lib/LICENSE": "lib/LICENSE",
+      "resources/remux/": "remux/",
       "resources/shaders/NOTICE.md": "FSR-NOTICE.md"
     },
     "windows": {

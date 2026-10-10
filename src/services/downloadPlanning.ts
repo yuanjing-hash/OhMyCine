@@ -1,5 +1,5 @@
 import type { DataSource, MediaDetail, MediaItem, MediaSourceOption } from '@/services/datasource/types'
-import type { OfflineDetailSnapshot } from '@/services/downloads'
+import type { DownloadOnlineIdentity, OfflineDetailSnapshot } from '@/services/downloads'
 import type { MediaItemActionTarget } from '@/services/mediaActions/types'
 
 const MAX_DOWNLOAD_FILES = 2_000
@@ -9,6 +9,7 @@ export interface DownloadFilePlan extends MediaItemActionTarget {
   readonly mediaSourceId?: string
   readonly variantId?: string
   readonly expectedBytes?: number
+  readonly onlineIdentity?: DownloadOnlineIdentity
   readonly detailSnapshot: OfflineDetailSnapshot
 }
 
@@ -41,6 +42,13 @@ export async function planMediaDownload(source: DataSource, target: MediaItemAct
   await expandItem(source, detail, target, files, visited, 0)
   if (files.length === 0)
     throw new Error('没有找到可下载的媒体文件。')
+  if (source.resolveDownloadSelection) {
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index]
+      const selected = await source.resolveDownloadSelection({ itemId: file.itemId, mediaSourceId: file.mediaSourceId, variantId: file.variantId })
+      files[index] = { ...file, ...selected }
+    }
+  }
   return {
     aggregate: files.length > 1 || isAggregateType(target.mediaType),
     displayName: target.display.name,

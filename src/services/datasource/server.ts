@@ -9,11 +9,13 @@ import { createCredentialRef, readServerCredential, saveServerCredential } from 
 import { redactSensitiveText } from './errors'
 import { playbackTargetsForItem } from './identityMerge'
 import {
+  createOnlineVersionID,
   onlineContributionErrorToHomeSection,
   onlineLibraryToMediaLibrary,
   onlineNavigationToMediaItem,
   onlinePlaybackToStreamRequest,
   onlineSectionsToHomeSections,
+  onlineVersionToMediaItem,
   onlineWorkToDetail,
   onlineWorkToMediaItem,
   parseOnlineFeedSections,
@@ -271,6 +273,7 @@ export class ServerDataSource implements DataSource {
   private credential: ServerCredentialValue | null = null
   private connected = false
   private capabilities = new Set<string>()
+  private readonly onlineDownloadLibraries = new Set<string>()
   private readonly onlineProgressContexts = new Map<string, ServerOnlineProgressContext>()
   private readonly bridge: ServerBridge
   private readonly readCredential: (ref: string) => Promise<ServerCredentialValue | null>
@@ -290,7 +293,46 @@ export class ServerDataSource implements DataSource {
     return this.capabilities.has(capability)
   }
 
+  canDownloadItem(itemId: string): boolean {
+    const online = parseOnlineItemID(itemId)
+    return !online || (this.hasCapability('online_offline_plan_v1') && this.onlineDownloadLibraries.has(online.libraryId))
+  }
+
+  async resolveDownloadSelection(request: PlaybackRequest) {
+    const online = parseOnlineItemID(request.itemId)
+    if (!online)
+      return { itemId: request.itemId, mediaSourceId: request.mediaSourceId, variantId: request.variantId }
+    if (online.kind !== 'work' && online.kind !== 'version')
+      throw new Error('请先选择具体节目或集数。')
+    const libraries = await this.onlineLibraries()
+    if (!this.hasCapability('online_offline_plan_v1') || !libraries.some(library => library.id === online.libraryId && library.available && library.offlineDownloadSupported))
+      throw new Error('当前 Server 或在线插件不支持本地下载。')
+    const work = await this.onlineWork(online.libraryId, online.workId)
+    const candidates = work.segments.flatMap(segment => segment.versions.map(version => ({ segment, version })))
+    const selected = online.kind === 'version'
+      ? candidates.find(candidate => candidate.segment.id === online.segmentId && candidate.version.id === online.versionId)
+      : request.mediaSourceId
+        ? candidates.find(candidate => candidate.version.id === request.mediaSourceId)
+        : candidates.find(candidate => candidate.version.variants.length === 0 || candidate.version.variants.some(variant => variant.available))
+    if (!selected || (request.mediaSourceId && selected.version.id !== request.mediaSourceId))
+      throw new Error('所选节目版本已不可用，请刷新详情。')
+    const itemId = createOnlineVersionID(online.libraryId, work.id, selected.segment.id, selected.version.id)
+    const variants = selected.version.variants.length > 0 ? selected.version.variants : (await this.getStreamRequest({ itemId, mediaSourceId: selected.version.id, variantId: request.variantId })).variants ?? []
+    const variant = request.variantId
+      ? variants.find(candidate => candidate.id === request.variantId && candidate.available)
+      : variants.find(candidate => candidate.available)
+    if (!variant)
+      throw new Error('所选清晰度没有完整播放或下载权益。')
+    return {
+      itemId,
+      mediaSourceId: selected.version.id,
+      variantId: variant.id,
+      onlineIdentity: { libraryId: online.libraryId, workId: work.id, segmentId: selected.segment.id, versionId: selected.version.id },
+    }
+  }
+
   async init(config: DataSourceConfig): Promise<void> {
+    this.onlineDownloadLibraries.clear()
     this.config = sanitizeServerConfig(config)
     this.baseUrl = normalizeServerBaseUrl(config.url)
     this.credentialRef = readServerExtra(config).credentialRef ?? ''
@@ -456,6 +498,13 @@ export class ServerDataSource implements DataSource {
     const online = onlineResult.status === 'fulfilled'
       ? parseOnlineLibraryList(onlineResult.value).filter(item => item.available).map(item => onlineLibraryToMediaLibrary(this.id, item, this.baseUrl))
       : []
+    this.onlineDownloadLibraries.clear()
+    if (onlineResult.status === 'fulfilled') {
+      for (const library of parseOnlineLibraryList(onlineResult.value)) {
+        if (library.available && library.offlineDownloadSupported)
+          this.onlineDownloadLibraries.add(library.id)
+      }
+    }
     return [...physical, ...online]
   }
 
@@ -692,8 +741,17 @@ export class ServerDataSource implements DataSource {
 
   async getDetail(id: string): Promise<MediaDetail> {
     const online = parseOnlineItemID(id)
-    if (online?.kind === 'work' || online?.kind === 'version')
-      return onlineWorkToDetail(this.id, online.libraryId, await this.onlineWork(online.libraryId, online.workId))
+    if (online?.kind === 'work' || online?.kind === 'version') {
+      const [work] = await Promise.all([this.onlineWork(online.libraryId, online.workId), this.onlineLibraries()])
+      const detail = onlineWorkToDetail(this.id, online.libraryId, work)
+      if (online.kind === 'work')
+        return detail
+      const segment = work.segments.find(candidate => candidate.id === online.segmentId)
+      const version = segment?.versions.find(candidate => candidate.id === online.versionId)
+      if (!segment || !version)
+        throw new Error('所选节目版本已不可用。')
+      return { ...onlineVersionToMediaItem(this.id, online.libraryId, work, segment, version), mediaSources: detail.mediaSources?.filter(source => source.itemId === id) }
+    }
     const acquisition = parseServerAcquisitionItemID(id)
     if (acquisition) {
       const [detail, status] = await Promise.all([
@@ -851,6 +909,8 @@ export class ServerDataSource implements DataSource {
       ))
       if (!plan)
         throw new Error('Server 返回的在线媒体播放方案无效。')
+      if (plan.workId !== online.workId || plan.segmentId !== requestedVersion.segment.id || plan.versionId !== requestedVersion.version.id || (request.variantId && plan.variantId !== request.variantId))
+        throw new Error('Server 返回的播放身份与所选节目或清晰度不一致。')
       const credential = await this.ensureCredential()
       this.rememberOnlineProgressContext(request.itemId, plan.versionId, {
         libraryId: online.libraryId,
@@ -1129,7 +1189,13 @@ export class ServerDataSource implements DataSource {
   }
 
   private async onlineLibraries() {
-    return parseOnlineLibraryList(await this.request('/api/v1/player/online-libraries'))
+    const libraries = parseOnlineLibraryList(await this.request('/api/v1/player/online-libraries'))
+    this.onlineDownloadLibraries.clear()
+    for (const library of libraries) {
+      if (library.available && library.offlineDownloadSupported)
+        this.onlineDownloadLibraries.add(library.id)
+    }
+    return libraries
   }
 
   private async onlineWork(libraryID: string, workID: string) {

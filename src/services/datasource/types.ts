@@ -316,6 +316,14 @@ export interface PlaybackRequest {
   readonly variantId?: string
 }
 
+/** Stable native-download selection. Transport URLs and credentials stay in Rust. */
+export interface MediaDownloadSelection {
+  readonly itemId: string
+  readonly mediaSourceId?: string
+  readonly variantId?: string
+  readonly onlineIdentity?: { libraryId: string, workId: string, segmentId: string, versionId: string }
+}
+
 export type ProviderPlaybackProgressEvent = 'started' | 'progress' | 'paused' | 'resumed' | 'stopped' | 'completed'
 
 export interface ProviderPlaybackProgressInput {
@@ -391,6 +399,9 @@ export interface DataSource {
   getHomeSections?: () => Promise<HomeSection[]>
   refreshHomeSection?: (refreshKey: string) => Promise<HomeSection[]>
   enqueueOnlineDownload?: (request: PlaybackRequest & { readonly mediaLibraryId?: number }) => Promise<void>
+  /** Cached capability for a media-action menu; absence does not enable online plugins. */
+  canDownloadItem?: (itemId: string) => boolean
+  resolveDownloadSelection?: (request: PlaybackRequest) => Promise<MediaDownloadSelection>
   performSiteAction?: (itemId: string, action: SiteActionKey, value?: boolean, confirmed?: boolean) => Promise<void>
   getFeaturedItems?: () => Promise<MediaItem[]>
   getContinueWatching?: () => Promise<MediaItem[]>

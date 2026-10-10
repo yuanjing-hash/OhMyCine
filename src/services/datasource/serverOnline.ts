@@ -9,6 +9,7 @@ export interface OnlineLibrarySummary {
   providerLabel: string
   capabilities: string[]
   available: boolean
+  offlineDownloadSupported: boolean
   errorCode?: string
   homeContributions: string[]
   artworkUrl?: string
@@ -336,7 +337,10 @@ export function onlineWorkToMediaItem(sourceId: string, libraryId: string, item:
 
 export function onlineWorkToDetail(sourceId: string, libraryId: string, item: OnlineMediaWork): MediaDetail {
   const root = onlineWorkToMediaItem(sourceId, libraryId, item)
-  const children = item.segments.flatMap(segment => segment.versions.map(version => onlineVersionToMediaItem(sourceId, libraryId, item, segment, version)))
+  const children = item.segments.flatMap((segment) => {
+    const preferred = segment.versions.find(version => version.variants.length === 0 || version.variants.some(variant => variant.available)) ?? segment.versions[0]
+    return preferred ? [onlineVersionToMediaItem(sourceId, libraryId, item, segment, preferred)] : []
+  })
   const mediaSources = item.segments.flatMap(segment => segment.versions.map(version => ({
     id: version.id,
     name: version.label,
@@ -511,7 +515,7 @@ export function parseOnlineItemID(value: string): OnlineItemID | null {
   return null
 }
 
-function onlineVersionToMediaItem(sourceId: string, libraryId: string, work: OnlineMediaWork, segment: OnlineMediaSegment, version: OnlineMediaVersion): MediaItem {
+export function onlineVersionToMediaItem(sourceId: string, libraryId: string, work: OnlineMediaWork, segment: OnlineMediaSegment, version: OnlineMediaVersion): MediaItem {
   const id = createOnlineVersionID(libraryId, work.id, segment.id, version.id)
   return {
     ...onlineWorkToMediaItem(sourceId, libraryId, work),
@@ -542,6 +546,7 @@ function parseOnlineLibrary(value: unknown): OnlineLibrarySummary | null {
     providerLabel: optionalText(item.providerLabel ?? item.provider_label, 256) ?? name,
     capabilities: stringList(item.capabilities, 100),
     available: item.available !== false,
+    offlineDownloadSupported: item.offlineDownloadSupported === true,
     errorCode: optionalText(item.errorCode ?? item.error_code, 128),
     homeContributions: stringList(item.homeContributions ?? item.home_contributions, 50),
     artworkUrl: optionalText(item.artworkUrl ?? item.artwork_url, MAX_TEXT_LENGTH),

@@ -15,18 +15,18 @@ export function createDownloadMediaActionAdapter(
     id: 'downloads',
     priority: 85,
     supports: target => target.kind === 'media',
-    resolve: target => capabilities(target),
+    resolve: target => capabilities(target, resolveSource),
     execute: (target, action) => execute(resolveSource, confirm, target, action),
   }
 }
 
-function capabilities(target: MediaActionTarget): MediaActionCapability[] {
+function capabilities(target: MediaActionTarget, resolveSource: (id: string) => DataSource | null): MediaActionCapability[] {
   if (target.kind !== 'media' || !target.sourceType)
     return []
   if (!SUPPORTED_TYPES.has(target.sourceType))
     return []
-  if (target.sourceType === 'server' && target.itemId.startsWith('online-')) {
-    const reason = '该在线插件尚未提供可安全续传的离线文件流。'
+  if (target.sourceType === 'server' && target.itemId.startsWith('online-') && resolveSource(target.sourceId)?.canDownloadItem?.(target.itemId) !== true) {
+    const reason = '当前 Server 或在线插件不支持本地下载。'
     return [{ action: 'download', availability: 'disabled', disabledReason: reason }, { action: 'downloadTo', availability: 'disabled', disabledReason: reason }]
   }
   if (isNativeAndroidRuntime()) {
@@ -80,6 +80,7 @@ async function execute(
       variantId: plan.files[0].variantId,
       libraryId: plan.files[0].libraryId,
       expectedBytes: plan.files[0].expectedBytes,
+      onlineIdentity: plan.files[0].onlineIdentity,
       detailSnapshot: plan.files[0].detailSnapshot,
     })
   }

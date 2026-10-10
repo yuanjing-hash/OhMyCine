@@ -65,8 +65,10 @@ pub async fn server_request_json(request: ServerJsonRequest) -> Result<ServerJso
         return Err("Server access token is required.".to_string());
     }
 
+    let timeout = json_request_timeout(url.path());
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(timeout)
+        .read_timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "Failed to initialize Server HTTP client.".to_string())?;
@@ -132,6 +134,16 @@ pub async fn server_request_json(request: ServerJsonRequest) -> Result<ServerJso
         status: status.as_u16(),
         body,
     })
+}
+
+fn json_request_timeout(path: &str) -> Duration {
+    if path == "/api/v1/player/online-libraries"
+        || path.starts_with("/api/v1/player/online-libraries/")
+    {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(20)
+    }
 }
 
 #[tauri::command]
@@ -453,6 +465,25 @@ fn server_method(method: &str) -> Result<Method, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_online_library_json_uses_the_plugin_resolution_timeout() {
+        assert_eq!(
+            json_request_timeout("/api/v1/player/online-libraries"),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            json_request_timeout("/api/v1/player/online-libraries/id/items/work/playback"),
+            Duration::from_secs(60)
+        );
+        for path in [
+            "/api/v1/player/bootstrap",
+            "/api/v1/player/online-libraries-other",
+            "/api/v1/player/media-entries/1",
+        ] {
+            assert_eq!(json_request_timeout(path), Duration::from_secs(20));
+        }
+    }
 
     #[test]
     fn server_url_accepts_only_player_api_paths() {

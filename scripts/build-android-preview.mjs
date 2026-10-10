@@ -95,6 +95,7 @@ if (!existsSync(tauriCli))
   throw new Error('Tauri CLI is missing. Run npm ci in player first.')
 
 run(process.execPath, [setupLibmpv])
+run(process.execPath, [resolve(playerRoot, 'scripts/setup-remux.mjs'), '--android'])
 rmSync(apkPath, { force: true })
 
 const env = { ...process.env }
