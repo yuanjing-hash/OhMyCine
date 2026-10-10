@@ -19,6 +19,7 @@
     "verify:emby-favorites": "tsx scripts/verify-emby-favorites.ts",
     "verify:server-datasource": "tsx scripts/verify-server-datasource.ts",
     "verify:server-online-library": "tsx scripts/verify-server-online-library.ts",
+    "verify:online-playback-history": "tsx scripts/verify-online-playback-history.ts",
     "verify:server-library-navigation": "tsx scripts/verify-server-library-navigation.ts",
     "verify:stream-quality": "tsx scripts/verify-stream-quality-switch.ts",
     "verify:secret-inputs": "tsx scripts/verify-secret-inputs.ts",

@@ -30,6 +30,8 @@ export interface MediaItem {
   seriesId?: string
   seasonNumber?: number
   episodeNumber?: number
+  /** Provider-supplied edition/group label, such as main programme or extras. */
+  edition?: string
   /** Provider-owned identity used to merge playback history across routes and devices. */
   historyIdentity?: string
   /** Secondary card copy supplied by the owning provider, for example S01E02 + episode title. */
@@ -142,6 +144,8 @@ export interface FileEntry {
 }
 
 export interface MediaDetail extends MediaItem {
+  /** Provider's preferred exact playable item; user selection and resume win. */
+  defaultPlaybackItemId?: string
   genres?: string[]
   directors?: string[]
   writers?: string[]
@@ -265,6 +269,9 @@ export interface DataSourceConfig {
 
 export interface MediaStreamRequest {
   readonly url: string
+  /** Stable exact selection resolved from a work-level request; never a URL. */
+  readonly itemId?: string
+  readonly historyIdentity?: string
   readonly headers?: Record<string, string>
   /** Optional separate audio asset for DASH-style playback. It is transient and never persisted. */
   readonly audioUrl?: string

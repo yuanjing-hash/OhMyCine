@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { ServerDataSource } from '../src/services/datasource/server.ts'
-import { parseOnlineWork } from '../src/services/datasource/serverOnline.ts'
+import { onlineWorkToDetail, parseOnlineWork } from '../src/services/datasource/serverOnline.ts'
+import { createPlaybackQueueItem, getPlaybackMediaContext, savePlaybackMediaContext } from '../src/services/playbackContext.ts'
 import { isProtectedServerArtworkURL, resolveServerArtworkURL } from '../src/services/serverArtwork.ts'
 import { searchServerDiscovery } from '../src/services/serverDiscovery.ts'
 
@@ -40,7 +41,7 @@ const source = new ServerDataSource({
         }] }
       else if (request.path === '/api/v1/player/online-libraries')
         data = { list: [
-          { id: 'library-1', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-1', name: '在线视频', providerLabel: 'Fixture', capabilities: ['site.feed', 'site.search', 'site.detail', 'media.playback'], available: true, homeContributions: ['recommended'], artworkUrl: '/api/v1/assets/plugin-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artworkRevision: 'fixed-plugin-v1', artworkSource: 'custom' },
+          { id: 'library-1', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-1', name: '在线视频', providerLabel: 'Fixture', capabilities: ['site.feed', 'site.search', 'site.detail', 'media.playback'], systemHistorySupported: true, available: true, homeContributions: ['recommended'], artworkUrl: '/api/v1/assets/plugin-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artworkRevision: 'fixed-plugin-v1', artworkSource: 'custom' },
           { id: 'library-unsafe', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-unsafe', name: '不安全在线封面', providerLabel: 'Fixture', capabilities: ['site.feed'], available: true, homeContributions: [], artworkUrl: 'https://attacker.example/plugin-cover.png' },
         ] }
       else if (request.path.endsWith('/navigation'))
@@ -114,12 +115,20 @@ assert.equal(detail.posterUrl, 'http://127.0.0.1:3000/api/v1/player/artwork/post
 assert.equal(detail.backdropUrl, 'http://127.0.0.1:3000/api/v1/player/artwork/backdrop-1')
 assert.equal(detail.children?.[0]?.name, '第一部分')
 assert.deepEqual(detail.mediaSources?.map(item => item.name), ['默认线路'])
-const stream = await source.getStreamRequest({ itemId: detail.children![0].id, variantId: '1080p' })
+const streamCallsBefore = calls.length
+const stream = await source.getStreamRequest({ itemId: detail.children![0].id, mediaSourceId: 'source-1', variantId: '1080p' })
+assert.equal(calls.length, streamCallsBefore + 1, 'Exact online version resolves fresh playback without a duplicate detail GET')
+assert.equal(calls.at(-1)?.method, 'POST')
+const mismatchCallsBefore = calls.length
+await assert.rejects(source.getStreamRequest({ itemId: detail.children![0].id, mediaSourceId: 'another-source' }), /媒体版本/)
+assert.equal(calls.length, mismatchCallsBefore, 'Conflicting exact version identities cannot silently select a different source')
 assert.equal(stream.url, 'http://127.0.0.1:3000/api/v1/player/online-assets/asset-1')
 assert.equal(stream.audioUrl, 'http://127.0.0.1:3000/api/v1/player/online-assets/audio-1')
 assert.equal(stream.headers?.Authorization, `Bearer ${token}`)
 assert.equal(stream.audioHeaders?.Authorization, `Bearer ${token}`)
 assert.equal(stream.variantId, '1080p')
+assert.equal(stream.itemId, detail.children![0].id)
+assert.equal(stream.historyIdentity, detail.children![0].id)
 assert.deepEqual(stream.variants?.map(item => item.id), ['720p', '1080p'])
 assert.equal(stream.subtitles?.[0]?.url, 'http://127.0.0.1:3000/api/v1/player/online-assets/subtitle-1')
 assert.equal(stream.danmaku?.[0]?.url, 'http://127.0.0.1:3000/api/v1/player/online-assets/danmaku-1')
@@ -148,10 +157,86 @@ assert.equal(history.hasMore, true)
 assert.equal(calls.some(call => call.path.includes('library_id=library-1')), true)
 await source.syncPlaybackProgress({ itemId: detail.children![0].id, event: 'progress', position: 180, duration: 600, isPaused: false, completed: false })
 assert.equal(calls.some(call => call.path.includes('/progress') && (call.body as { positionSeconds?: number }).positionSeconds === 180), true)
+assert.equal(libraries[0].providerIdentity, 'plugin:org.ohmycine.fixture:library-1')
+assert.equal(calls.filter(call => call.path.endsWith('/progress')).length, 1, 'System progress remains supported when the provider declares no progress_sync')
 const historyItem = history.items[0]!
 const historyStream = await source.getStreamRequest({ itemId: historyItem.id })
 await source.syncPlaybackProgress({ itemId: historyItem.id, mediaSourceId: historyStream.mediaSourceId, event: 'paused', position: 240, duration: 600, isPaused: true, completed: false })
 assert.equal(calls.some(call => call.path.includes('/progress') && (call.body as { event?: string }).event === 'paused' && (call.body as { segmentId?: string }).segmentId === 'part-1'), true)
+
+for (const mode of ['old', 'bootstrap', 'summary', 'provider'] as const) {
+  const requests: Array<{ path: string, body?: unknown }> = []
+  const compatible = new ServerDataSource({
+    readCredential: async () => ({ accessToken: token }),
+    bridge: { async request(request) {
+      requests.push(request)
+      return { status: 200, body: { code: 0, message: 'success', data: request.path === '/api/v1/player/online-libraries'
+        ? { list: [{ id: 'library-1', pluginId: 'org.ohmycine.fixture', connectionId: 'connection-1', name: 'Fixture', available: true, systemHistorySupported: mode === 'summary', capabilities: mode === 'provider' ? ['playback.progress_sync'] : [] }] }
+        : { accepted: true, remote: mode === 'provider' } } }
+    } },
+  })
+  await compatible.init({ id: `history-${mode}`, type: 'server', name: 'Fixture', order: 0, url: origin, extra: { credentialRef: 'credential', capabilities: mode === 'bootstrap' ? ['online_playback_history_v1'] : [] } })
+  for (const event of ['started', 'progress'] as const)
+    await compatible.syncPlaybackProgress({ itemId: detail.children![0].id, mediaSourceId: 'source-1', event, position: event === 'started' ? 0 : 180, duration: 600, isPaused: false, completed: false })
+  assert.equal(requests.filter(request => request.path.endsWith('/progress')).length, mode === 'old' ? 0 : 2, `${mode}: only negotiated system or provider progress may call the route`)
+  assert.equal(requests.filter(request => request.path === '/api/v1/player/online-libraries').length, mode === 'bootstrap' ? 0 : 1, 'Repeated progress must not reload library metadata')
+  assert.equal(compatible.canSyncOnlineHistory(detail.children![0].id), mode === 'bootstrap' || mode === 'summary', 'Provider progress capability alone does not authorize canonical Server history uploads')
+}
+
+const variety = parseOnlineWork({
+  id: 'variety/work', title: '官方综艺', kind: 'series', identity: { scheme: 'fixture', value: 'variety/work' },
+  segments: Array.from({ length: 80 }, (_, index) => ({
+    id: `video-${index}`, title: `${index % 2 ? '彩蛋' : '正片'}：官方第${index + 1}期标题`, index: index + 31,
+    versions: [{ id: `version-${index}`, label: '官方来源', edition: index % 2 ? '彩蛋' : '正片', variants: [] }],
+  })),
+}, origin)!
+const varietyItems = onlineWorkToDetail('server-online', 'library-1', variety).children!
+assert.equal(varietyItems.length, 80)
+assert.equal(varietyItems.every(item => item.episodeNumber === undefined), true, 'Provider ordering does not fabricate episode numbers')
+assert.equal(varietyItems.filter(item => item.edition === '正片').length, 40)
+assert.equal(varietyItems.filter(item => item.edition === '彩蛋').length, 40)
+assert.equal(varietyItems[1].name, '彩蛋：官方第2期标题')
+assert.equal(varietyItems[1].displaySubtitle, '彩蛋 · 彩蛋：官方第2期标题')
+const queueItem = createPlaybackQueueItem(varietyItems[1])
+const contextID = savePlaybackMediaContext({ sourceId: queueItem.sourceId, itemId: queueItem.id, currentItem: queueItem, queue: { items: varietyItems.map(createPlaybackQueueItem), currentIndex: 1 } })
+const restored = getPlaybackMediaContext(contextID)!
+assert.equal(restored.currentItem?.edition, '彩蛋')
+assert.equal(restored.queue?.items[1].historyIdentity, varietyItems[1].id)
+assert.equal(restored.queue?.items[1].displaySubtitle, varietyItems[1].displaySubtitle)
+assert.equal(restored.queue?.items[1].episodeNumber, undefined)
+
+for (const defaultSegmentId of [undefined, 'missing', 'current']) {
+  for (const explicit of [false, true]) {
+    const selected: Array<{ path: string, body?: unknown }> = []
+    const workSource = new ServerDataSource({
+      readCredential: async () => ({ accessToken: token }),
+      bridge: { async request(request) {
+        selected.push(request)
+        const body = request.body as { segmentId: string, versionId: string }
+        const data = request.path.endsWith('/playback')
+          ? { workId: 'ordered-work', segmentId: body.segmentId, versionId: body.versionId, variantId: 'hd', delivery: 'server-gateway', variants: [{ id: 'hd', label: 'HD', available: true }], assets: [{ kind: 'progressive', urlRef: '/api/v1/player/online-assets/fixture' }] }
+          : { id: 'ordered-work', title: '按官方页序', kind: 'series', identity: { scheme: 'fixture', value: 'ordered-work' }, defaultSegmentId, segments: ['intro', 'current'].map((id, index) => ({ id, title: id === 'intro' ? '先导片' : '当前正片', index, versions: [{ id: `${id}-version`, label: '来源', variants: [] }] })) }
+        return { status: 200, body: { code: 0, message: 'success', data } }
+      } },
+    })
+    await workSource.init({ id: 'selection', type: 'server', name: 'Fixture', order: 0, url: origin, extra: { credentialRef: 'fixture' } })
+    const resolvedWork = await workSource.getStreamRequest({ itemId: 'online-work|library-1|ordered-work', mediaSourceId: explicit ? 'intro-version' : undefined })
+    const expected = explicit ? 'intro' : defaultSegmentId === 'current' ? 'current' : 'intro'
+    assert.equal((selected.at(-1)?.body as { segmentId: string }).segmentId, expected, 'Explicit version beats provider default; absent/invalid default retains safe fallback')
+    assert.equal(resolvedWork.itemId, `online-version|library-1|ordered-work|${expected}|${expected}-version`)
+    assert.equal(resolvedWork.historyIdentity, resolvedWork.itemId, 'Work-card history stores the resolved exact episode/version, not its parent work')
+    assert.equal(selected.length, 2, 'Work-only playback needs exactly one detail resolution and one fresh plan')
+  }
+}
+
+await assert.rejects(async () => {
+  const changed = new ServerDataSource({
+    readCredential: async () => ({ accessToken: token }),
+    bridge: { async request() { return { status: 200, body: { code: 0, data: { workId: 'video-1', segmentId: 'another-segment', versionId: 'source-1', variantId: 'hd', delivery: 'server-gateway', variants: [], assets: [{ kind: 'progressive', urlRef: '/api/v1/player/online-assets/fixture' }] } } } } },
+  })
+  await changed.init({ id: 'changed-plan', type: 'server', name: 'Fixture', order: 0, url: origin, extra: { credentialRef: 'fixture' } })
+  await changed.getStreamRequest({ itemId: detail.children![0].id })
+}, /播放身份/, 'A fresh plan cannot silently substitute another episode')
 
 await assert.rejects(async () => {
   const unsafe = new ServerDataSource({

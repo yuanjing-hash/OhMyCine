@@ -1,4 +1,5 @@
 import type { ServerCredentialValue } from './credentialStore'
+import type { OnlineLibrarySummary } from './serverOnline'
 import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaAcquisitionState, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderCollectionOption, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
@@ -274,6 +275,8 @@ export class ServerDataSource implements DataSource {
   private connected = false
   private capabilities = new Set<string>()
   private readonly onlineDownloadLibraries = new Set<string>()
+  private readonly onlineProgressLibraries = new Map<string, boolean>()
+  private readonly onlineSystemHistoryLibraries = new Set<string>()
   private readonly onlineProgressContexts = new Map<string, ServerOnlineProgressContext>()
   private readonly bridge: ServerBridge
   private readonly readCredential: (ref: string) => Promise<ServerCredentialValue | null>
@@ -296,6 +299,11 @@ export class ServerDataSource implements DataSource {
   canDownloadItem(itemId: string): boolean {
     const online = parseOnlineItemID(itemId)
     return !online || (this.hasCapability('online_offline_plan_v1') && this.onlineDownloadLibraries.has(online.libraryId))
+  }
+
+  canSyncOnlineHistory(mediaIdentity: string): boolean {
+    const online = parseOnlineItemID(mediaIdentity)
+    return online?.kind === 'version' && (this.hasCapability('online_playback_history_v1') || this.onlineSystemHistoryLibraries.has(online.libraryId))
   }
 
   async resolveDownloadSelection(request: PlaybackRequest) {
@@ -333,6 +341,8 @@ export class ServerDataSource implements DataSource {
 
   async init(config: DataSourceConfig): Promise<void> {
     this.onlineDownloadLibraries.clear()
+    this.onlineProgressLibraries.clear()
+    this.onlineSystemHistoryLibraries.clear()
     this.config = sanitizeServerConfig(config)
     this.baseUrl = normalizeServerBaseUrl(config.url)
     this.credentialRef = readServerExtra(config).credentialRef ?? ''
@@ -463,6 +473,8 @@ export class ServerDataSource implements DataSource {
     this.credential = null
     this.connected = false
     this.capabilities.clear()
+    this.onlineProgressLibraries.clear()
+    this.onlineSystemHistoryLibraries.clear()
     this.onlineProgressContexts.clear()
   }
 
@@ -498,13 +510,7 @@ export class ServerDataSource implements DataSource {
     const online = onlineResult.status === 'fulfilled'
       ? parseOnlineLibraryList(onlineResult.value).filter(item => item.available).map(item => onlineLibraryToMediaLibrary(this.id, item, this.baseUrl))
       : []
-    this.onlineDownloadLibraries.clear()
-    if (onlineResult.status === 'fulfilled') {
-      for (const library of parseOnlineLibraryList(onlineResult.value)) {
-        if (library.available && library.offlineDownloadSupported)
-          this.onlineDownloadLibraries.add(library.id)
-      }
-    }
+    this.rememberOnlineLibraries(onlineResult.status === 'fulfilled' ? parseOnlineLibraryList(onlineResult.value) : [])
     return [...physical, ...online]
   }
 
@@ -889,10 +895,18 @@ export class ServerDataSource implements DataSource {
   async getStreamRequest(request: PlaybackRequest): Promise<MediaStreamRequest> {
     const online = parseOnlineItemID(request.itemId)
     if (online?.kind === 'work' || online?.kind === 'version') {
-      const work = await this.onlineWork(online.libraryId, online.workId)
+      if (online.kind === 'version' && request.mediaSourceId && request.mediaSourceId !== online.versionId)
+        throw new Error('所选在线媒体版本与播放条目不一致。')
+      // Exact version tokens already contain all stable identities. Resolve the
+      // fresh authorized plan directly; catalogue metadata is not entitlement.
+      const work = online.kind === 'work' ? await this.onlineWork(online.libraryId, online.workId) : undefined
+      const candidates = work?.segments.flatMap(segment => segment.versions.map(version => ({ segment, version }))) ?? []
       const requestedVersion = online.kind === 'version'
-        ? work.segments.flatMap(segment => segment.versions.map(version => ({ segment, version }))).find(item => item.segment.id === online.segmentId && item.version.id === online.versionId)
-        : work.segments.flatMap(segment => segment.versions.map(version => ({ segment, version }))).find(item => versionAvailable(item.version, request.variantId))
+        ? { segment: { id: online.segmentId }, version: { id: online.versionId, variants: [] } }
+        : request.mediaSourceId
+          ? candidates.find(item => item.version.id === request.mediaSourceId)
+          : candidates.find(item => item.segment.id === work?.defaultSegmentId && versionAvailable(item.version, request.variantId))
+            ?? candidates.find(item => versionAvailable(item.version, request.variantId))
       if (!requestedVersion)
         throw new Error('请选择可播放的在线媒体版本。')
       const variantId = request.variantId
@@ -918,7 +932,8 @@ export class ServerDataSource implements DataSource {
         segmentId: plan.segmentId,
         versionId: plan.versionId,
       })
-      return onlinePlaybackToStreamRequest(this.baseUrl, credential.accessToken, plan)
+      const itemId = createOnlineVersionID(online.libraryId, plan.workId, plan.segmentId, plan.versionId)
+      return { ...onlinePlaybackToStreamRequest(this.baseUrl, credential.accessToken, plan), itemId, historyIdentity: itemId }
     }
     const work = parseWorkItemID(request.itemId)
     let entryID: number | null = null
@@ -1006,6 +1021,14 @@ export class ServerDataSource implements DataSource {
       : this.onlineProgressContexts.get(onlineProgressContextKey(progress.itemId, progress.mediaSourceId))
     if (!context)
       return
+    if (online?.kind === 'version' && progress.mediaSourceId && progress.mediaSourceId !== online.versionId)
+      throw new Error('播放进度的媒体版本与播放条目不一致。')
+    if (!this.hasCapability('online_playback_history_v1')) {
+      if (!this.onlineProgressLibraries.has(context.libraryId))
+        await this.onlineLibraries()
+      if (!this.onlineProgressLibraries.get(context.libraryId))
+        return
+    }
     await this.request(
       `/api/v1/player/online-libraries/${encodeURIComponent(context.libraryId)}/items/${encodeURIComponent(context.workId)}/progress`,
       'POST',
@@ -1190,12 +1213,21 @@ export class ServerDataSource implements DataSource {
 
   private async onlineLibraries() {
     const libraries = parseOnlineLibraryList(await this.request('/api/v1/player/online-libraries'))
+    this.rememberOnlineLibraries(libraries)
+    return libraries
+  }
+
+  private rememberOnlineLibraries(libraries: readonly OnlineLibrarySummary[]): void {
     this.onlineDownloadLibraries.clear()
+    this.onlineProgressLibraries.clear()
+    this.onlineSystemHistoryLibraries.clear()
     for (const library of libraries) {
       if (library.available && library.offlineDownloadSupported)
         this.onlineDownloadLibraries.add(library.id)
+      this.onlineProgressLibraries.set(library.id, library.available && (library.systemHistorySupported || library.capabilities.includes('playback.progress_sync')))
+      if (library.available && library.systemHistorySupported)
+        this.onlineSystemHistoryLibraries.add(library.id)
     }
-    return libraries
   }
 
   private async onlineWork(libraryID: string, workID: string) {

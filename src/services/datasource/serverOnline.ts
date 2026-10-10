@@ -10,6 +10,7 @@ export interface OnlineLibrarySummary {
   capabilities: string[]
   available: boolean
   offlineDownloadSupported: boolean
+  systemHistorySupported: boolean
   errorCode?: string
   homeContributions: string[]
   artworkUrl?: string
@@ -42,6 +43,7 @@ export interface OnlineMediaWork {
   publishedAt?: string
   durationSeconds?: number
   segments: OnlineMediaSegment[]
+  defaultSegmentId?: string
 }
 
 export interface OnlineMediaSegment {
@@ -117,6 +119,7 @@ export type OnlineItemID
     | { kind: 'version', libraryId: string, workId: string, segmentId: string, versionId: string }
 
 const MAX_LIST_ITEMS = 200
+const MAX_WORK_SEGMENTS = 1000
 const MAX_TEXT_LENGTH = 2048
 
 export function parseOnlineLibraryList(value: unknown): OnlineLibrarySummary[] {
@@ -194,8 +197,10 @@ export function parseOnlineWork(value: unknown, baseUrl: string): OnlineMediaWor
   const identityValue = requiredText(identity.value, 512)
   if (!id || !title || !kind || !identityScheme || !identityValue)
     return null
+  if (Array.isArray(item.segments) && item.segments.length > MAX_WORK_SEGMENTS)
+    return null
   const segments = Array.isArray(item.segments)
-    ? item.segments.slice(0, MAX_LIST_ITEMS).map(parseSegment).filter((entry): entry is OnlineMediaSegment => entry != null)
+    ? item.segments.map(parseSegment).filter((entry): entry is OnlineMediaSegment => entry != null)
     : []
   return {
     id,
@@ -209,6 +214,7 @@ export function parseOnlineWork(value: unknown, baseUrl: string): OnlineMediaWor
     author: optionalText(item.author, 512),
     publishedAt: optionalText(item.publishedAt, 128),
     durationSeconds: boundedNumber(item.durationSeconds, 0, 365 * 24 * 60 * 60),
+    defaultSegmentId: optionalText(item.defaultSegmentId, 512),
     segments,
   }
 }
@@ -352,7 +358,11 @@ export function onlineWorkToDetail(sourceId: string, libraryId: string, item: On
     providerMediaSourceId: version.id,
     exactIdentity: `plugin:${item.identity.scheme}:${item.identity.value}:${segment.id}:${version.id}`,
   } satisfies MediaSourceOption)))
-  return { ...root, mediaSources, children }
+  const defaultPlaybackItemId = children.find((child) => {
+    const identity = parseOnlineItemID(child.id)
+    return identity?.kind === 'version' && identity.segmentId === item.defaultSegmentId
+  })?.id
+  return { ...root, mediaSources, children, defaultPlaybackItemId }
 }
 
 export function onlineSectionsToHomeSections(
@@ -523,7 +533,10 @@ export function onlineVersionToMediaItem(sourceId: string, libraryId: string, wo
     name: segment.title || work.title,
     type: work.kind === 'series' || work.kind === 'episode' ? 'episode' : 'movie',
     seasonNumber: segment.seasonNumber,
-    episodeNumber: segment.episodeNumber ?? segment.index,
+    episodeNumber: segment.episodeNumber,
+    edition: version.edition,
+    displaySubtitle: [version.edition, segment.title].filter(Boolean).join(' · '),
+    historyIdentity: id,
     seriesName: work.kind === 'series' ? work.title : undefined,
     exactIdentity: `plugin:${work.identity.scheme}:${work.identity.value}:${segment.id}:${version.id}`,
     playbackTargets: [{ sourceId, itemId: id, mediaSourceId: version.id, label: version.sourceLabel ?? 'Server 在线媒体库' }],
@@ -547,6 +560,7 @@ function parseOnlineLibrary(value: unknown): OnlineLibrarySummary | null {
     capabilities: stringList(item.capabilities, 100),
     available: item.available !== false,
     offlineDownloadSupported: item.offlineDownloadSupported === true,
+    systemHistorySupported: item.systemHistorySupported === true,
     errorCode: optionalText(item.errorCode ?? item.error_code, 128),
     homeContributions: stringList(item.homeContributions ?? item.home_contributions, 50),
     artworkUrl: optionalText(item.artworkUrl ?? item.artwork_url, MAX_TEXT_LENGTH),

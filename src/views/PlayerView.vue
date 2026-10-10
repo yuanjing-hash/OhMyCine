@@ -194,6 +194,7 @@ let homeRefreshTimer: number | undefined
 let lastSavedPosition = -1
 let playbackStartPosition = 0
 let playbackProgressReady = false
+let playbackHistoryStarted = false
 const resumeSeekTimers = new Set<number>()
 let pendingResumeSeek: { path: string, position: number } | null = null
 let activeCachedSubtitlePath: string | null = null
@@ -253,6 +254,7 @@ const {
   renderDiagnostics,
   playbackDiagnostics,
   videoReady,
+  fileLoaded,
   isBuffering,
   bufferSpeedBytesPerSecond,
   orientationSupported,
@@ -858,7 +860,7 @@ function syncActiveMediaMetadataFromRoute() {
 async function resolvePlaybackLoadRequest(variantId?: string): Promise<MediaStreamRequest> {
   const context = currentPlaybackContext()
   const sourceId = queryStringValue(route.query.sourceId) || context?.sourceId || ''
-  const itemId = queryStringValue(route.query.itemId) || context?.itemId || ''
+  const itemId = (variantId ? activeStreamRequest?.itemId : undefined) || queryStringValue(route.query.itemId) || context?.itemId || ''
   const locator = context?.locator
 
   if (sourceId && itemId && sourceId !== 'local-file') {
@@ -905,7 +907,8 @@ function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'me
   const playbackItem = currentPlaybackItem()
   const sourceId = playbackItem?.offlineOriginSourceId || activeSourceId.value || context?.sourceId || currentQueueItem.value?.sourceId || LOCAL_FILE_SOURCE_ID
   const itemId = currentOriginItemId()
-  const mediaIdentity = playbackItem?.historyIdentity || itemId || createSafeStreamIdentity(sourceId, undefined, mediaPath.value)
+  const mediaIdentity = (playbackItem?.offlineOriginItemId ? playbackItem.historyIdentity : activeStreamRequest?.historyIdentity)
+    || playbackItem?.historyIdentity || itemId || createSafeStreamIdentity(sourceId, undefined, mediaPath.value)
 
   if (!sourceId || !mediaIdentity)
     return null
@@ -916,7 +919,7 @@ function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'me
 function currentOriginItemId(): string {
   const context = currentPlaybackContext()
   const playbackItem = currentPlaybackItem()
-  return playbackItem?.offlineOriginItemId || activeItemId.value || context?.itemId || currentQueueItem.value?.id || ''
+  return playbackItem?.offlineOriginItemId || activeStreamRequest?.itemId || activeItemId.value || context?.itemId || currentQueueItem.value?.id || ''
 }
 
 function currentMediaPreferenceIdentity(): MediaPlaybackPreferenceIdentity | null {
@@ -1394,6 +1397,8 @@ function scheduleHomeSectionsRefreshAfterPlayback() {
 }
 
 function shouldSaveLocalProgress(payload: PlaybackProgressUpsert, force: boolean, event: ProviderPlaybackProgressEvent): boolean {
+  if (event === 'started')
+    return true
   if (payload.completed)
     return payload.position >= HISTORY_MIN_SAVE_POSITION
 
@@ -1404,10 +1409,11 @@ function shouldSaveLocalProgress(payload: PlaybackProgressUpsert, force: boolean
 }
 
 async function saveCurrentProgress(force = false, event: ProviderPlaybackProgressEvent = 'progress') {
-  if (!playbackProgressReady)
+  if (!playbackProgressReady || !fileLoaded.value)
     return
 
-  const payload = currentHistoryPayload()
+  const currentPayload = currentHistoryPayload()
+  const payload = currentPayload && event === 'started' ? { ...currentPayload, completed: false } : currentPayload
   if (!payload)
     return
 
@@ -1447,9 +1453,11 @@ async function saveCurrentProgress(force = false, event: ProviderPlaybackProgres
 }
 
 function syncProviderPlaybackStarted() {
-  const payload = currentHistoryPayload()
-  if (payload)
-    void syncProviderProgress(payload, 'started')
+  // Accepting mpv_load is not proof that remote media actually opened.
+  if (!playbackProgressReady || !fileLoaded.value || playbackHistoryStarted)
+    return
+  playbackHistoryStarted = true
+  void saveCurrentProgress(true, 'started')
 }
 
 async function readSavedProgress(): Promise<PlaybackHistoryEntry | null> {
@@ -1586,6 +1594,7 @@ function resetHistorySaveState() {
   lastSavedPosition = -1
   playbackStartPosition = 0
   playbackProgressReady = false
+  playbackHistoryStarted = false
   resumeMessage.value = null
 }
 
@@ -2205,6 +2214,11 @@ watch(isPlaying, (playing) => {
   }
 })
 
+watch(fileLoaded, (loaded) => {
+  if (loaded && !playbackCleanupStarted)
+    syncProviderPlaybackStarted()
+})
+
 watch(danmakuLoading, (loading) => {
   if (loading) {
     chromeManuallyHidden.value = false
@@ -2277,6 +2291,7 @@ async function handleFileDrop(path: string) {
   await restoreMediaPlaybackPreference()
   startHistorySaveTimer()
   await resumeSavedProgressIfAvailable()
+  syncProviderPlaybackStarted()
   if (playbackCleanupStarted)
     await stopPlaybackSilently()
 }

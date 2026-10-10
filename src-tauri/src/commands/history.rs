@@ -1224,6 +1224,74 @@ mod tests {
             .is_some());
     }
 
+    #[test]
+    fn online_history_start_progress_and_resume_keep_exact_identity_and_edition() {
+        let conn = Connection::open_in_memory().expect("open online history database");
+        initialize_schema(&conn).expect("initialize online history schema");
+        let storage = PlaybackHistoryStorage { conn };
+        let token = "online-version|library%2Fone|work%2Fone|extra%2F32|version%2Fextra";
+        let mut started = progress("server-home", token);
+        started.library_id = Some("online-library|library%2Fone".to_string());
+        started.media_type = Some("episode".to_string());
+        started.title = "官方综艺".to_string();
+        started.display_subtitle = Some("彩蛋 · 2026-10-10 幕后故事".to_string());
+        started.position = 0.0;
+        storage
+            .upsert(&started)
+            .expect("save confirmed native start");
+        let saved = storage
+            .get(&identity("server-home", token))
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.position, 0.0);
+        assert!(!saved.completed);
+        assert_eq!(storage.list_history(1, 10).unwrap().total, 1);
+
+        started.position = 180.0;
+        storage.upsert(&started).expect("save real online progress");
+        let resumed = storage
+            .get(&identity("server-home", token))
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.position, 180.0);
+        assert_eq!(resumed.item_id.as_deref(), Some(token));
+        assert_eq!(resumed.library_id, started.library_id);
+        assert_eq!(resumed.display_subtitle, started.display_subtitle);
+        assert_eq!(resumed.media_identity, token);
+        assert_eq!(storage.list_history(1, 10).unwrap().total, 1);
+
+        let mut other = progress("server-home", token);
+        other.title = started.title.clone();
+        other.media_identity = token.replace("extra%2F32", "main%2F31");
+        other.item_id = Some(other.media_identity.clone());
+        storage
+            .upsert(&other)
+            .expect("save same-title main edition");
+        other.media_identity = token.replace("library%2Fone", "library%2Ftwo");
+        other.item_id = Some(other.media_identity.clone());
+        other.library_id = Some("online-library|library%2Ftwo".to_string());
+        storage
+            .upsert(&other)
+            .expect("save same-title other library");
+        other.source_id = "another-server".to_string();
+        storage
+            .upsert(&other)
+            .expect("save same-title other server");
+        assert_eq!(storage.list_history(1, 10).unwrap().total, 4);
+        assert!(storage
+            .get(&identity("missing-server", token))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            storage
+                .get(&identity("server-home", token))
+                .unwrap()
+                .unwrap()
+                .position,
+            180.0
+        );
+    }
+
     fn identity(source_id: &str, media_identity: &str) -> PlaybackProgressIdentity {
         PlaybackProgressIdentity {
             source_id: source_id.to_string(),

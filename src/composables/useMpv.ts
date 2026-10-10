@@ -295,6 +295,7 @@ export function useMpv() {
   const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
   const playbackDiagnostics = ref<MpvPlaybackDiagnostics | null>(null)
   const videoReady = ref(false)
+  const fileLoaded = ref(false)
   const isBuffering = ref(false)
   const bufferSpeedBytesPerSecond = ref(0)
   const orientationSupported = ref(false)
@@ -332,6 +333,9 @@ export function useMpv() {
     }),
     listen('mpv:video-ready', () => {
       videoReady.value = true
+    }),
+    listen('mpv:file-loaded', () => {
+      fileLoaded.value = true
     }),
   ]
 
@@ -373,6 +377,8 @@ export function useMpv() {
     try {
       const diagnostics = await invoke<MpvPlaybackDiagnostics>('mpv_playback_diagnostics')
       playbackDiagnostics.value = diagnostics
+      if (diagnostics.state !== 'desktop')
+        fileLoaded.value = diagnostics.fileLoaded
       if (diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
         videoReady.value = true
       if (diagnostics.state === 'error' || diagnostics.state === 'ended') {
@@ -656,6 +662,7 @@ export function useMpv() {
     trackStateReady.value = false
     isPlaying.value = false
     videoReady.value = false
+    fileLoaded.value = false
     playbackSpeed.value = DEFAULT_PLAYBACK_SPEED
     videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
     videoBrightness.value = 50
@@ -851,6 +858,7 @@ export function useMpv() {
     currentAudio.value = null
     trackStateReady.value = false
     videoReady.value = false
+    fileLoaded.value = false
   }
 
   onUnmounted(() => {
@@ -891,6 +899,7 @@ export function useMpv() {
     renderDiagnostics,
     playbackDiagnostics,
     videoReady,
+    fileLoaded,
     isBuffering,
     bufferSpeedBytesPerSecond,
     orientationSupported,

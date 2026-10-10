@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { redactSensitiveText } from '@/services/datasource/errors'
 import { mapServerHistoryItem, ServerDataSource, ServerRequestError } from '@/services/datasource/server'
+import { parseOnlineItemID } from '@/services/datasource/serverOnline'
 import { listPlaybackHistorySyncPage, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 
 type DataSourceStore = ReturnType<typeof useDataSourceStore>
@@ -83,7 +84,7 @@ export async function syncPlaybackHistory(store: DataSourceStore, focus?: Histor
   let confirmedTargets = 0
   let focusRejection: string | undefined
   for (const target of servers) {
-    const outgoing = await createServerHistoryUploadChanges(history, allConfigs, target.config.id)
+    const outgoing = await createServerHistoryUploadChanges(history, allConfigs, target.config.id, identity => target.source.canSyncOnlineHistory(identity))
     const focusedChange = focus && outgoing.find(change => change.deleted === true
       && change.source_id === focus.sourceId && change.media_identity === focus.mediaIdentity
       && change.updated_at === focus.updatedAt)
@@ -182,11 +183,13 @@ export function serverConfirmsHistoryDeletion(focus: HistorySyncFocus, uploaded:
     && change.updated_at >= focus.updatedAt)
 }
 
-export async function createServerHistoryUploadChanges(history: readonly PlaybackHistoryEntry[], configs: readonly DataSourceConfig[], targetServerId: string): Promise<ServerPlaybackHistoryChange[]> {
+export async function createServerHistoryUploadChanges(history: readonly PlaybackHistoryEntry[], configs: readonly DataSourceConfig[], targetServerId: string, acceptOnlineHistory?: (identity: string) => boolean): Promise<ServerPlaybackHistoryChange[]> {
   const configsById = new Map(configs.map(config => [config.id, config]))
   return Promise.all(history.flatMap((entry) => {
     const sourceConfig = historySourceDescriptor(entry, configsById)
     if (!sourceConfig || (sourceConfig.type === 'server' && sourceConfig.id !== targetServerId))
+      return []
+    if (sourceConfig.type === 'server' && parseOnlineItemID(entry.mediaIdentity)?.kind === 'version' && acceptOnlineHistory && !acceptOnlineHistory(entry.mediaIdentity))
       return []
     return [toServerChange(entry, sourceConfig)]
   }))
@@ -304,7 +307,7 @@ export function mapServerHistoryChangeToLocalEntry(change: ServerPlaybackHistory
 }
 
 function isServerHistoryIdentity(value: string): boolean {
-  return /^server:v1:(?:movie|episode):\S{1,1024}$/.test(value)
+  return parseOnlineItemID(value)?.kind === 'version' || /^server:v1:(?:movie|episode):\S{1,1024}$/.test(value)
 }
 
 function canonicalMovieWorkToken(identity: string): string | undefined {

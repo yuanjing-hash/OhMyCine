@@ -34,6 +34,9 @@ const itemId = computed(() => route.params.itemId as string)
 const detail = ref<MediaDetail | null>(null)
 const seasons = ref<MediaItem[]>([])
 const episodes = ref<MediaItem[]>([])
+const editionEpisodes = ref<MediaItem[]>([])
+const selectedEpisodeEdition = ref<string | null>(null)
+const episodeEditions = computed(() => [...new Set(editionEpisodes.value.map(item => item.edition).filter((edition): edition is string => Boolean(edition)))])
 const seasonEpisodeCache = new Map<string, MediaItem[]>()
 const selectedSeasonId = ref<string>('')
 const isLoading = ref(false)
@@ -61,7 +64,7 @@ const detailPlayed = computed(() => {
     return false
   if (current.type === 'series' || current.type === 'season') {
     const completed = new Set(Object.values(playbackProgressByItemId.value).filter(entry => entry.completed).map(entry => playbackCompletionKey(entry.sourceId, entry.mediaIdentity)))
-    return areAllKnownPlayableChildrenCompleted(episodes.value, completed)
+    return areAllKnownPlayableChildrenCompleted(editionEpisodes.value, completed)
   }
   const sourceType = store.configs.find(config => config.id === current.sourceId)?.type
   if (sourceType === 'emby' || sourceType === 'jellyfin')
@@ -252,7 +255,7 @@ function personSubtitle(role?: string, character?: string): string {
   return ({ actor: '演员', director: '导演', writer: '编剧', creator: '主创' } as Record<string, string>)[role?.toLocaleLowerCase() ?? ''] ?? role ?? '演职员'
 }
 const selectedEpisodeDomId = computed(() => episodes.value.length > 0 ? `episode-card-${selectedEpisodeIndex.value}` : undefined)
-const selectedEpisodeAriaValue = computed(() => episodes.value.length > 0 ? `第 ${selectedEpisodeIndex.value + 1} 集，共 ${episodes.value.length} 集` : '无分集')
+const selectedEpisodeAriaValue = computed(() => selectedEpisode.value ? `${selectedEpisode.value.name}，第 ${selectedEpisodeIndex.value + 1} 项，共 ${episodes.value.length} 项` : '无分集')
 const episodeIndicatorStyle = computed(() => {
   const total = episodes.value.length
   const percent = total > 0 ? ((selectedEpisodeIndex.value + 1) / total) * 100 : 0
@@ -288,7 +291,7 @@ async function loadDetail() {
   seriesErrorMessage.value = null
   detail.value = null
   seasons.value = []
-  episodes.value = []
+  setEpisodeItems([])
   seasonEpisodeCache.clear()
   selectedSeasonId.value = ''
   selectedMediaSourceId.value = ''
@@ -367,10 +370,10 @@ async function loadSeriesSeasons(source: DataSource, seriesId: string) {
       return
     }
 
-    episodes.value = episodeItems
+    setEpisodeItems(episodeItems)
     seasonEpisodeCache.set(seriesId, episodeItems)
     resetEpisodeWindow()
-    await refreshPlaybackProgress(episodes.value)
+    await refreshPlaybackProgress(editionEpisodes.value)
     selectInitialEpisodeForSeason()
   }
   catch (error) {
@@ -388,9 +391,9 @@ async function selectSeason(season: MediaItem) {
   selectedSeasonId.value = season.id
   const cachedEpisodes = seasonEpisodeCache.get(season.id)
   if (cachedEpisodes) {
-    episodes.value = cachedEpisodes
+    setEpisodeItems(cachedEpisodes)
     resetEpisodeWindow()
-    await refreshPlaybackProgress(episodes.value)
+    await refreshPlaybackProgress(editionEpisodes.value)
     selectInitialEpisodeForSeason()
     return
   }
@@ -398,7 +401,7 @@ async function selectSeason(season: MediaItem) {
   isSeriesContentLoading.value = true
   seriesErrorMessage.value = null
   try {
-    episodes.value = []
+    setEpisodeItems([])
     const source = await resolveSource()
     await loadSeasonEpisodes(source, season.id)
   }
@@ -412,10 +415,11 @@ async function selectSeason(season: MediaItem) {
 
 async function loadSeasonEpisodes(source: DataSource, seasonId: string) {
   const items = await source.list(seasonId)
-  episodes.value = playableEpisodeItems(items)
-  seasonEpisodeCache.set(seasonId, episodes.value)
+  const playable = playableEpisodeItems(items)
+  setEpisodeItems(playable)
+  seasonEpisodeCache.set(seasonId, playable)
   resetEpisodeWindow()
-  await refreshPlaybackProgress(episodes.value)
+  await refreshPlaybackProgress(editionEpisodes.value)
   selectInitialEpisodeForSeason()
 }
 
@@ -480,6 +484,8 @@ function closeEpisodeSearch() {
 async function locateEpisodeSearchResult(entry: SeriesEpisodeSearchEntry) {
   if (entry.season)
     await selectSeason(entry.season)
+  if ((entry.episode.edition ?? '') !== selectedEpisodeEdition.value)
+    await selectEpisodeEdition(entry.episode.edition ?? '')
 
   const index = episodes.value.findIndex(episode => episode.id === entry.episode.id)
   if (index < 0) {
@@ -500,7 +506,22 @@ function episodeSearchSeasonLabel(entry: SeriesEpisodeSearchEntry): string {
 }
 
 function episodeSearchNumberLabel(episode: MediaItem): string {
-  return episode.episodeNumber == null ? '单集' : `第 ${episode.episodeNumber} 集`
+  return episode.edition ?? (episode.episodeNumber == null ? '节目' : `第 ${episode.episodeNumber} 集`)
+}
+
+function setEpisodeItems(items: MediaItem[]) {
+  editionEpisodes.value = items
+  const preferred = items.find(item => item.id === detail.value?.defaultPlaybackItemId) ?? items[0]
+  selectedEpisodeEdition.value = preferred?.edition ?? null
+  episodes.value = selectedEpisodeEdition.value === null ? items : items.filter(item => item.edition === selectedEpisodeEdition.value)
+}
+
+async function selectEpisodeEdition(edition: string | null) {
+  selectedEpisodeEdition.value = edition
+  episodes.value = edition === null ? editionEpisodes.value : editionEpisodes.value.filter(item => item.edition === edition)
+  resetEpisodeWindow()
+  await refreshPlaybackProgress(episodes.value)
+  selectInitialEpisodeForSeason(true)
 }
 
 function resetEpisodeWindow() {
@@ -509,9 +530,22 @@ function resetEpisodeWindow() {
   scrollSelectedEpisodeIntoView('auto')
 }
 
-function selectInitialEpisodeForSeason() {
-  const resumeIndex = episodes.value.findIndex(item => hasResumeProgress(item))
-  selectEpisodeIndex(resumeIndex >= 0 ? resumeIndex : 0, 'auto')
+function selectInitialEpisodeForSeason(keepEdition = false) {
+  const candidates = keepEdition ? episodes.value : editionEpisodes.value
+  const contextID = queryStringValue(route.query.contextId)
+  const context = contextID ? getPlaybackMediaContext(contextID) : null
+  const explicitID = context?.sourceId === sourceId.value
+    ? context.currentItem?.id ?? context.queue?.items[context.queue.currentIndex]?.id
+    : undefined
+  const selected = candidates.find(item => item.id === explicitID)
+    ?? candidates.find(item => hasResumeProgress(item))
+    ?? candidates.find(item => item.id === detail.value?.defaultPlaybackItemId)
+    ?? candidates[0]
+  if (selected && !keepEdition) {
+    selectedEpisodeEdition.value = selected.edition ?? null
+    episodes.value = selectedEpisodeEdition.value === null ? editionEpisodes.value : editionEpisodes.value.filter(item => item.edition === selected.edition)
+  }
+  selectEpisodeIndex(selected ? episodes.value.findIndex(item => item.id === selected.id) : 0, 'auto')
 }
 
 function selectEpisodeByOffset(direction: -1 | 1) {
@@ -700,6 +734,7 @@ function recoverContextualDetail(): { detail: MediaDetail, relatedItems: MediaIt
       path: item.path,
       seasonNumber: item.seasonNumber,
       episodeNumber: item.episodeNumber,
+      edition: item.edition,
       historyIdentity: item.historyIdentity,
       displaySubtitle: item.displaySubtitle,
       episodeStillUrl: item.episodeStillUrl,
@@ -1026,6 +1061,28 @@ function markTitleLogoFailed(url: string) {
             {{ seriesErrorMessage }}
           </div>
 
+          <div v-if="episodeEditions.length > 1" class="relative mt-6 flex gap-3 overflow-x-auto pb-2" aria-label="节目版本分组">
+            <button
+              type="button"
+              class="shrink-0 rounded-xl border px-4 py-2 text-sm"
+              :class="selectedEpisodeEdition === null ? 'border-white/30 bg-white/15 text-white' : 'border-white/10 text-white/50'"
+              :aria-pressed="selectedEpisodeEdition === null"
+              @click="selectEpisodeEdition(null)"
+            >
+              全部
+            </button>
+            <button
+              v-for="edition in episodeEditions"
+              :key="edition"
+              type="button"
+              class="shrink-0 rounded-xl border px-4 py-2 text-sm"
+              :class="selectedEpisodeEdition === edition ? 'border-white/30 bg-white/15 text-white' : 'border-white/10 text-white/50'"
+              :aria-pressed="selectedEpisodeEdition === edition"
+              @click="selectEpisodeEdition(edition)"
+            >
+              {{ edition || '节目' }}
+            </button>
+          </div>
           <div v-if="seasons.length" class="episode-season-strip relative mt-6 flex gap-3 overflow-x-auto cinema-scrollbar pb-2">
             <button
               v-for="season in seasons"
@@ -1098,7 +1155,7 @@ function markTitleLogoFailed(url: string) {
                   </div>
                   <div class="absolute inset-0 bg-gradient-to-t from-black/88 via-black/8 to-transparent" />
                   <span class="absolute left-4 top-4 rounded-full border border-white/12 bg-black/42 px-3 py-1 text-xs font-semibold text-white/76 backdrop-blur-xl">
-                    {{ episode.episodeNumber == null ? 'Episode' : `第 ${episode.episodeNumber} 集` }}
+                    {{ episodeSearchNumberLabel(episode) }}
                   </span>
                   <span v-if="selectedEpisodeIndex === renderedEpisodeIndex(visibleIndex)" class="absolute right-4 top-4 rounded-full border border-white/18 bg-white/18 px-3 py-1 text-xs font-semibold text-white shadow-lg backdrop-blur-xl">
                     已选中
