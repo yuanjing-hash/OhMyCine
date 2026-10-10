@@ -25,6 +25,7 @@ pub mod player;
 pub(crate) mod player_shared;
 pub mod preference;
 pub mod provider_file;
+pub(crate) mod public_dns;
 pub mod server;
 pub mod settings;
 pub mod subtitle;

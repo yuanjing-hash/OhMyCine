@@ -1,5 +1,6 @@
 //! Private, ephemeral Server transport plans. Never serialize these structs into tasks/events.
 use super::*;
+use crate::commands::public_dns::{public_ip, resolve_cdn};
 use aes_gcm::aes::{
     cipher::{BlockDecrypt, KeyInit},
     Aes128,
@@ -243,7 +244,7 @@ pub(super) async fn resolve(
         data: NativePlan,
     }
     let envelope: Envelope = serde_json::from_slice(&body).map_err(|_| INVALID_PLAN.to_string())?;
-    if envelope.code != Value::from(0) && envelope.code != Value::from("success") {
+    if envelope.code != 0 && envelope.code != "success" {
         return Err(INVALID_PLAN.to_string());
     }
     envelope.data.validate(task, &access)?;
@@ -953,9 +954,9 @@ fn decrypt_unit(path: &Path, encryption: &Encryption) -> Result<(), String> {
     if bytes.is_empty() || bytes.len() % 16 != 0 || bytes.len() as u64 > MAX_ENCRYPTED_UNIT_BYTES {
         return Err("The encrypted unit is invalid.".to_string());
     }
-    for block in bytes.chunks_exact_mut(16) {
-        let encrypted: [u8; 16] = block.try_into().map_err(|_| INVALID_PLAN.to_string())?;
-        cipher.decrypt_block(block.into());
+    for block in bytes.as_chunks_mut::<16>().0 {
+        let encrypted = *block;
+        cipher.decrypt_block(block.as_mut_slice().into());
         for (index, byte) in block.iter_mut().enumerate() {
             *byte ^= iv[index];
         }
@@ -1262,6 +1263,20 @@ pub(super) async fn request_transport(
     remote: &ResolvedRemote,
     range: Option<(u64, Option<u64>)>,
 ) -> Result<Response, String> {
+    request_transport_inner(
+        remote,
+        range,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+async fn request_transport_inner(
+    remote: &ResolvedRemote,
+    range: Option<(u64, Option<u64>)>,
+    #[cfg(test)] fixture: Option<&DNSTransportFixture>,
+) -> Result<Response, String> {
     let mut url = remote.url.clone();
     let mut headers = remote.headers.clone();
     let owning_origin = origin_key(&url);
@@ -1283,14 +1298,29 @@ pub(super) async fn request_transport(
                 return Err("The online CDN address is unsafe.".to_string());
             }
             let host = url.host_str().ok_or_else(|| INVALID_PLAN.to_string())?;
-            let addresses: Vec<_> = tokio::net::lookup_host((
-                host,
-                url.port_or_known_default()
-                    .ok_or_else(|| INVALID_PLAN.to_string())?,
-            ))
-            .await
-            .map_err(|_| "The online CDN could not be resolved.".to_string())?
-            .collect();
+            let port = url
+                .port_or_known_default()
+                .ok_or_else(|| INVALID_PLAN.to_string())?;
+            let addresses: Vec<_> = {
+                #[cfg(not(test))]
+                {
+                    resolve_cdn(host, port).await?
+                }
+                #[cfg(test)]
+                {
+                    if let Some(fixture) = fixture {
+                        fixture.resolve(host, port).await?
+                    } else if matches!(host, "127.0.0.1" | "localhost") {
+                        // Existing real-byte fixtures use loopback HTTP only in tests.
+                        tokio::net::lookup_host((host, port))
+                            .await
+                            .map_err(|_| "The online CDN could not be resolved.".to_string())?
+                            .collect()
+                    } else {
+                        resolve_cdn(host, port).await?
+                    }
+                }
+            };
             if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
                 #[cfg(not(test))]
                 return Err("The online CDN resolved to a private or reserved address.".to_string());
@@ -1304,6 +1334,17 @@ pub(super) async fn request_transport(
                 }
             }
             builder = builder.resolve_to_addrs(host, &addresses);
+            #[cfg(test)]
+            if let Some(fixture) = fixture {
+                // Only this test-only socket dial is mocked. The shared resolver,
+                // address checks, per-hop pinning, headers and HTTP body run as usual.
+                fixture
+                    .pinned
+                    .lock()
+                    .unwrap()
+                    .push((host.to_string(), addresses));
+                builder = builder.resolve_to_addrs(host, &[fixture.dial]);
+            }
         }
         let client = builder
             .build()
@@ -1344,31 +1385,32 @@ pub(super) async fn request_transport(
     Err("The online CDN returned too many redirects.".to_string())
 }
 
-fn public_ip(address: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match address {
-        IpAddr::V4(ip) => {
-            let octets = ip.octets();
-            !ip.is_private()
-                && !ip.is_loopback()
-                && !ip.is_link_local()
-                && !ip.is_multicast()
-                && !ip.is_broadcast()
-                && !ip.is_documentation()
-                && octets[0] != 0
-                && octets[0] < 240
-                && !(octets[0] == 100 && (64..=127).contains(&octets[1]))
-                && !(octets[0] == 198 && (18..=19).contains(&octets[1]))
-                && !(octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        }
-        IpAddr::V6(ip) => {
-            let segments = ip.segments();
-            (segments[0] & 0xe000) == 0x2000
-                && segments[0] != 0x2002
-                && !(segments[0] == 0x2001 && (segments[1] == 0x0db8 || segments[1] < 0x0200))
-        }
+#[cfg(test)]
+struct DNSTransportFixture {
+    resolver: crate::commands::public_dns::TestResolver,
+    system: HashMap<String, Vec<std::net::IpAddr>>,
+    public: Vec<std::net::IpAddr>,
+    dial: std::net::SocketAddr,
+    pinned: std::sync::Mutex<Vec<(String, Vec<std::net::SocketAddr>)>>,
+}
+
+#[cfg(test)]
+impl DNSTransportFixture {
+    async fn resolve(&self, host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
+        self.resolver
+            .repair(
+                host,
+                self.system.get(host).cloned().unwrap_or_default(),
+                self.public.clone(),
+                port,
+            )
+            .await
     }
 }
+
+#[cfg(test)]
+#[path = "download_online_dns_tests.rs"]
+mod dns_transport_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1438,11 +1480,11 @@ mod tests {
         let padding = 16 - bytes.len() % 16;
         bytes.extend(std::iter::repeat_n(padding as u8, padding));
         let mut iv = [3_u8; 16];
-        for block in bytes.chunks_exact_mut(16) {
+        for block in bytes.as_chunks_mut::<16>().0 {
             for (index, byte) in block.iter_mut().enumerate() {
                 *byte ^= iv[index];
             }
-            cipher.encrypt_block(block.into());
+            cipher.encrypt_block(block.as_mut_slice().into());
             iv.copy_from_slice(block);
         }
         fs::write(&path, &bytes).unwrap();
