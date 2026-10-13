@@ -19,3 +19,6 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# JNI resolves this class and callbacks by name, including the on_load barrier.
+-keep class is.xyz.mpv.MPVLib { *; }

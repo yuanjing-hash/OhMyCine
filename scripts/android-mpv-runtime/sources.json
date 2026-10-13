@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "runtimeId": "ohmycine-mpv-android-vulkan-2026-04-25-v1",
+  "abi": "arm64-v8a",
+  "androidApi": 24,
+  "ndk": {
+    "version": "29.0.14206865",
+    "url": "https://dl.google.com/android/repository/android-ndk-r29-linux.zip",
+    "sha1": "87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b"
+  },
+  "officialApk": {
+    "url": "https://github.com/mpv-android/mpv-android/releases/download/2026-04-25/app-default-arm64-v8a-release.apk",
+    "sha256": "4400bcba6be9cec1128e24d1eba153d8727384926b0639fa7fe44d4e36b04f81"
+  },
+  "sources": {
+    "mpv-android": { "url": "https://github.com/mpv-android/mpv-android.git", "commit": "3018d47277d5b3ca02acdd96466f261c1d23ee08" },
+    "mpv": { "url": "https://github.com/mpv-player/mpv.git", "commit": "9ce79bcaa0132660a2e45b6bfc1fb0c199665277" },
+    "ffmpeg": { "url": "https://github.com/FFmpeg/FFmpeg.git", "commit": "fc4960b155aa33b9a08cf26c5e0a0530f0545f24" },
+    "dav1d": { "url": "https://github.com/videolan/dav1d.git", "commit": "c0f2fe3135e2f193e31089ff013f628b01aa8d21" },
+    "libass": { "url": "https://github.com/libass/libass.git", "commit": "fadc390583f24eb5cf98f16925fd3adee50bca88" },
+    "libplacebo": { "url": "https://github.com/haasn/libplacebo.git", "commit": "82224764a98164ce9d2d9a10e4fefca934e475fb", "recursive": true },
+    "mbedtls": { "url": "https://github.com/Mbed-TLS/mbedtls.git", "commit": "0bebf8b8c7f07abe3571ded48a11aa907a1ffb20", "recursive": true },
+    "freetype2": { "url": "https://github.com/freetype/freetype.git", "commit": "0a0221a1347e2f1e07c395263540026e9a0aa7c7", "recursive": true },
+    "fribidi": { "url": "https://github.com/fribidi/fribidi.git", "commit": "68162babff4f39c4e2dc164a5e825af93bda9983" },
+    "harfbuzz": { "url": "https://github.com/harfbuzz/harfbuzz.git", "commit": "b0ffab42d473eb380ad0fcf42730e0f1868cbc97" },
+    "unibreak": { "url": "https://github.com/adah1972/libunibreak.git", "commit": "3ce4bfa3129ff3738046a44a6db533d2ce25af2b" },
+    "libxml2": { "url": "https://github.com/GNOME/libxml2.git", "commit": "c94eb0210183b9d7cb43f8e7fddc6be55843ef49" },
+    "fontconfig": { "url": "https://github.com/fontconfig/fontconfig.git", "commit": "6d0a98982ec351c165c9224c8b7dbdfca3010e47" },
+    "shaderc": { "url": "https://github.com/google/shaderc.git", "commit": "c4b0af6c3664cd8b33ffddf452514e02a173b4d6" },
+    "shaderc/third_party/glslang": { "url": "https://github.com/KhronosGroup/glslang.git", "commit": "7a47e2531cb334982b2a2dd8513dca0a3de4373d" },
+    "shaderc/third_party/spirv-headers": { "url": "https://github.com/KhronosGroup/SPIRV-Headers.git", "commit": "b824a462d4256d720bebb40e78b9eb8f78bbb305" },
+    "shaderc/third_party/spirv-tools": { "url": "https://github.com/KhronosGroup/SPIRV-Tools.git", "commit": "262bdab48146c937467f826699a40da0fdfc0f1a" }
+  },
+  "lua": { "url": "https://www.lua.org/ftp/lua-5.2.4.tar.gz", "sha256": "b9e2e4aad6789b3b63a056d442f7b39f0ecfca3ae0f1fc0ae4e9614401b69f4b" },
+  "vulkanHeadersCommit": "74d8a6cb930c68ef617b202c3ff3c59d919e086b",
+  "features": { "vulkan": true, "androidvk": true, "opengl": true, "shaderc": true, "gpuNext": true, "mediacodec": true, "libass": true, "screenshot": true, "checkedJni": true, "loadHook": true }
+}

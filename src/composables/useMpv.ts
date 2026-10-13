@@ -1,7 +1,11 @@
+import type { MpvColorDiagnostics, VideoDynamicRangeState } from '@/services/videoColor'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { computed, onUnmounted, ref } from 'vue'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import { describeVideoSourceColor, describeVideoTargetColor, normalizeDolbyVisionProfile, normalizeVideoColorMetadata } from '@/services/videoColor'
+
+export type { MpvColorDiagnostics, VideoDynamicRangeState } from '@/services/videoColor'
 
 export interface Track {
   id: number
@@ -123,12 +127,8 @@ export interface MpvPlaybackDiagnostics {
   playbackTransport: string
   fsrStatus?: string
   fsrReason?: string | null
+  color?: MpvColorDiagnostics | null
   logs: string[]
-}
-
-export interface VideoDynamicRangeState {
-  label: string
-  details: string
 }
 
 export interface RenderSurfaceBounds {
@@ -161,11 +161,6 @@ const FIT_PROPERTY_VALUE: Record<VideoFitMode, string> = {
   fit: '0',
   crop: '1',
   cinemaCrop: '0.5',
-}
-
-const DEFAULT_DYNAMIC_RANGE: VideoDynamicRangeState = {
-  label: 'SDR',
-  details: '标准动态范围',
 }
 
 function normalizePlaybackSpeed(speed: number): number {
@@ -300,7 +295,8 @@ export function useMpv() {
   const bufferSpeedBytesPerSecond = ref(0)
   const orientationSupported = ref(false)
   const orientationMode = ref<MpvOrientationMode>('auto')
-  const videoDynamicRange = ref<VideoDynamicRangeState>(DEFAULT_DYNAMIC_RANGE)
+  const videoDynamicRange = ref<VideoDynamicRangeState>(describeVideoSourceColor(null))
+  const videoTargetDynamicRange = computed(() => describeVideoTargetColor(playbackDiagnostics.value?.color))
   const trackError = ref<string | null>(null)
   let renderDiagnosticsTimer: number | undefined
   let bufferPollingTimer: number | undefined
@@ -313,6 +309,13 @@ export function useMpv() {
   let subtitleDelayGeneration = 0
   let loadedExternalSubtitleSequence = 0
   let trackRefreshScheduledForCurrentMedia = false
+  let playbackGeneration = 0
+  let videoColorGeneration = 0
+  let playbackActive = false
+  let mediaLoadPending = false
+  let disposed = false
+  let diagnosticsRefreshPromise: Promise<void> | null = null
+  let playbackTransitionPromise = Promise.resolve()
 
   const unlistenPromises = [
     listen<{ time: number }>('mpv:time-update', (event) => {
@@ -332,9 +335,15 @@ export function useMpv() {
       isPlaying.value = true
     }),
     listen('mpv:video-ready', () => {
+      if (disposed || !playbackActive)
+        return
       videoReady.value = true
+      resetVideoColorState()
+      void refreshPlaybackDiagnostics()
     }),
     listen('mpv:file-loaded', () => {
+      if (disposed || !playbackActive)
+        return
       fileLoaded.value = true
     }),
   ]
@@ -374,21 +383,59 @@ export function useMpv() {
   }
 
   async function refreshPlaybackDiagnostics() {
+    if (disposed)
+      return
+    if (diagnosticsRefreshPromise)
+      return diagnosticsRefreshPromise
+
+    const generation = playbackGeneration
+    const colorGeneration = videoColorGeneration
+    const refresh = readPlaybackDiagnostics(generation, colorGeneration)
+    diagnosticsRefreshPromise = refresh
+    try {
+      await refresh
+    }
+    finally {
+      if (diagnosticsRefreshPromise === refresh)
+        diagnosticsRefreshPromise = null
+    }
+  }
+
+  async function readPlaybackDiagnostics(generation: number, colorGeneration: number) {
     try {
       const diagnostics = await invoke<MpvPlaybackDiagnostics>('mpv_playback_diagnostics')
-      playbackDiagnostics.value = diagnostics
-      if (diagnostics.state !== 'desktop')
+      if (disposed || generation !== playbackGeneration)
+        return
+
+      const currentColor = playbackActive && !mediaLoadPending && diagnostics.fileLoaded && diagnostics.voConfigured && colorGeneration === videoColorGeneration
+      playbackDiagnostics.value = { ...diagnostics, color: currentColor ? diagnostics.color : null }
+      if (currentColor) {
+        if (diagnostics.color === undefined)
+          await refreshSourceColorFromProperties(generation, colorGeneration)
+        else
+          videoDynamicRange.value = describeVideoSourceColor(diagnostics.color)
+      }
+      else {
+        videoDynamicRange.value = describeVideoSourceColor(null)
+      }
+      if (disposed || generation !== playbackGeneration)
+        return
+      if (playbackActive && !mediaLoadPending && diagnostics.state !== 'desktop')
         fileLoaded.value = diagnostics.fileLoaded
-      if (diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
+      if (playbackActive && !mediaLoadPending && diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
         videoReady.value = true
-      if (diagnostics.state === 'error' || diagnostics.state === 'ended') {
+      if (!mediaLoadPending && (diagnostics.state === 'error' || diagnostics.state === 'ended' || diagnostics.state === 'idle')) {
         isPlaying.value = false
+        resetVideoColorState()
         if (diagnostics.state === 'error')
           videoReady.value = false
       }
     }
     catch {
-      playbackDiagnostics.value = null
+      if (!disposed && generation === playbackGeneration) {
+        playbackDiagnostics.value = null
+        resetVideoColorState()
+      }
     }
   }
 
@@ -449,11 +496,16 @@ export function useMpv() {
   }
 
   async function refreshTrackState() {
+    const generation = playbackGeneration
     try {
       const state = await invoke<MpvTrackState>('mpv_track_state')
+      if (disposed || generation !== playbackGeneration)
+        return
       applyTrackState(state)
     }
     catch (error: unknown) {
+      if (disposed || generation !== playbackGeneration)
+        return
       trackError.value = safeErrorMessage(error, '轨道信息暂不可用')
       trackStateReady.value = false
       embeddedSubtitleTracks.value = []
@@ -503,10 +555,13 @@ export function useMpv() {
   }
 
   function scheduleTrackRefresh(delay: number) {
+    const generation = playbackGeneration
     const timer = window.setTimeout(() => {
       trackRefreshTimers.delete(timer)
+      if (disposed || !playbackActive || generation !== playbackGeneration)
+        return
       void refreshTrackState()
-      void refreshVideoDynamicRange()
+      void refreshPlaybackDiagnostics()
     }, delay)
     trackRefreshTimers.add(timer)
   }
@@ -592,56 +647,48 @@ export function useMpv() {
     resetBufferingState()
   }
 
-  function cleanVideoMetadataValue(value: string): string {
-    return value.trim().replace(/^unknown$/i, '')
+  function resetVideoColorState() {
+    videoColorGeneration += 1
+    videoDynamicRange.value = describeVideoSourceColor(null)
+    if (playbackDiagnostics.value)
+      playbackDiagnostics.value = { ...playbackDiagnostics.value, color: null }
   }
 
-  async function refreshVideoDynamicRange() {
-    const [gamma, primaries, sigPeak, maxClL, doviProfile, doviProfileAlt] = await Promise.all([
+  function clearTrackRefreshTimers() {
+    for (const timer of trackRefreshTimers)
+      window.clearTimeout(timer)
+    trackRefreshTimers.clear()
+  }
+
+  function isCurrentPlaybackGeneration(generation: number): boolean {
+    return !disposed && generation === playbackGeneration
+  }
+
+  function queuePlaybackTransition(operation: () => Promise<void>): Promise<void> {
+    // Native load can await proxy/surface preparation. Keep a newer load or stop behind
+    // that call so a cancelled request cannot finish after its replacement or stop.
+    const transition = playbackTransitionPromise.then(operation, operation)
+    playbackTransitionPromise = transition.catch(() => undefined)
+    return transition
+  }
+
+  async function refreshSourceColorFromProperties(generation: number, colorGeneration: number) {
+    const [gamma, primaries, pixelFormat, hardwarePixelFormat, doviProfile] = await Promise.all([
       readMpvProperty('video-params/gamma'),
       readMpvProperty('video-params/primaries'),
-      readMpvProperty('video-params/sig-peak'),
-      readMpvProperty('video-params/max-cll'),
-      readMpvProperty('video-params/dolby-vision-profile'),
-      readMpvProperty('current-tracks/video/demux-dovi-profile'),
+      readMpvProperty('video-params/pixelformat'),
+      readMpvProperty('video-params/hw-pixelformat'),
+      readMpvProperty('current-tracks/video/dolby-vision-profile'),
     ])
-    const normalizedGamma = cleanVideoMetadataValue(gamma).toLowerCase()
-    const normalizedPrimaries = cleanVideoMetadataValue(primaries)
-    const normalizedSigPeak = cleanVideoMetadataValue(sigPeak)
-    const normalizedMaxClL = cleanVideoMetadataValue(maxClL)
-    const normalizedDoviProfile = cleanVideoMetadataValue(doviProfile || doviProfileAlt)
-    const detailParts = [
-      normalizedGamma ? `gamma ${normalizedGamma}` : null,
-      normalizedPrimaries ? `primaries ${normalizedPrimaries}` : null,
-      normalizedSigPeak ? `peak ${normalizedSigPeak}` : null,
-      normalizedMaxClL ? `max-cll ${normalizedMaxClL}` : null,
-      normalizedDoviProfile ? `profile ${normalizedDoviProfile}` : null,
-    ].filter((part): part is string => Boolean(part))
-
-    if (normalizedDoviProfile) {
-      videoDynamicRange.value = { label: 'Dolby Vision', details: detailParts.join(' · ') || '杜比视界' }
+    if (disposed || !playbackActive || mediaLoadPending || generation !== playbackGeneration || colorGeneration !== videoColorGeneration)
       return
-    }
-
-    if (normalizedGamma === 'pq') {
-      videoDynamicRange.value = { label: 'HDR10 / PQ', details: detailParts.join(' · ') || 'HDR PQ' }
-      return
-    }
-
-    if (normalizedGamma === 'hlg') {
-      videoDynamicRange.value = { label: 'HLG HDR', details: detailParts.join(' · ') || 'HLG HDR' }
-      return
-    }
-
-    if (normalizedPrimaries.toLowerCase() === 'bt.2020' || normalizedSigPeak || normalizedMaxClL) {
-      videoDynamicRange.value = { label: 'HDR', details: detailParts.join(' · ') || '高动态范围' }
-      return
-    }
-
-    videoDynamicRange.value = {
-      label: 'SDR',
-      details: detailParts.join(' · ') || '标准动态范围',
-    }
+    videoDynamicRange.value = describeVideoSourceColor({
+      sourceGamma: normalizeVideoColorMetadata(gamma),
+      sourcePrimaries: normalizeVideoColorMetadata(primaries),
+      sourcePixelFormat: normalizeVideoColorMetadata(pixelFormat),
+      sourceHardwarePixelFormat: normalizeVideoColorMetadata(hardwarePixelFormat),
+      dolbyVisionProfile: normalizeDolbyVisionProfile(doviProfile),
+    })
   }
 
   function setKnownSubtitleTracks(tracks: readonly KnownSubtitleTrackInput[]) {
@@ -653,6 +700,12 @@ export function useMpv() {
   }
 
   async function load(path: string, options: MpvLoadOptions = {}) {
+    const generation = ++playbackGeneration
+    playbackActive = true
+    mediaLoadPending = true
+    clearTrackRefreshTimers()
+    resetVideoColorState()
+    playbackDiagnostics.value = null
     stopBufferingPolling()
     subtitleDelayGeneration += 1
     selectedKnownSubtitle.value = null
@@ -664,41 +717,76 @@ export function useMpv() {
     videoReady.value = false
     fileLoaded.value = false
     playbackSpeed.value = DEFAULT_PLAYBACK_SPEED
-    videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
     videoBrightness.value = 50
     subtitleDelay.value = DEFAULT_SUBTITLE_DELAY
     videoAspectMode.value = 'default'
     videoFitMode.value = 'fit'
-    await subtitleDelayCommand.catch(() => undefined)
-    await applyEngineSettings()
-    await invoke<void>('mpv_load', {
-      path,
-      headers: toMpvHeaderPayload(options.headers),
-      audioPath: options.audioUrl,
-      audioHeaders: toMpvHeaderPayload(options.audioHeaders),
-      title: options.title,
-    })
-    startBufferingPolling()
-    try {
-      await invoke<void>('mpv_resume')
-      if (renderBackend.value === 'androidSurface')
+    await queuePlaybackTransition(async () => {
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      try {
+        await subtitleDelayCommand.catch(() => undefined)
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await applyEngineSettings()
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await invoke<void>('mpv_load', {
+          path,
+          headers: toMpvHeaderPayload(options.headers),
+          audioPath: options.audioUrl,
+          audioHeaders: toMpvHeaderPayload(options.audioHeaders),
+          title: options.title,
+        })
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        mediaLoadPending = false
+        startBufferingPolling()
+        await invoke<void>('mpv_resume')
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        if (renderBackend.value === 'androidSurface') {
+          await refreshPlaybackDiagnostics()
+          if (!isCurrentPlaybackGeneration(generation))
+            return
+        }
+        await refreshOrientationState()
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await refreshDisplayBrightness()
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        currentTime.value = 0
+        isPlaying.value = true
+        await applyPlaybackSpeed(playbackSpeed.value)
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await invoke<void>('mpv_set_property', { prop: 'brightness', value: '0' })
+        if (!isCurrentPlaybackGeneration(generation))
+          return
         await refreshPlaybackDiagnostics()
-      await refreshOrientationState()
-      await refreshDisplayBrightness()
-      currentTime.value = 0
-      isPlaying.value = true
-      await applyPlaybackSpeed(playbackSpeed.value)
-      await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
-      await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
-      await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
-      await invoke<void>('mpv_set_property', { prop: 'brightness', value: '0' })
-      await refreshVideoDynamicRange()
-      scheduleTrackRefresh(2500)
-    }
-    catch (error) {
-      stopBufferingPolling()
-      throw error
-    }
+        if (isCurrentPlaybackGeneration(generation))
+          scheduleTrackRefresh(2500)
+      }
+      catch (error) {
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        mediaLoadPending = false
+        playbackActive = false
+        resetVideoColorState()
+        stopBufferingPolling()
+        throw error
+      }
+    })
   }
 
   async function togglePause() {
@@ -845,8 +933,16 @@ export function useMpv() {
   }
 
   async function stop() {
+    const generation = ++playbackGeneration
+    playbackActive = false
+    mediaLoadPending = false
+    clearTrackRefreshTimers()
+    resetVideoColorState()
+    playbackDiagnostics.value = null
     stopBufferingPolling()
-    await invoke<void>('mpv_stop')
+    await queuePlaybackTransition(() => invoke<void>('mpv_stop'))
+    if (!isCurrentPlaybackGeneration(generation))
+      return
     isPlaying.value = false
     currentTime.value = 0
     duration.value = 0
@@ -862,13 +958,14 @@ export function useMpv() {
   }
 
   onUnmounted(() => {
+    disposed = true
+    playbackGeneration += 1
+    resetVideoColorState()
     stopBufferingPolling()
     if (renderDiagnosticsTimer)
       window.clearInterval(renderDiagnosticsTimer)
 
-    for (const timer of trackRefreshTimers)
-      window.clearTimeout(timer)
-    trackRefreshTimers.clear()
+    clearTrackRefreshTimers()
 
     for (const promise of unlistenPromises) {
       promise.then(unlisten => unlisten())
@@ -905,6 +1002,7 @@ export function useMpv() {
     orientationSupported,
     orientationMode,
     videoDynamicRange,
+    videoTargetDynamicRange,
     trackError,
     applyEngineSettings,
     refreshPlaybackDiagnostics,

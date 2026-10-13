@@ -29,6 +29,33 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
     private var surfaceView: OhMyCineMpvSurfaceView? = null
     private var surfaceContainer: FrameLayout? = null
+    private var hdrCapabilities: AndroidHdrCapabilities? = null
+    @Volatile
+    private var sourceMetadataReady = false
+    @Volatile
+    private var activeGpuContext = "android"
+    @Volatile
+    private var rendererFallbackReason: String? = null
+    @Volatile
+    private var vulkanFallbackUsed = false
+    @Volatile
+    private var legacyFallbackUsed = false
+    @Volatile
+    private var rendererTransitionPending = false
+    @Volatile
+    private var hdrHintRequested = false
+    @Volatile
+    private var playbackGeneration = 0L
+    @Volatile
+    private var loadPrepared = false
+    @Volatile
+    private var waitingForStartFile = false
+    @Volatile
+    private var rendererNeedsConfiguration = false
+    private var managedFsrAttached = false
+    private var managedFsrOptions: String? = null
+    @Volatile
+    private var fsrFailedForPlayback = false
     @Volatile
     private var pendingLoad: PendingLoad? = null
     @Volatile
@@ -106,6 +133,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 parent.addView(container, index, layoutParams)
                 surfaceContainer = container
                 surfaceView = surface
+                hdrCapabilities = AndroidHdrCapabilities(activity) { refreshColorPolicy() }
                 surface.initialize()
                 initializationError = null
             } catch (error: Exception) {
@@ -115,6 +143,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     fun destroy() {
+        playbackGeneration += 1
+        hdrCapabilities?.close()
+        hdrCapabilities = null
         surfaceView?.destroy()
         surfaceView = null
         surfaceContainer = null
@@ -142,6 +173,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         fsrShaderFile = null
         fsrStatus = "not-configured"
         fsrReason = null
+        resetColorSession()
         surfaceWidth = 0
         surfaceHeight = 0
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
@@ -168,11 +200,19 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         lastPlaybackError = null
         fileLoaded = false
         stopRequested = false
-        if (activeVideoOutput != preferredVideoOutput) {
-            MPVLib.setPropertyString("vo", preferredVideoOutput)
-            activeVideoOutput = preferredVideoOutput
-        }
-        videoOutputFallbackUsed = false
+        playbackGeneration += 1
+        resetColorSession()
+        loadPrepared = true
+        waitingForStartFile = true
+        check(clearManagedFsrShader(true)) { "无法移除旧的 FSR 配置。" }
+        fsrStatus = if (fsrMode == "off") "disabled" else "bypassed"
+        fsrReason = if (fsrMode == "off") null else "等待确认 SDR 片源；HDR 与杜比视界不使用当前 FSR。"
+        val context = if (preferredVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
+            && hdrCapabilities?.canTryVulkan() == true) "androidvk" else "android"
+        // Unknown/Dolby sources retain gpu-next even when the saved legacy preference is gpu.
+        runCatching { configureRenderer(context, PRIMARY_ANDROID_VIDEO_OUTPUT) }
+            .onFailure { recoverRendererFailure(context) }
+        check(playbackState != "error") { lastPlaybackError ?: "Android 渲染配置失败。" }
         playbackTransport = if (request.path.startsWith("http://127.0.0.1:")) "rust-loopback" else "direct"
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
         val headers = request.headers
@@ -192,7 +232,6 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         require(settings.demuxerMaxBytesMb == 64 || settings.demuxerMaxBytesMb == 128 || settings.demuxerMaxBytesMb == 256 || settings.demuxerMaxBytesMb == 512)
         require(settings.videoSync == "audio" || settings.videoSync == "display-resample" || settings.videoSync == "display-vdrop")
         preferredVideoOutput = settings.videoOutput
-        activeVideoOutput = settings.videoOutput
         hardwareDecoder = when (settings.hardwareDecoder) {
             "auto" -> "mediacodec-copy,mediacodec"
             "software" -> "no"
@@ -211,15 +250,12 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         fsrTarget = settings.fsrTarget.takeIf {
             it == "auto" || it == "1080p" || it == "1440p" || it == "2160p"
         } ?: "auto"
-        videoOutputFallbackUsed = false
-
         if (initialized) {
-            MPVLib.setPropertyString("vo", activeVideoOutput)
-            MPVLib.setPropertyString("hwdec", hardwareDecoder)
+            MPVLib.setPropertyString("hwdec", effectiveHardwareDecoder())
             MPVLib.setPropertyString("cache", cacheMode)
             MPVLib.setPropertyString("demuxer-max-bytes", demuxerMaxBytes.toString())
             MPVLib.setPropertyString("video-sync", videoSync)
-            applyManagedFsrShader()
+            refreshColorPolicy()
         }
     }
 
@@ -234,7 +270,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     fun stop() {
+        playbackGeneration += 1
         pendingLoad = null
+        loadPrepared = false
+        waitingForStartFile = false
         if (initialized) {
             stopRequested = true
             MPVLib.command(arrayOf("stop"))
@@ -242,6 +281,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             lastPlaybackEvent = "stopped"
             fileLoaded = false
         }
+        resetColorSession()
+        clearManagedFsrShader()
+        fsrStatus = if (fsrMode == "off") "disabled" else "bypassed"
+        fsrReason = null
     }
 
     fun seek(position: Double) {
@@ -328,6 +371,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             playbackTransport = playbackTransport,
             fsrStatus = fsrStatus,
             fsrReason = fsrReason,
+            color = colorDiagnostics(),
             logs = logs,
         )
     }
@@ -337,39 +381,86 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     override fun eventProperty(property: String, value: Long) = Unit
 
     override fun eventProperty(property: String, value: Boolean) {
-        if (property == "vo-configured" && value)
+        if (property == "vo-configured" && value) {
             lastPlaybackEvent = "video-output-ready"
+            refreshColorPolicy()
+        }
     }
 
     override fun eventProperty(property: String, value: String) {
         when (property) {
             "video-format" -> if (value.isNotBlank()) lastPlaybackEvent = "video-format-ready"
             "audio-codec-name" -> if (value.isNotBlank()) lastPlaybackEvent = "audio-format-ready"
+            "video-params/gamma", "current-tracks/video/dolby-vision-profile" -> {
+                if (sourceMetadataReady) refreshColorPolicy()
+            }
         }
     }
 
     override fun eventProperty(property: String, value: Double) = Unit
 
+    override fun eventHook(id: Long) {
+        try {
+            if (!loadPrepared) {
+                playbackGeneration += 1
+                resetColorSession()
+            }
+            loadPrepared = false
+            sourceMetadataReady = false
+            fileLoaded = false
+            if (activeVideoOutput == FALLBACK_ANDROID_VIDEO_OUTPUT)
+                configureRenderer("android", PRIMARY_ANDROID_VIDEO_OUTPUT)
+            // The native hook waits for this callback, then continues exactly once.
+            check(clearManagedFsrShader(true))
+            fsrStatus = if (fsrMode == "off") "disabled" else "bypassed"
+            fsrReason = if (fsrMode == "off") null else "等待确认当前片源的色彩信息。"
+        } catch (_: Throwable) {
+            failRenderer("播放前无法清除旧的画面处理配置。")
+        }
+    }
+
     override fun event(eventId: Int) {
         when (eventId) {
             MPVLib.MpvEvent.START_FILE -> {
+                waitingForStartFile = false
                 stopRequested = false
                 playbackState = "loading"
                 lastPlaybackEvent = "start-file"
                 lastPlaybackError = null
                 fileLoaded = false
+                sourceMetadataReady = false
+                hdrHintRequested = false
+                clearManagedFsrShader()
+                fsrStatus = if (fsrMode == "off") "disabled" else "bypassed"
+                fsrReason = if (fsrMode == "off") null else "等待确认当前片源的色彩信息。"
             }
             MPVLib.MpvEvent.FILE_LOADED -> {
+                if (waitingForStartFile)
+                    return
                 playbackState = "playing"
                 lastPlaybackEvent = "file-loaded"
                 lastPlaybackError = null
                 fileLoaded = true
+                // VIDEO_RECONFIG supplies current decoded-frame metadata; old VO metadata
+                // can still be unavailable or stale while FILE_LOADED is being delivered.
+                sourceMetadataReady = false
+                refreshColorPolicy()
             }
-            MPVLib.MpvEvent.VIDEO_RECONFIG -> lastPlaybackEvent = "video-reconfig"
+            MPVLib.MpvEvent.VIDEO_RECONFIG -> {
+                lastPlaybackEvent = "video-reconfig"
+                if (fileLoaded && !waitingForStartFile && hasActivePlayback()) {
+                    sourceMetadataReady = true
+                    refreshColorPolicy()
+                }
+            }
             MPVLib.MpvEvent.AUDIO_RECONFIG -> lastPlaybackEvent = "audio-reconfig"
             MPVLib.MpvEvent.PLAYBACK_RESTART -> {
-                playbackState = "playing"
-                lastPlaybackEvent = "playback-restart"
+                if (fileLoaded && !waitingForStartFile && playbackState != "error") {
+                    playbackState = "playing"
+                    lastPlaybackEvent = "playback-restart"
+                    sourceMetadataReady = true
+                    refreshColorPolicy()
+                }
             }
             MPVLib.MpvEvent.END_FILE -> {
                 if (stopRequested) {
@@ -383,11 +474,16 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                     playbackState = "error"
                     lastPlaybackEvent = "end-file-error"
                     lastPlaybackError = error?.takeUnless { it == "success" }
-                        ?: "媒体文件未能完成加载，请打开播放诊断查看原因。"
+                        ?: lastPlaybackError ?: "媒体文件未能完成加载，请打开播放诊断查看原因。"
                 } else {
                     playbackState = "ended"
                     lastPlaybackEvent = "end-file"
                 }
+                fileLoaded = false
+                waitingForStartFile = false
+                loadPrepared = false
+                resetColorSession()
+                clearManagedFsrShader()
             }
         }
     }
@@ -406,11 +502,226 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         if (shouldFallbackFsr(level, line))
             recordFsrFallback("FSR Shader 编译失败，已恢复普通缩放。")
         if (shouldFallbackVideoOutput(level, line)) {
-            activeVideoOutput = FALLBACK_ANDROID_VIDEO_OUTPUT
-            videoOutputFallbackUsed = true
-            lastPlaybackEvent = "video-output-fallback"
-            MPVLib.setPropertyString("vo", FALLBACK_ANDROID_VIDEO_OUTPUT)
+            if (activeGpuContext == "androidvk" && !vulkanFallbackUsed) {
+                vulkanFallbackUsed = true
+                rendererFallbackReason = "Vulkan 渲染或 HDR Surface 协商失败，已改用 GLES 的 SDR 映射。"
+                requestRendererTransition("android", PRIMARY_ANDROID_VIDEO_OUTPUT)
+            } else if (!legacyFallbackUsed && confirmedSdrSource()) {
+                legacyFallbackUsed = true
+                rendererFallbackReason = "gpu-next 初始化失败；已确认 SDR 片源，改用兼容 GPU 渲染。"
+                requestRendererTransition("android", FALLBACK_ANDROID_VIDEO_OUTPUT)
+            } else {
+                failRenderer("gpu-next 渲染失败；当前片源无法安全切换到兼容 GPU 渲染。")
+            }
         }
+    }
+
+    private fun resetColorSession() {
+        sourceMetadataReady = false
+        rendererFallbackReason = null
+        vulkanFallbackUsed = false
+        legacyFallbackUsed = false
+        rendererTransitionPending = false
+        hdrHintRequested = false
+        fsrFailedForPlayback = false
+        videoOutputFallbackUsed = false
+        if (initialized)
+            runCatching { setRenderProperty("target-colorspace-hint", "no") }
+                .onFailure { rendererNeedsConfiguration = true }
+        hdrCapabilities?.requestWindowHdr(false)
+    }
+
+    private fun sourceGamma(): String? = if (sourceMetadataReady)
+        MpvColorPolicy.metadata(safePropertyString("video-params/gamma")) else null
+
+    private fun sourceDolbyProfile(): Int? = if (sourceMetadataReady)
+        MpvColorPolicy.dolbyProfile(safePropertyString("current-tracks/video/dolby-vision-profile")) else null
+
+    private fun confirmedSdrSource(): Boolean = sourceMetadataReady
+        && MpvColorPolicy.confirmedSdr(sourceGamma(), sourceDolbyProfile())
+
+    private fun effectiveHardwareDecoder(): String =
+        if (activeGpuContext == "androidvk" && hardwareDecoder != "no") "mediacodec-copy" else hardwareDecoder
+
+    private fun setRenderProperty(name: String, value: String) {
+        check(MPVLib.setPropertyStringChecked(name, value) >= 0) { "原生渲染配置被拒绝：$name" }
+    }
+
+    private fun configureRenderer(context: String, videoOutput: String) {
+        if (!initialized)
+            return
+        if (rendererNeedsConfiguration || activeGpuContext != context || activeVideoOutput != videoOutput) {
+            rendererNeedsConfiguration = true
+            setRenderProperty("vo", "null")
+            setRenderProperty("gpu-api", if (context == "androidvk") "vulkan" else "opengl")
+            setRenderProperty("gpu-context", context)
+            setRenderProperty("hwdec", if (context == "androidvk" && hardwareDecoder != "no") "mediacodec-copy" else hardwareDecoder)
+            setRenderProperty("target-colorspace-hint", "no")
+            setRenderProperty("target-trc", "auto")
+            setRenderProperty("target-prim", "auto")
+            if (surfaceAttached)
+                setRenderProperty("vo", videoOutput)
+            activeGpuContext = context
+            activeVideoOutput = videoOutput
+            rendererNeedsConfiguration = !surfaceAttached
+        }
+    }
+
+    private fun failRenderer(reason: String) {
+        playbackState = "error"
+        lastPlaybackEvent = "render-error"
+        lastPlaybackError = reason
+        pendingLoad = null
+        fileLoaded = false
+        sourceMetadataReady = false
+        hdrHintRequested = false
+        rendererNeedsConfiguration = true
+        managedFsrAttached = false
+        managedFsrOptions = null
+        hdrCapabilities?.requestWindowHdr(false)
+        if (initialized) {
+            runCatching { MPVLib.setPropertyStringChecked("vo", "null") }
+            runCatching { MPVLib.stopAsync() }
+        }
+    }
+
+    private fun recoverRendererFailure(context: String) {
+        if (context == "androidvk" && !vulkanFallbackUsed) {
+            vulkanFallbackUsed = true
+            videoOutputFallbackUsed = true
+            rendererFallbackReason = "Vulkan 初始化被拒绝，已改用 GLES 的 SDR 映射。"
+            runCatching { configureRenderer("android", PRIMARY_ANDROID_VIDEO_OUTPUT) }
+                .onFailure { failRenderer("GLES 兼容渲染初始化失败。") }
+        } else if (confirmedSdrSource() && !legacyFallbackUsed) {
+            legacyFallbackUsed = true
+            videoOutputFallbackUsed = true
+            rendererFallbackReason = "已确认 SDR 片源，改用兼容 GPU 渲染。"
+            runCatching { configureRenderer("android", FALLBACK_ANDROID_VIDEO_OUTPUT) }
+                .onFailure { failRenderer("兼容 GPU 渲染初始化失败。") }
+        } else {
+            failRenderer("渲染初始化失败；当前片源无法安全切换到兼容 GPU 渲染。")
+        }
+    }
+
+    private fun requestRendererTransition(context: String, videoOutput: String, fallback: Boolean = true) {
+        if (rendererTransitionPending || !hasActivePlayback())
+            return
+        val surface = surfaceView ?: return
+        rendererTransitionPending = true
+        val generation = playbackGeneration
+        surface.post {
+            synchronized(this) {
+                if (generation != playbackGeneration || !initialized || !hasActivePlayback())
+                    return@synchronized
+                if (fallback)
+                    videoOutputFallbackUsed = true
+                hdrHintRequested = false
+                hdrCapabilities?.requestWindowHdr(false)
+                if (!clearManagedFsrShader()) {
+                    rendererTransitionPending = false
+                    return@synchronized
+                }
+                runCatching { configureRenderer(context, videoOutput) }
+                    .onFailure { recoverRendererFailure(context) }
+                rendererTransitionPending = false
+                if (playbackState != "error") {
+                    lastPlaybackEvent = if (fallback) "video-output-fallback" else "video-output-selected"
+                    refreshColorPolicy()
+                }
+            }
+        }
+    }
+
+    private fun refreshColorPolicy() {
+        if (!initialized || rendererTransitionPending || playbackState == "error")
+            return
+        val gamma = sourceGamma()
+        val sdr = confirmedSdrSource()
+        if (sourceMetadataReady && activeVideoOutput == FALLBACK_ANDROID_VIDEO_OUTPUT && !sdr) {
+            // Re-identification or stream changes may invalidate an earlier SDR decision.
+            requestRendererTransition("android", PRIMARY_ANDROID_VIDEO_OUTPUT, false)
+            return
+        }
+        val canUseHdr = sourceMetadataReady && hdrCapabilities?.canTryVulkan() == true
+            && hdrCapabilities?.supports(gamma) == true && !vulkanFallbackUsed
+            && preferredVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
+        if (canUseHdr && activeGpuContext != "androidvk") {
+            requestRendererTransition("androidvk", PRIMARY_ANDROID_VIDEO_OUTPUT, false)
+            return
+        }
+        if (sourceMetadataReady && MpvColorPolicy.hdrTransfer(gamma)
+            && activeGpuContext == "androidvk" && !canUseHdr) {
+            requestRendererTransition("android", PRIMARY_ANDROID_VIDEO_OUTPUT, false)
+            return
+        }
+        val requestHdr = sourceMetadataReady && activeGpuContext == "androidvk"
+            && activeVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT && !vulkanFallbackUsed
+            && hdrCapabilities?.supports(gamma) == true
+        if (requestHdr != hdrHintRequested) {
+            hdrHintRequested = requestHdr
+            hdrCapabilities?.requestWindowHdr(requestHdr)
+            runCatching {
+                setRenderProperty("target-colorspace-hint-mode", "source")
+                setRenderProperty("target-colorspace-hint-strict", "yes")
+                setRenderProperty("target-trc", "auto")
+                setRenderProperty("target-prim", "auto")
+                setRenderProperty("target-colorspace-hint", if (requestHdr) "yes" else "no")
+            }.onFailure {
+                vulkanFallbackUsed = true
+                rendererFallbackReason = "HDR 色彩协商不可用，已改用 GLES 的 SDR 映射。"
+                requestRendererTransition("android", PRIMARY_ANDROID_VIDEO_OUTPUT)
+            }
+        }
+        if (sourceMetadataReady && sdr && !legacyFallbackUsed
+            && preferredVideoOutput == FALLBACK_ANDROID_VIDEO_OUTPUT && activeVideoOutput != FALLBACK_ANDROID_VIDEO_OUTPUT) {
+            requestRendererTransition("android", FALLBACK_ANDROID_VIDEO_OUTPUT, false)
+            return
+        }
+        if (sdr && activeGpuContext == "androidvk") {
+            // Ordinary SDR retains the cheaper zero-copy GLES path after source identification.
+            requestRendererTransition("android", activeVideoOutput, false)
+            return
+        }
+        applyManagedFsrShader()
+    }
+
+    private fun colorDiagnostics(): MpvColorDiagnostics {
+        fun metadata(name: String): String? = MpvColorPolicy.metadata(safePropertyString(name))
+        val targetReady = hasActivePlayback() && sourceMetadataReady && surfaceAttached && !rendererTransitionPending
+            && safePropertyBoolean("vo-configured") == true
+        val gamma = if (targetReady) metadata("video-target-params/gamma") else null
+        val transfer = MpvColorPolicy.transfer(gamma)
+        val outputMode = when {
+            !targetReady || transfer == null -> "unknown"
+            MpvColorPolicy.hdrTransfer(gamma) -> if (activeGpuContext == "androidvk"
+                && hdrCapabilities?.supports(gamma) == true) "hdr" else "unknown"
+            MpvColorPolicy.confirmedSdr(gamma, null) -> "sdr"
+            else -> "unknown"
+        }
+        val reason = rendererFallbackReason ?: when {
+            !hasActivePlayback() -> null
+            activeGpuContext == "androidvk" && outputMode == "hdr" ->
+                "已观察到 Vulkan HDR 渲染目标；使用 MediaCodec copy 或软件解码，屏幕实际 HDR 呈现仍需设备验证。"
+            activeGpuContext == "androidvk" ->
+                "Vulkan 使用 MediaCodec copy 或软件解码；当前尚未确认 HDR 渲染目标。"
+            MpvColorPolicy.hdrTransfer(sourceGamma()) ->
+                "当前使用 GLES SDR 映射；未启用原生 HDR 或杜比视界显示模式。"
+            else -> null
+        }
+        return MpvColorDiagnostics(
+            sourceGamma = sourceGamma(),
+            sourcePrimaries = if (sourceMetadataReady) metadata("video-params/primaries") else null,
+            sourcePixelFormat = if (sourceMetadataReady) metadata("video-params/pixelformat") else null,
+            sourceHardwarePixelFormat = if (sourceMetadataReady) metadata("video-params/hw-pixelformat") else null,
+            dolbyVisionProfile = sourceDolbyProfile(),
+            targetGamma = gamma,
+            targetPrimaries = if (targetReady) metadata("video-target-params/primaries") else null,
+            targetPixelFormat = if (targetReady) metadata("video-target-params/pixelformat") else null,
+            outputMode = outputMode,
+            gpuContext = if (targetReady) activeGpuContext else null,
+            displayHdrTypes = hdrCapabilities?.hdrTypes(),
+            reason = reason,
+        )
     }
 
     private fun safePropertyString(name: String): String? {
@@ -426,21 +737,39 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         if (!initialized)
             return
         if (fsrMode == "off") {
-            clearManagedFsrShader()
+            if (!clearManagedFsrShader())
+                return
             fsrStatus = "disabled"
             fsrReason = null
             return
         }
+        if (!confirmedSdrSource()) {
+            if (!clearManagedFsrShader())
+                return
+            fsrStatus = "bypassed"
+            fsrReason = if (!sourceMetadataReady || sourceGamma() == null)
+                "片源色彩信息尚未确认；当前 FSR 仅适用于 SDR。"
+            else "HDR 与杜比视界使用原生色彩映射，不启用当前 FSR。"
+            return
+        }
+        if (fsrFailedForPlayback)
+            return
         val shader = fsrShaderFile
         if (shader == null || !shader.isFile) {
             recordFsrFallback("应用内置 FSR Shader 文件不可用。")
             return
         }
 
+        val options = fsrShaderOptions()
         runCatching {
-            clearManagedFsrShader()
-            MPVLib.setPropertyString("glsl-shader-opts", fsrShaderOptions())
-            MPVLib.command(arrayOf("change-list", "glsl-shaders", "append", shader.absolutePath))
+            if (managedFsrOptions != options) {
+                setRenderProperty("glsl-shader-opts", options)
+                managedFsrOptions = options
+            }
+            if (!managedFsrAttached) {
+                check(MPVLib.commandChecked(arrayOf("change-list", "glsl-shaders", "append", shader.absolutePath)) >= 0)
+                managedFsrAttached = true
+            }
         }.onSuccess {
             fsrStatus = if (fsrMode == "force") "armed-force" else "armed-auto"
             fsrReason = "仅在输出尺寸大于源画面时触发。"
@@ -452,7 +781,13 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     private fun refreshFsrTargetParameters() {
         if (!initialized || fsrMode == "off" || !fsrStatus.startsWith("armed"))
             return
-        runCatching { MPVLib.setPropertyString("glsl-shader-opts", fsrShaderOptions()) }
+        val options = fsrShaderOptions()
+        if (managedFsrOptions == options)
+            return
+        runCatching {
+            setRenderProperty("glsl-shader-opts", options)
+            managedFsrOptions = options
+        }
             .onFailure { recordFsrFallback("FSR 目标分辨率更新失败，已恢复普通缩放。") }
     }
 
@@ -481,13 +816,22 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             (surfaceHeight * scale).toInt().coerceAtLeast(1)
     }
 
-    private fun clearManagedFsrShader() {
-        if (initialized)
-            runCatching { MPVLib.command(arrayOf("change-list", "glsl-shaders", "clr", "")) }
+    private fun clearManagedFsrShader(force: Boolean = false): Boolean {
+        if (!initialized || (!force && !managedFsrAttached))
+            return true
+        if (runCatching { MPVLib.setPropertyStringChecked("glsl-shaders", "") }.getOrDefault(-1) < 0) {
+            failRenderer("旧的 FSR 配置无法清除，已停止渲染以保护 HDR 画面。")
+            return false
+        }
+        managedFsrAttached = false
+        managedFsrOptions = null
+        return true
     }
 
     private fun recordFsrFallback(reason: String) {
-        clearManagedFsrShader()
+        fsrFailedForPlayback = true
+        if (!clearManagedFsrShader())
+            return
         fsrStatus = "fallback"
         fsrReason = reason
         lastPlaybackEvent = "fsr-fallback"
@@ -523,15 +867,14 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     private fun shouldFallbackVideoOutput(level: Int, line: String): Boolean {
-        if (level > 20 || playbackState != "loading" || fileLoaded || videoOutputFallbackUsed)
+        if (level > 20 || rendererTransitionPending || !hasActivePlayback())
             return false
         val normalized = line.lowercase()
-        return preferredVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
-            && activeVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
+        return activeVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
             && !normalized.contains("shader")
             && !normalized.contains("glsl")
             && !normalized.contains("hook")
-            && (normalized.contains("gpu") || normalized.contains("vo"))
+            && (normalized.contains("gpu") || normalized.contains("vo") || normalized.contains("vulkan") || normalized.contains("swapchain"))
             && (normalized.contains("fail") || normalized.contains("error") || normalized.contains("not supported"))
     }
 
@@ -554,6 +897,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
         fun initialize() {
             if (!initialized) {
+                check(hdrCapabilities?.runtimeCompatible == true) { "Android 播放运行时缺少色彩处理屏障，请重新打包应用。" }
                 val caFile = installCaCertificate(context)
                 fsrShaderFile = runCatching { installFsrShader(context) }
                     .onFailure {
@@ -565,7 +909,12 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 MpvSurfaceHost.registerMpvObservers()
                 MPVLib.setOptionString("config", "no")
                 MPVLib.setOptionString("profile", "fast")
-                MPVLib.setOptionString("vo", preferredVideoOutput)
+                // Keep fast scaling, but restore HDR peak analysis and output dithering.
+                MPVLib.setOptionString("hdr-compute-peak", "auto")
+                MPVLib.setOptionString("dither-depth", "auto")
+                MPVLib.setOptionString("dither", "fruit")
+                MPVLib.setOptionString("vo", PRIMARY_ANDROID_VIDEO_OUTPUT)
+                MPVLib.setOptionString("gpu-api", "opengl")
                 MPVLib.setOptionString("gpu-context", "android")
                 MPVLib.setOptionString("opengl-es", "yes")
                 MPVLib.setOptionString("hwdec", hardwareDecoder)
@@ -581,6 +930,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 MPVLib.setOptionString("demuxer-max-bytes", demuxerMaxBytes.toString())
                 MPVLib.setOptionString("demuxer-max-back-bytes", (32 * 1024 * 1024).toString())
                 MPVLib.setOptionString("video-sync", videoSync)
+                MPVLib.setOptionString("target-colorspace-hint", "no")
+                MPVLib.setOptionString("target-colorspace-hint-mode", "source")
+                MPVLib.setOptionString("target-colorspace-hint-strict", "yes")
                 MPVLib.setOptionString("gpu-shader-cache-dir", context.cacheDir.path)
                 MPVLib.setOptionString("icc-cache-dir", context.cacheDir.path)
                 MPVLib.setOptionString("tls-verify", "yes")
@@ -590,7 +942,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 MPVLib.observeProperty("audio-codec-name", MPVLib.MpvFormat.STRING)
                 MPVLib.observeProperty("vo-configured", MPVLib.MpvFormat.FLAG)
                 MPVLib.observeProperty("hwdec-current", MPVLib.MpvFormat.STRING)
+                MPVLib.observeProperty("video-params/gamma", MPVLib.MpvFormat.STRING)
+                MPVLib.observeProperty("current-tracks/video/dolby-vision-profile", MPVLib.MpvFormat.STRING)
                 initialized = true
+                check(MPVLib.addLoadHook() >= 0) { "播放前画面处理屏障不可用。" }
                 lastPlaybackEvent = "mpv-initialized"
                 applyManagedFsrShader()
             }
@@ -619,10 +974,13 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         override fun surfaceCreated(holder: SurfaceHolder) {
             MPVLib.attachSurface(holder.surface)
             MPVLib.setOptionString("force-window", "yes")
-            MPVLib.setPropertyString("vo", activeVideoOutput)
             surfaceAttached = true
+            rendererNeedsConfiguration = true
+            runCatching { configureRenderer(activeGpuContext, activeVideoOutput) }
+                .onFailure { recoverRendererFailure(activeGpuContext) }
             lastPlaybackEvent = "surface-attached"
             pendingLoad?.let { play(it) }
+            refreshColorPolicy()
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
@@ -630,6 +988,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             surfaceHeight = height.coerceAtLeast(0)
             MPVLib.setPropertyString("android-surface-size", "${width}x$height")
             refreshFsrTargetParameters()
+            refreshColorPolicy()
         }
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -639,7 +998,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             MPVLib.setPropertyString("force-window", "no")
             MPVLib.detachSurface()
             surfaceAttached = false
+            rendererNeedsConfiguration = true
             lastPlaybackEvent = "surface-detached"
+            hdrHintRequested = false
+            clearManagedFsrShader()
         }
     }
 
@@ -709,5 +1071,6 @@ internal data class MpvPlaybackDiagnostics(
     val playbackTransport: String,
     val fsrStatus: String,
     val fsrReason: String?,
+    val color: MpvColorDiagnostics?,
     val logs: List<String>,
 )

@@ -58,6 +58,28 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Restore pinned Android mpv runtime
+        id: android-mpv-runtime
+        uses: actions/cache@v4
+        with:
+          path: .build/android-mpv-runtime/output
+          key: android-mpv-vulkan-arm64-${{ hashFiles('scripts/android-mpv-runtime/sources.json', 'scripts/android-mpv-runtime/build-runtime.py', 'scripts/android-mpv-runtime/shaderc.sh', 'scripts/android-mpv-runtime/Dockerfile') }}
+
+      - name: Build pinned Android mpv runtime on cache miss
+        if: steps.android-mpv-runtime.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .build/android-mpv-runtime
+          docker build -t ohmycine-android-mpv-builder scripts/android-mpv-runtime
+          docker run --rm --cpus=4 --memory=5g \
+            -v "${GITHUB_WORKSPACE}/scripts/android-mpv-runtime:/builder:ro" \
+            -v "${GITHUB_WORKSPACE}/.build/android-mpv-runtime:/work" \
+            ohmycine-android-mpv-builder --work-dir /work --jobs 4
+
+      - name: Import verified Android mpv runtime
+        run: node scripts/setup-libmpv-android.mjs
+
       - name: Build unsigned Android ARM64 debug APK
         run: npm run tauri:build:android:preview
 

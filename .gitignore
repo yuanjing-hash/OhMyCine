@@ -100,6 +100,10 @@ src-tauri/gen/android/app/src/main/cpp/third_party/
 # Build Outputs
 # ====================
 
+.build/
+src-tauri/gen/android/app/src/main/assets/mpv/runtime-manifest.json
+src-tauri/gen/android/app/src/main/assets/mpv/licenses/
+
 # Tauri build
 src-tauri/target/
 

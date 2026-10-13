@@ -19,6 +19,10 @@ object MPVLib {
     external fun attachSurface(surface: Surface)
     external fun detachSurface()
     external fun command(cmd: Array<out String>)
+    external fun commandChecked(cmd: Array<out String>): Int
+    external fun addLoadHook(): Int
+    external fun continueHook(id: Long): Int
+    external fun stopAsync(): Int
     external fun setOptionString(name: String, value: String): Int
     external fun grabThumbnail(dimension: Int): Bitmap?
     external fun getPropertyInt(property: String): Int?
@@ -29,6 +33,7 @@ object MPVLib {
     external fun setPropertyBoolean(property: String, value: Boolean)
     external fun getPropertyString(property: String): String?
     external fun setPropertyString(property: String, value: String)
+    external fun setPropertyStringChecked(property: String, value: String): Int
     external fun observeProperty(property: String, format: Int)
 
     private val observers = mutableListOf<EventObserver>()
@@ -71,6 +76,11 @@ object MPVLib {
     }
 
     @JvmStatic
+    fun eventHook(id: Long) = synchronized(observers) {
+        observers.forEach { it.eventHook(id) }
+    }
+
+    @JvmStatic
     fun addLogObserver(observer: LogObserver) = synchronized(logObservers) { logObservers.add(observer) }
 
     @JvmStatic
@@ -88,6 +98,7 @@ object MPVLib {
         fun eventProperty(property: String, value: String)
         fun eventProperty(property: String, value: Double)
         fun event(eventId: Int)
+        fun eventHook(id: Long) = Unit
     }
 
     interface LogObserver {

@@ -6,6 +6,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import CachedImage from '@/components/media/CachedImage.vue'
 import { redactSensitiveText } from '@/services/datasource/errors'
 import { artworkURLCacheKey } from '@/services/imageCache'
+import { describeVideoSourceColor, describeVideoTargetColor } from '@/services/videoColor'
 
 const props = defineProps<{
   isPlaying: boolean
@@ -190,6 +191,32 @@ const nativePlaybackDiagnosticRows = computed(() => {
   ] as const
 })
 
+const colorDiagnosticRows = computed(() => {
+  if (!props.playbackDiagnostics)
+    return []
+  const color = props.playbackDiagnostics.color
+  const source = describeVideoSourceColor(color)
+  const target = describeVideoTargetColor(color)
+  return [
+    ['sourceDynamicRange', source.label],
+    ['sourceGamma', color?.sourceGamma ?? 'unknown'],
+    ['sourcePrimaries', color?.sourcePrimaries ?? 'unknown'],
+    ['sourcePixelFormat', color?.sourcePixelFormat ?? 'unknown'],
+    ['sourceHardwarePixelFormat', color?.sourceHardwarePixelFormat ?? 'unknown'],
+    ['dolbyVisionProfile', color?.dolbyVisionProfile?.toString() ?? 'unknown'],
+    ['targetDynamicRange', target.label],
+    ['targetGamma', color?.targetGamma ?? 'unknown'],
+    ['targetPrimaries', color?.targetPrimaries ?? 'unknown'],
+    ['targetGpuPixelFormat', color?.targetPixelFormat ?? 'unknown'],
+    ['outputMode', color?.outputMode ?? 'unknown'],
+    ['gpuContext', color?.gpuContext ?? 'unknown'],
+    ['displayHdrTypes', color?.displayHdrTypes ? color.displayHdrTypes.join(', ') || 'none' : 'unknown'],
+    ['screenOutputBitDepth', 'unknown'],
+    ['displayDolbyVisionMode', 'unknown'],
+    ['colorReason', color?.reason ?? 'none'],
+  ] as const
+})
+
 const diagnosticText = computed(() => {
   const lines = [
     'Render diagnostics',
@@ -204,13 +231,19 @@ const diagnosticText = computed(() => {
     lines.push(`renderError=${redactDiagnosticText(props.renderError)}`)
 
   if (nativePlaybackDiagnosticRows.value.length > 0) {
-    lines.push('', 'Android playback')
+    lines.push('', 'Native playback')
     for (const [key, value] of nativePlaybackDiagnosticRows.value)
       lines.push(`${key}=${redactDiagnosticText(value)}`)
     if (props.playbackDiagnostics?.lastError)
       lines.push(`lastError=${redactDiagnosticText(props.playbackDiagnostics.lastError)}`)
     for (const line of props.playbackDiagnostics?.logs ?? [])
       lines.push(`log=${redactDiagnosticText(line)}`)
+  }
+
+  if (colorDiagnosticRows.value.length > 0) {
+    lines.push('', 'Color rendering')
+    for (const [key, value] of colorDiagnosticRows.value)
+      lines.push(`${key}=${redactDiagnosticText(value)}`)
   }
 
   if (providerSyncDiagnosticRows.value.length > 0) {
@@ -462,7 +495,7 @@ function isTauriRuntime(): boolean {
         </dl>
         <div v-if="nativePlaybackDiagnosticRows.length" class="mt-4 border-t border-white/10 pt-3">
           <p class="text-[10px] uppercase tracking-[0.2em] text-white/44">
-            Android playback
+            Native playback
           </p>
           <dl class="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[11px]">
             <template v-for="[key, value] in nativePlaybackDiagnosticRows" :key="key">
@@ -482,6 +515,24 @@ function isTauriRuntime(): boolean {
               {{ redactDiagnosticText(line) }}
             </p>
           </div>
+        </div>
+        <div v-if="colorDiagnosticRows.length" class="mt-4 border-t border-white/10 pt-3">
+          <p class="text-[10px] uppercase tracking-[0.2em] text-white/44">
+            片源色彩 / 渲染目标
+          </p>
+          <dl class="mt-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[11px]">
+            <template v-for="[key, value] in colorDiagnosticRows" :key="key">
+              <dt class="font-mono text-white/44">
+                {{ key }}
+              </dt>
+              <dd class="break-all font-mono text-white/76">
+                {{ redactDiagnosticText(value) }}
+              </dd>
+            </template>
+          </dl>
+          <p class="mt-2 text-[10px] text-white/48">
+            GPU 格式来自渲染目标；屏幕输出位深和杜比视界显示模式尚未测量。
+          </p>
         </div>
         <div v-if="providerSyncDiagnosticRows.length" class="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
           <p class="text-[10px] uppercase tracking-[0.2em] text-white/44">

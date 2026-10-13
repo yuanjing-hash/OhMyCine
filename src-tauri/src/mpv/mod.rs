@@ -1,3 +1,4 @@
+pub mod color;
 #[cfg(not(mobile))]
 pub mod events;
 mod hls_proxy;

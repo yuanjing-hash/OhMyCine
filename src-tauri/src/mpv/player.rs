@@ -10,24 +10,29 @@ use libmpv_sys::{
     mpv_command, mpv_create, mpv_end_file_reason_MPV_END_FILE_REASON_EOF,
     mpv_end_file_reason_MPV_END_FILE_REASON_ERROR, mpv_end_file_reason_MPV_END_FILE_REASON_QUIT,
     mpv_end_file_reason_MPV_END_FILE_REASON_REDIRECT, mpv_end_file_reason_MPV_END_FILE_REASON_STOP,
-    mpv_error_string, mpv_event_end_file, mpv_event_id_MPV_EVENT_END_FILE,
-    mpv_event_id_MPV_EVENT_FILE_LOADED, mpv_event_id_MPV_EVENT_LOG_MESSAGE,
-    mpv_event_id_MPV_EVENT_NONE, mpv_event_id_MPV_EVENT_START_FILE,
+    mpv_error_string, mpv_event_end_file, mpv_event_hook, mpv_event_id_MPV_EVENT_END_FILE,
+    mpv_event_id_MPV_EVENT_FILE_LOADED, mpv_event_id_MPV_EVENT_HOOK,
+    mpv_event_id_MPV_EVENT_LOG_MESSAGE, mpv_event_id_MPV_EVENT_NONE,
+    mpv_event_id_MPV_EVENT_PLAYBACK_RESTART, mpv_event_id_MPV_EVENT_START_FILE,
     mpv_event_id_MPV_EVENT_VIDEO_RECONFIG, mpv_event_log_message, mpv_format_MPV_FORMAT_DOUBLE,
     mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_format_MPV_FORMAT_NODE,
     mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP, mpv_format_MPV_FORMAT_STRING,
     mpv_free, mpv_free_node_contents, mpv_get_property, mpv_get_property_string, mpv_handle,
-    mpv_initialize, mpv_node, mpv_node_list, mpv_request_log_messages, mpv_set_option_string,
-    mpv_set_property, mpv_set_property_string, mpv_terminate_destroy, mpv_wait_event,
+    mpv_hook_add, mpv_hook_continue, mpv_initialize, mpv_node, mpv_node_list,
+    mpv_request_log_messages, mpv_set_option_string, mpv_set_property, mpv_set_property_string,
+    mpv_terminate_destroy, mpv_wait_event,
 };
 
 use super::{
+    color::{color_metadata, transfer_mode, MpvColorDiagnostics, MpvColorOutputMode},
     render::{current_render_state, MpvRenderState, RenderStatus},
     surface::{NativeRenderSurface, OwnerWindowEvent, RenderSurfaceBounds, ZOrderStrategy},
 };
 use crate::commands::player_shared::MpvEngineSettings;
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
+
+const FSR_LOAD_HOOK_ID: u64 = 1;
 
 #[derive(Debug, Default)]
 pub struct MpvEventBatch {
@@ -101,6 +106,7 @@ pub struct DesktopPlaybackDiagnostics {
     pub playback_transport: String,
     pub fsr_status: String,
     pub fsr_reason: Option<String>,
+    pub color: Option<MpvColorDiagnostics>,
     pub logs: Vec<String>,
 }
 
@@ -114,6 +120,10 @@ pub struct MpvPlayer {
     fsr_shader_path: Option<PathBuf>,
     fsr_status: String,
     fsr_reason: Option<String>,
+    fsr_applied_configuration: Option<(String, String)>,
+    fsr_failed_for_file: bool,
+    fsr_load_hook_available: bool,
+    color_metadata_ready: bool,
     playback_state: String,
     last_playback_event: String,
     last_playback_error: Option<String>,
@@ -164,6 +174,10 @@ impl MpvPlayer {
             fsr_shader_path: None,
             fsr_status: "not-configured".to_string(),
             fsr_reason: None,
+            fsr_applied_configuration: None,
+            fsr_failed_for_file: false,
+            fsr_load_hook_available: false,
+            color_metadata_ready: false,
             playback_state: "idle".to_string(),
             last_playback_event: "not-started".to_string(),
             last_playback_error: None,
@@ -196,7 +210,9 @@ impl MpvPlayer {
         if !self.initialized || !self.file_loaded {
             return Err("视频画面尚未加载，无法截图。".to_string());
         }
-        let target = path.to_str().ok_or_else(|| "截图路径包含不支持的字符。".to_string())?;
+        let target = path
+            .to_str()
+            .ok_or_else(|| "截图路径包含不支持的字符。".to_string())?;
         // The array API passes the filename literally. subtitles excludes the WebView and mpv OSD.
         self.command(&["screenshot-to-file", target, "subtitles"])
     }
@@ -209,6 +225,9 @@ impl MpvPlayer {
     ) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
         self.apply_http_headers(headers)?;
+        // Clear synchronously before loadfile can render the next source. on_load also covers
+        // libmpv playlist/redirect transitions that do not issue another Player load command.
+        self.prepare_color_for_load()?;
         if let Some(surface) = self.render_surface.as_mut() {
             surface.set_playback_active(false);
         }
@@ -247,7 +266,22 @@ impl MpvPlayer {
         shader_path: Option<PathBuf>,
     ) -> Result<(), String> {
         let settings = settings.validated()?;
+        let renderer_changed = settings.video_output != self.engine_settings.video_output
+            || settings.hardware_decoder != self.engine_settings.hardware_decoder;
+        let fsr_changed = settings.fsr_mode != self.engine_settings.fsr_mode
+            || settings.fsr_sharpness != self.engine_settings.fsr_sharpness
+            || settings.fsr_denoise != self.engine_settings.fsr_denoise
+            || settings.fsr_target != self.engine_settings.fsr_target
+            || shader_path != self.fsr_shader_path;
         if self.initialized {
+            if renderer_changed {
+                self.clear_fsr_shaders()?;
+                self.color_metadata_ready = false;
+            }
+            #[cfg(target_os = "windows")]
+            if renderer_changed {
+                self.configure_windows_color_output(&settings.video_output)?;
+            }
             self.set_property("vo", &settings.video_output)?;
             self.set_property("hwdec", settings.desktop_hwdec())?;
             self.set_property("cache", settings.cache_value())?;
@@ -259,6 +293,9 @@ impl MpvPlayer {
         }
         self.fsr_shader_path = shader_path;
         self.engine_settings = settings;
+        if fsr_changed || renderer_changed {
+            self.fsr_failed_for_file = false;
+        }
         if self.initialized {
             self.apply_fsr_runtime_safely();
         } else if self.engine_settings.fsr_mode == "off" {
@@ -306,8 +343,99 @@ impl MpvPlayer {
             playback_transport: self.playback_transport.clone(),
             fsr_status: self.fsr_status.clone(),
             fsr_reason: self.fsr_reason.clone(),
+            color: Some(self.color_diagnostics()),
             logs: Vec::new(),
         }
+    }
+
+    fn source_color_metadata(&self) -> MpvColorDiagnostics {
+        if !self.initialized || !self.file_loaded || !self.color_metadata_ready {
+            return MpvColorDiagnostics::default();
+        }
+        let metadata =
+            |property: &str| color_metadata(self.get_property_string(property).ok().flatten());
+        MpvColorDiagnostics {
+            source_gamma: metadata("video-params/gamma"),
+            source_primaries: metadata("video-params/primaries"),
+            source_pixel_format: metadata("video-params/pixelformat"),
+            source_hardware_pixel_format: metadata("video-params/hw-pixelformat"),
+            dolby_vision_profile: self
+                .get_property_int64("current-tracks/video/dolby-vision-profile")
+                .ok()
+                .and_then(|profile| u8::try_from(profile).ok())
+                .filter(|profile| *profile > 0),
+            ..MpvColorDiagnostics::default()
+        }
+    }
+
+    fn color_diagnostics(&self) -> MpvColorDiagnostics {
+        let mut color = self.source_color_metadata();
+        if !self.initialized || !self.file_loaded || !self.color_metadata_ready {
+            color.reason = Some("等待当前片源和渲染目标的色彩信息。".to_string());
+            return color;
+        }
+        if self.get_property_flag("vo-configured").unwrap_or(0) != 0 {
+            let metadata =
+                |property: &str| color_metadata(self.get_property_string(property).ok().flatten());
+            color.target_gamma = metadata("video-target-params/gamma");
+            color.target_primaries = metadata("video-target-params/primaries");
+            color.target_pixel_format = metadata("video-target-params/pixelformat");
+            color.output_mode = transfer_mode(color.target_gamma.as_deref());
+            // mpv exposes a selected context option, not an actual-context property. Report
+            // D3D11 only when it was required (no automatic backend fallback) and VO is ready.
+            #[cfg(target_os = "windows")]
+            if metadata("current-vo").as_deref() == Some("gpu-next")
+                && metadata("options/gpu-context").as_deref() == Some("d3d11")
+            {
+                color.gpu_context = Some("d3d11".to_string());
+            }
+        }
+        color.reason = Some(
+            if color.dolby_vision_profile.is_some() && self.engine_settings.video_output == "gpu" {
+                "当前 gpu 渲染器不能保证杜比视界元数据处理，请使用 gpu-next。"
+            } else {
+                match color.output_mode {
+                    MpvColorOutputMode::Hdr => {
+                        "渲染目标已报告 HDR；物理显示模式和输出位深尚未验证。"
+                    }
+                    MpvColorOutputMode::Sdr
+                        if color.dolby_vision_profile.is_some()
+                            || transfer_mode(color.source_gamma.as_deref())
+                                == MpvColorOutputMode::Hdr =>
+                    {
+                        "当前渲染目标为 SDR，HDR 片源由渲染器进行色调映射。"
+                    }
+                    MpvColorOutputMode::Sdr => "当前渲染目标为 SDR。",
+                    MpvColorOutputMode::Unknown => "渲染目标的色彩信息暂不可用。",
+                }
+            }
+            .to_string(),
+        );
+        color
+    }
+
+    #[cfg(target_os = "windows")]
+    fn configure_windows_color_output(&self, video_output: &str) -> Result<(), String> {
+        let context = if video_output == "gpu-next" {
+            "d3d11"
+        } else {
+            "auto"
+        };
+        for (option, value) in [
+            ("gpu-api", context),
+            ("gpu-context", context),
+            ("target-colorspace-hint", "auto"),
+            ("d3d11-output-csp", "auto"),
+            ("d3d11-output-format", "auto"),
+        ] {
+            let result = if self.initialized {
+                self.set_property(option, value)
+            } else {
+                self.set_option(option, value)
+            };
+            result.map_err(|_| "Windows D3D11 自动色彩输出配置失败。".to_string())?;
+        }
+        Ok(())
     }
 
     pub fn add_subtitle(
@@ -414,7 +542,9 @@ impl MpvPlayer {
             let video_sync = self.engine_settings.video_sync.clone();
             let configure_result = (|| -> Result<(), String> {
                 self.set_option("force-window", "no")?;
+                self.configure_windows_color_output(&video_output)?;
                 self.set_option("vo", &video_output)?;
+                self.set_option("glsl-shaders", "")?;
                 self.set_option("hwdec", &hardware_decoder)?;
                 self.set_option("cache", &cache)?;
                 self.set_option("demuxer-max-bytes", &demuxer_max_bytes)?;
@@ -438,10 +568,8 @@ impl MpvPlayer {
                     surface.mark_mpv_ready();
                     let snapshot = surface.snapshot();
                     self.render_surface = Some(surface);
-                    // Automatic mode requires the managed Windows surface to be present. Apply
-                    // FSR only after moving the successfully initialized surface into player
-                    // state; applying it inside the initialization closure would always observe
-                    // `render_surface == None` and incorrectly disable auto mode.
+                    // Initialization alone does not establish SDR source metadata. Keep the
+                    // shader detached until the current file has reported its color facts.
                     self.apply_fsr_runtime_safely();
                     self.render_state.status = RenderStatus::Ready;
                     let diagnostics = snapshot.diagnostics;
@@ -575,6 +703,15 @@ impl MpvPlayer {
         if let Some(surface) = self.render_surface.as_mut() {
             surface.set_playback_active(false);
         }
+        self.color_metadata_ready = false;
+        let clear_result = self.clear_fsr_shaders();
+        self.fsr_status = if self.engine_settings.fsr_mode == "off" {
+            "disabled"
+        } else {
+            "bypassed-unknown"
+        }
+        .to_string();
+        self.fsr_reason = None;
         if !self.initialized {
             self.playback_state = "idle".to_string();
             self.last_playback_event = "stopped".to_string();
@@ -588,7 +725,7 @@ impl MpvPlayer {
             self.last_playback_event = "stopped".to_string();
             self.file_loaded = false;
         }
-        result
+        result.and(clear_result)
     }
 
     pub fn seek(&mut self, position: f64) -> Result<(), String> {
@@ -735,27 +872,99 @@ impl MpvPlayer {
             .map_err(|_| "播放请求头设置失败。".to_string())
     }
 
+    fn clear_fsr_shaders(&mut self) -> Result<(), String> {
+        if self.initialized {
+            self.command(&["change-list", "glsl-shaders", "clr", ""])
+                .map_err(|_| "无法停用 FSR 着色器，已阻止不安全的片源切换。".to_string())?;
+        }
+        self.fsr_applied_configuration = None;
+        Ok(())
+    }
+
+    fn prepare_color_for_load(&mut self) -> Result<(), String> {
+        self.file_loaded = false;
+        self.color_metadata_ready = false;
+        self.fsr_failed_for_file = false;
+        self.clear_fsr_shaders()?;
+        self.fsr_status = if self.engine_settings.fsr_mode == "off" {
+            "disabled"
+        } else {
+            "bypassed-unknown"
+        }
+        .to_string();
+        self.fsr_reason = (self.engine_settings.fsr_mode != "off")
+            .then(|| "等待确认当前片源为 SDR，暂不启用 FSR。".to_string());
+        Ok(())
+    }
+
+    fn bypass_fsr(&mut self, status: &str, reason: Option<&str>) {
+        if self.fsr_applied_configuration.is_some() && self.clear_fsr_shaders().is_err() {
+            self.fail_fsr_detachment();
+            return;
+        }
+        self.fsr_status = status.to_string();
+        self.fsr_reason = reason.map(str::to_string);
+    }
+
+    fn fail_fsr_detachment(&mut self) {
+        // If detaching an active shader failed, stop rather than process HDR with an SDR shader.
+        self.fsr_status = "error".to_string();
+        self.fsr_reason = Some("FSR 着色器无法安全停用，已停止播放。".to_string());
+        self.playback_state = "error".to_string();
+        self.last_playback_event = "fsr-detach-error".to_string();
+        self.last_playback_error = self.fsr_reason.clone();
+        self.file_loaded = false;
+        self.color_metadata_ready = false;
+        self.stop_requested = true;
+        let _ = self.command(&["stop"]);
+    }
+
     fn apply_fsr_runtime_safely(&mut self) {
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
-            self.fsr_status = "unsupported-platform".to_string();
-            self.fsr_reason = Some("FSR 首发仅支持 Windows 与 Android。".to_string());
+            self.bypass_fsr(
+                "unsupported-platform",
+                Some("FSR 首发仅支持 Windows 与 Android。"),
+            );
         }
 
         #[cfg(target_os = "windows")]
         {
             if self.engine_settings.fsr_mode == "off" {
-                let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
-                self.fsr_status = "disabled".to_string();
-                self.fsr_reason = None;
+                self.bypass_fsr("disabled", None);
+                return;
+            }
+
+            let source = self.source_color_metadata();
+            if source.dolby_vision_profile.is_some()
+                || transfer_mode(source.source_gamma.as_deref()) == MpvColorOutputMode::Hdr
+            {
+                self.bypass_fsr(
+                    "bypassed-hdr",
+                    Some("HDR／杜比视界片源使用原生缩放，保留已保存的 FSR 设置。"),
+                );
+                return;
+            }
+            if transfer_mode(source.source_gamma.as_deref()) != MpvColorOutputMode::Sdr {
+                self.bypass_fsr(
+                    "bypassed-unknown",
+                    Some("尚未确认当前片源为 SDR，暂不启用 FSR。"),
+                );
+                return;
+            }
+            if !self.fsr_load_hook_available {
+                self.bypass_fsr(
+                    "unavailable",
+                    Some("无法建立片源切换安全屏障，暂不启用 FSR。"),
+                );
+                return;
+            }
+            if self.fsr_failed_for_file {
                 return;
             }
 
             if self.render_surface.is_none() && self.engine_settings.fsr_mode != "force" {
-                let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
-                self.fsr_status = "unavailable".to_string();
-                self.fsr_reason = Some("当前没有可用的 Windows GPU 视频表面。".to_string());
+                self.bypass_fsr("unavailable", Some("当前没有可用的 Windows GPU 视频表面。"));
                 return;
             }
 
@@ -770,16 +979,29 @@ impl MpvPlayer {
 
             let shader_path = shader_path.to_string_lossy().into_owned();
             let options = self.fsr_shader_options();
+            let configuration = (shader_path.clone(), options.clone());
+            if self.fsr_applied_configuration.as_ref() == Some(&configuration) {
+                return;
+            }
+            let same_shader = self
+                .fsr_applied_configuration
+                .as_ref()
+                .is_some_and(|(path, _)| *path == shader_path);
             let result = (|| -> Result<(), String> {
-                self.command(&["change-list", "glsl-shaders", "clr", ""])?;
+                if !same_shader {
+                    self.clear_fsr_shaders()?;
+                }
                 self.set_property("glsl-shader-opts", &options)?;
-                self.command(&["change-list", "glsl-shaders", "append", &shader_path])?;
+                if !same_shader {
+                    self.command(&["change-list", "glsl-shaders", "append", &shader_path])?;
+                }
                 Ok(())
             })();
 
             if result.is_err() {
                 self.record_fsr_fallback("FSR Shader 加载失败，已恢复普通缩放。")
             } else {
+                self.fsr_applied_configuration = Some(configuration);
                 self.fsr_status = if self.engine_settings.fsr_mode == "force" {
                     "armed-force"
                 } else {
@@ -792,15 +1014,8 @@ impl MpvPlayer {
     }
 
     fn refresh_fsr_target_parameters(&mut self) {
-        if !self.initialized
-            || self.engine_settings.fsr_mode == "off"
-            || !self.fsr_status.starts_with("armed")
-        {
-            return;
-        }
-        let options = self.fsr_shader_options();
-        if self.set_property("glsl-shader-opts", &options).is_err() {
-            self.record_fsr_fallback("FSR 目标分辨率更新失败，已恢复普通缩放。")
+        if self.initialized {
+            self.apply_fsr_runtime_safely();
         }
     }
 
@@ -844,7 +1059,11 @@ impl MpvPlayer {
     }
 
     fn record_fsr_fallback(&mut self, reason: &str) {
-        let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
+        self.fsr_failed_for_file = true;
+        if self.clear_fsr_shaders().is_err() {
+            self.fail_fsr_detachment();
+            return;
+        }
         self.fsr_status = "fallback".to_string();
         self.fsr_reason = Some(reason.to_string());
     }
@@ -856,6 +1075,15 @@ impl MpvPlayer {
         }
         self.check_error(unsafe { mpv_initialize(self.ctx) })?;
         self.initialized = true;
+        // A synchronous hook also covers libmpv-internal playlist and redirect loads. The
+        // existing bounded event pump must continue it after removing the previous shader.
+        if let Ok(name) = CString::new("on_load") {
+            self.fsr_load_hook_available =
+                unsafe { mpv_hook_add(self.ctx, FSR_LOAD_HOOK_ID, name.as_ptr(), 0) } >= 0;
+        }
+        if !self.fsr_load_hook_available {
+            log::warn!("mpv load safety hook unavailable; FSR remains disabled");
+        }
         if let Ok(level) = CString::new("warn") {
             let _ = unsafe { mpv_request_log_messages(self.ctx, level.as_ptr()) };
         }
@@ -889,25 +1117,62 @@ impl MpvPlayer {
 
     pub fn drain_events(&mut self, max_events: usize) -> MpvEventBatch {
         let mut batch = MpvEventBatch::default();
+        if !self.initialized {
+            return batch;
+        }
         for index in 0..max_events {
             let event = unsafe { mpv_wait_event(self.ctx, 0.0) };
             if event.is_null() || unsafe { (*event).event_id } == mpv_event_id_MPV_EVENT_NONE {
                 break;
             }
             let event_id = unsafe { (*event).event_id };
-            if event_id == mpv_event_id_MPV_EVENT_START_FILE {
+            if event_id == mpv_event_id_MPV_EVENT_HOOK {
+                let hook = unsafe { (*event).data.cast::<mpv_event_hook>().as_ref() };
+                if let Some(hook) = hook {
+                    // Copy the id before commands; libmpv owns the event data. Every hook
+                    // must be continued exactly once, including a failed safety cleanup.
+                    let hook_id = hook.id;
+                    if unsafe { (*event).reply_userdata } == FSR_LOAD_HOOK_ID
+                        && self.prepare_color_for_load().is_err()
+                    {
+                        self.fail_fsr_detachment();
+                    }
+                    if self
+                        .check_error(unsafe { mpv_hook_continue(self.ctx, hook_id) })
+                        .is_err()
+                    {
+                        self.playback_state = "error".to_string();
+                        self.last_playback_event = "load-safety-hook-error".to_string();
+                        self.last_playback_error =
+                            Some("播放器未能继续安全的片源加载。".to_string());
+                        self.color_metadata_ready = false;
+                        self.file_loaded = false;
+                        let _ = self.command(&["stop"]);
+                    }
+                }
+            } else if event_id == mpv_event_id_MPV_EVENT_START_FILE {
                 self.playback_state = "loading".to_string();
                 self.last_playback_event = "start-file".to_string();
                 self.last_playback_error = None;
                 self.file_loaded = false;
                 self.stop_requested = false;
+                // The load hook remains the before-render barrier. Clearing here also
+                // prevents old color facts from leaking while the hook is still queued.
+                self.color_metadata_ready = false;
             } else if event_id == mpv_event_id_MPV_EVENT_FILE_LOADED {
                 self.playback_state = "playing".to_string();
                 self.last_playback_event = "file-loaded".to_string();
                 self.last_playback_error = None;
                 self.file_loaded = true;
+                self.color_metadata_ready = !self.stop_requested;
+                self.apply_fsr_runtime_safely();
             } else if event_id == mpv_event_id_MPV_EVENT_VIDEO_RECONFIG {
                 self.last_playback_event = "video-reconfig".to_string();
+                self.color_metadata_ready = self.file_loaded && !self.stop_requested;
+                self.apply_fsr_runtime_safely();
+            } else if event_id == mpv_event_id_MPV_EVENT_PLAYBACK_RESTART {
+                self.color_metadata_ready = self.file_loaded && !self.stop_requested;
+                self.apply_fsr_runtime_safely();
             } else if event_id == mpv_event_id_MPV_EVENT_END_FILE {
                 let end_file = unsafe { (*event).data.cast::<mpv_event_end_file>().as_ref() };
                 let reason = end_file.map(|value| value.reason).unwrap_or(-1);
@@ -948,6 +1213,10 @@ impl MpvPlayer {
                 }
                 self.stop_requested = false;
                 self.file_loaded = false;
+                self.color_metadata_ready = false;
+                if self.fsr_applied_configuration.is_some() {
+                    self.bypass_fsr("bypassed-unknown", None);
+                }
             }
             if event_id == mpv_event_id_MPV_EVENT_LOG_MESSAGE {
                 let data = unsafe { (*event).data };

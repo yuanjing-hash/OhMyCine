@@ -6,6 +6,8 @@ use tauri::{
     AppHandle, Emitter, Manager, Wry,
 };
 
+use super::color::MpvColorDiagnostics;
+
 const PLUGIN_IDENTIFIER: &str = "com.ohmycine.player.mpv";
 const PLUGIN_CLASS: &str = "MpvPlugin";
 
@@ -56,6 +58,12 @@ pub struct AndroidPlaybackDiagnostics {
     pub video_output: String,
     pub video_output_fallback_used: bool,
     pub playback_transport: String,
+    #[serde(default)]
+    pub color: Option<MpvColorDiagnostics>,
+    #[serde(default)]
+    pub fsr_status: Option<String>,
+    #[serde(default)]
+    pub fsr_reason: Option<String>,
     pub logs: Vec<String>,
 }
 
