@@ -1,7 +1,7 @@
 import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaItem, MediaLibrary } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { getAppSetting, removeAppSetting, setAppSetting } from '@/services/appSettings'
 import { removeCredential } from '@/services/datasource/credentialStore'
 import { rememberPlaybackTargetsForItems } from '@/services/datasource/identityMerge'
@@ -12,7 +12,7 @@ import { logoutServerBestEffort } from '@/services/datasource/server'
 import { queueLegacySourceCleanup, runLegacySourceCleanup } from '@/services/legacySourceMigration'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
-import { deletePlaybackHistoryForSource, isCompletedPosition, listLocalContinueWatching, listPlaybackHistoryTombstones, toContinueWatchingMediaItem } from '@/services/playbackHistory'
+import { deletePlaybackHistoryForSource, disabledPlaybackHistorySourceIds, isCompletedPosition, listLocalContinueWatching, listPlaybackHistoryTombstones, toContinueWatchingMediaItem } from '@/services/playbackHistory'
 import { dispatchServerLibraryRefresh } from '@/services/serverMediaChanges'
 
 const STORAGE_KEY = 'ohmycine-datasources'
@@ -64,6 +64,19 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const orderedConfigs = computed(() => configs.value
     .filter(config => config.id !== OFFLINE_SOURCE_ID && config.type !== 'offline')
     .sort((a, b) => a.order - b.order))
+  const disabledHistorySourceIds = computed(() => disabledPlaybackHistorySourceIds(configs.value))
+
+  watch(() => JSON.stringify(disabledHistorySourceIds.value), () => {
+    homeLoadId++
+    isLoading.value = false
+    if (!displayCacheHydrated)
+      return
+    homeSections.value = excludeDisabledHomeSections(homeSections.value)
+    sourceRootSnapshots.value = Object.fromEntries(
+      Object.entries(sourceRootSnapshots.value).filter(([sourceId]) => !disabledHistorySourceIds.value.includes(sourceId)),
+    )
+    invalidateHomeCache()
+  }, { flush: 'sync' })
 
   const activeSource = computed(() =>
     configs.value.find(c => c.id === activeSourceId.value) ?? null,
@@ -75,7 +88,6 @@ export const useDataSourceStore = defineStore('datasource', () => {
     if (configsLoaded)
       return
     configsLoaded = true
-    hydrateDisplayCache()
     try {
       const raw = getAppSetting(STORAGE_KEY)
       if (raw) {
@@ -99,6 +111,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     catch {
       configs.value = []
     }
+    hydrateDisplayCache()
   }
 
   async function saveConfigs() {
@@ -383,7 +396,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
       await syncManager().catch(() => undefined)
       const [sections, localContinueEntries, tombstones] = await Promise.all([
         loadAggregatedHomeSections(orderedConfigs.value),
-        listLocalContinueWatchingSafely(20),
+        listLocalContinueWatchingSafely(20, disabledHistorySourceIds.value),
         listPlaybackHistoryTombstones().catch(() => [] as PlaybackHistoryEntry[]),
       ])
       const localContinueItems = await enrichLocalContinueWatchingItems(localContinueEntries.map(toContinueWatchingMediaItem))
@@ -397,7 +410,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
       if (loadId !== homeLoadId)
         return
 
-      homeSections.value = mergedSections.length > 0
+      homeSections.value = excludeDisabledHomeSections(mergedSections.length > 0
         ? mergedSections
         : [
             {
@@ -407,7 +420,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
               items: generatePlaceholderHeroItems(),
             },
             continueSection,
-          ]
+          ])
       homeLoadedAt.value = Date.now()
       void persistDisplayCache()
     }
@@ -425,6 +438,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
     if (!source?.refreshHomeSection)
       throw new Error('当前媒体来源不支持单独刷新栏目。')
     const replacement = await source.refreshHomeSection(section.refreshKey)
+    if (disabledHistorySourceIds.value.includes(section.sourceId))
+      return
     const index = homeSections.value.findIndex(item => item.id === section.id)
     if (index < 0)
       return
@@ -436,6 +451,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   function getSourceRootSnapshot(id: string): SourceRootSnapshot | null {
+    if (disabledHistorySourceIds.value.includes(id))
+      return null
     return sourceRootSnapshots.value[id] ?? null
   }
 
@@ -445,6 +462,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   function setSourceRootSnapshot(id: string, snapshot: Omit<SourceRootSnapshot, 'updatedAt'>) {
+    if (disabledHistorySourceIds.value.includes(id))
+      return
     sourceRootSnapshots.value = {
       ...sourceRootSnapshots.value,
       [id]: {
@@ -500,15 +519,17 @@ export const useDataSourceStore = defineStore('datasource', () => {
       return
     try {
       const cache = sanitizePersistedDisplayCache(JSON.parse(raw) as unknown)
-      homeSections.value = cache.homeSections
+      homeSections.value = excludeDisabledHomeSections(cache.homeSections)
       // Display the saved snapshot immediately, then revalidate Server state after restart.
       homeLoadedAt.value = 0
-      sourceRootSnapshots.value = cache.sourceRootSnapshots
+      sourceRootSnapshots.value = Object.fromEntries(
+        Object.entries(cache.sourceRootSnapshots).filter(([sourceId]) => !disabledHistorySourceIds.value.includes(sourceId)),
+      )
       rememberPlaybackTargetsForItems([
-        ...cache.homeSections.flatMap(section => section.items),
-        ...Object.values(cache.sourceRootSnapshots).flatMap(snapshot => snapshot.homeSections.flatMap(section => section.items)),
+        ...homeSections.value.flatMap(section => section.items),
+        ...Object.values(sourceRootSnapshots.value).flatMap(snapshot => snapshot.homeSections.flatMap(section => section.items)),
       ])
-      const sanitized = JSON.stringify(cache)
+      const sanitized = JSON.stringify({ ...cache, homeSections: homeSections.value, sourceRootSnapshots: sourceRootSnapshots.value })
       if (sanitized !== raw)
         void setAppSetting(DISPLAY_CACHE_KEY, sanitized).catch(() => undefined)
     }
@@ -518,6 +539,16 @@ export const useDataSourceStore = defineStore('datasource', () => {
       sourceRootSnapshots.value = {}
       void removeAppSetting(DISPLAY_CACHE_KEY).catch(() => undefined)
     }
+  }
+
+  function excludeDisabledHomeSections(sections: HomeSection[]): HomeSection[] {
+    const excluded = new Set(disabledHistorySourceIds.value)
+    if (!excluded.size)
+      return sections
+    return sections
+      .filter(section => !section.sourceId || !excluded.has(section.sourceId))
+      .map(section => ({ ...section, items: section.items.filter(item => !excluded.has(item.sourceId)) }))
+      .filter(section => section.items.length > 0 || Boolean(section.providerIdentity && section.errorCode))
   }
 
   async function persistDisplayCache() {
@@ -572,6 +603,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
   return {
     configs,
     orderedConfigs,
+    disabledHistorySourceIds,
     activeSourceId,
     activeSource,
     homeSections,
@@ -975,9 +1007,9 @@ async function loadAggregatedHomeSections(configs: readonly DataSourceConfig[]):
   }
 }
 
-async function listLocalContinueWatchingSafely(limit: number): Promise<PlaybackHistoryEntry[]> {
+async function listLocalContinueWatchingSafely(limit: number, excludedSourceIds: readonly string[]): Promise<PlaybackHistoryEntry[]> {
   try {
-    return await listLocalContinueWatching(limit)
+    return await listLocalContinueWatching(limit, excludedSourceIds)
   }
   catch {
     return []

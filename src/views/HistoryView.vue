@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
@@ -21,16 +21,28 @@ const loading = ref(true)
 const items = ref<MediaItem[]>([])
 const errorMessage = ref<string | null>(null)
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
+let pageLoadId = 0
+let disposed = false
+
+watch(() => JSON.stringify(store.disabledHistorySourceIds), () => {
+  const excluded = new Set(store.disabledHistorySourceIds)
+  items.value = items.value.filter(item => !excluded.has(item.sourceId))
+  page.value = 1
+  void loadPage(1)
+}, { flush: 'sync' })
 
 onMounted(async () => {
+  window.addEventListener(PLAYED_STATE_CHANGED_EVENT, handleHistoryChanged)
   store.loadConfigs()
   await store.syncManager().catch(() => undefined)
   await syncPlaybackHistory(store).catch(() => undefined)
-  await loadPage(1)
-  window.addEventListener(PLAYED_STATE_CHANGED_EVENT, handleHistoryChanged)
+  if (!disposed)
+    await loadPage(1)
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  pageLoadId++
   window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, handleHistoryChanged)
 })
 
@@ -39,8 +51,11 @@ function handleHistoryChanged() {
 }
 
 async function loadPage(nextPage: number) {
+  const loadId = ++pageLoadId
   loading.value = true
-  const result = await listPlaybackHistoryPage(nextPage, PAGE_SIZE)
+  const result = await listPlaybackHistoryPage(nextPage, PAGE_SIZE, store.disabledHistorySourceIds)
+  if (loadId !== pageLoadId || disposed)
+    return
   page.value = result.page
   total.value = result.total
   hasMore.value = result.hasMore

@@ -1,4 +1,4 @@
-import type { MediaItem } from '@/services/datasource/types'
+import type { DataSourceConfig, MediaItem } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
 import { redactSensitiveText } from '@/services/datasource/errors'
 
@@ -86,20 +86,27 @@ export async function getPlaybackProgress(identity: PlaybackProgressIdentity): P
   }
 }
 
-export async function listLocalContinueWatching(limit = 20): Promise<PlaybackHistoryEntry[]> {
+export function disabledPlaybackHistorySourceIds(configs: readonly DataSourceConfig[]): string[] {
+  return configs
+    .filter(config => config.enabled === false && ['server', 'emby', 'jellyfin'].includes(config.type))
+    .map(config => config.id)
+    .sort()
+}
+
+export async function listLocalContinueWatching(limit = 20, excludedSourceIds: readonly string[] = []): Promise<PlaybackHistoryEntry[]> {
   try {
-    return await invoke<PlaybackHistoryEntry[]>('player_list_continue_watching', { limit })
+    return await invoke<PlaybackHistoryEntry[]>('player_list_continue_watching', { limit, excludedSourceIds })
   }
   catch {
     return []
   }
 }
 
-export async function listPlaybackHistoryPage(page = 1, pageSize = 24): Promise<PlaybackHistoryPage> {
+export async function listPlaybackHistoryPage(page = 1, pageSize = 24, excludedSourceIds: readonly string[] = []): Promise<PlaybackHistoryPage> {
   const safePage = Number.isInteger(page) ? Math.max(1, Math.min(100_000, page)) : 1
   const safePageSize = Number.isInteger(pageSize) ? Math.max(1, Math.min(100, pageSize)) : 24
   try {
-    return await invoke<PlaybackHistoryPage>('player_list_playback_history', { page: safePage, pageSize: safePageSize })
+    return await invoke<PlaybackHistoryPage>('player_list_playback_history', { page: safePage, pageSize: safePageSize, excludedSourceIds })
   }
   catch {
     return { list: [], total: 0, page: safePage, pageSize: safePageSize, hasMore: false }

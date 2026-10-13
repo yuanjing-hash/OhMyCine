@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 
@@ -131,12 +131,15 @@ pub fn player_get_playback_progress(
 pub fn player_list_continue_watching(
     app: AppHandle,
     limit: Option<u32>,
+    excluded_source_ids: Option<Vec<String>>,
 ) -> Result<Vec<PlaybackHistoryEntry>, String> {
+    let excluded_source_ids = normalize_excluded_source_ids(excluded_source_ids)?;
     let storage = PlaybackHistoryStorage::open(&app)?;
     storage.list_continue_watching(
         limit
             .unwrap_or(DEFAULT_CONTINUE_LIMIT)
             .min(MAX_CONTINUE_LIMIT),
+        &excluded_source_ids,
     )
 }
 
@@ -145,13 +148,15 @@ pub fn player_list_playback_history(
     app: AppHandle,
     page: Option<u32>,
     page_size: Option<u32>,
+    excluded_source_ids: Option<Vec<String>>,
 ) -> Result<PlaybackHistoryPage, String> {
+    let excluded_source_ids = normalize_excluded_source_ids(excluded_source_ids)?;
     let page = page.unwrap_or(1).clamp(1, MAX_HISTORY_PAGE);
     let page_size = page_size
         .unwrap_or(DEFAULT_HISTORY_PAGE_SIZE)
         .clamp(1, MAX_HISTORY_PAGE_SIZE);
     let storage = PlaybackHistoryStorage::open(&app)?;
-    storage.list_history(page, page_size)
+    storage.list_history(page, page_size, &excluded_source_ids)
 }
 
 #[tauri::command]
@@ -560,31 +565,36 @@ impl PlaybackHistoryStorage {
         ).optional().map_err(|_| "Failed to read playback history entry.".to_string())
     }
 
-    fn list_continue_watching(&self, limit: u32) -> Result<Vec<PlaybackHistoryEntry>, String> {
+    fn list_continue_watching(
+        &self,
+        limit: u32,
+        excluded_source_ids: &[String],
+    ) -> Result<Vec<PlaybackHistoryEntry>, String> {
+        let mut values = vec![
+            Value::Real(MIN_RESUME_POSITION_SECONDS),
+            Value::Real(COMPLETED_REMAINING_SECONDS),
+        ];
+        let mut filter = " WHERE deleted = 0 AND completed = 0
+            AND position >= ?1
+            AND (duration IS NULL OR duration <= 0 OR position < duration - ?2)"
+            .to_string();
+        append_source_exclusions(&mut filter, &mut values, excluded_source_ids);
+        values.push(Value::Integer(i64::from(limit)));
         let mut statement = self
             .conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
                     media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
                     completed, progress_source, display_subtitle, episode_still_url, deleted
-                 FROM playback_history
-                 WHERE deleted = 0 AND completed = 0
-                    AND position >= ?1
-                    AND (duration IS NULL OR duration <= 0 OR position < duration - ?2)
+                 FROM playback_history{filter}
                  ORDER BY updated_at DESC
-                 LIMIT ?3",
-            )
+                 LIMIT ?{}",
+                values.len()
+            ))
             .map_err(|_| "Failed to read continue watching entries.".to_string())?;
 
         let entries = statement
-            .query_map(
-                params![
-                    MIN_RESUME_POSITION_SECONDS,
-                    COMPLETED_REMAINING_SECONDS,
-                    limit
-                ],
-                map_history_entry,
-            )
+            .query_map(params_from_iter(values.iter()), map_history_entry)
             .map_err(|_| "Failed to read continue watching entries.".to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| "Failed to read continue watching entries.".to_string())?;
@@ -592,16 +602,21 @@ impl PlaybackHistoryStorage {
         Ok(entries)
     }
 
-    fn list_history(&self, page: u32, page_size: u32) -> Result<PlaybackHistoryPage, String> {
-        self.list_history_filter(page, page_size, Some(false))
+    fn list_history(
+        &self,
+        page: u32,
+        page_size: u32,
+        excluded_source_ids: &[String],
+    ) -> Result<PlaybackHistoryPage, String> {
+        self.list_history_filter(page, page_size, Some(false), excluded_source_ids)
     }
 
     fn list_history_sync(&self, page: u32, page_size: u32) -> Result<PlaybackHistoryPage, String> {
-        self.list_history_filter(page, page_size, None)
+        self.list_history_filter(page, page_size, None, &[])
     }
 
     fn list_tombstones(&self, page: u32, page_size: u32) -> Result<PlaybackHistoryPage, String> {
-        self.list_history_filter(page, page_size, Some(true))
+        self.list_history_filter(page, page_size, Some(true), &[])
     }
 
     fn list_history_filter(
@@ -609,30 +624,38 @@ impl PlaybackHistoryStorage {
         page: u32,
         page_size: u32,
         deleted: Option<bool>,
+        excluded_source_ids: &[String],
     ) -> Result<PlaybackHistoryPage, String> {
-        let filter = match deleted {
+        let mut filter = match deleted {
             Some(true) => " WHERE deleted = 1",
             Some(false) => " WHERE deleted = 0",
             None => "",
-        };
+        }
+        .to_string();
+        let mut values = Vec::new();
+        append_source_exclusions(&mut filter, &mut values, excluded_source_ids);
         let total = self
             .conn
             .query_row(
                 &format!("SELECT COUNT(*) FROM playback_history{filter}"),
-                params![],
+                params_from_iter(values.iter()),
                 |row| row.get::<_, u64>(0),
             )
             .map_err(|_| "Failed to count playback history entries.".to_string())?;
         let offset = u64::from(page.saturating_sub(1)) * u64::from(page_size);
+        let limit_parameter = values.len() + 1;
+        let offset_parameter = values.len() + 2;
+        values.push(Value::Integer(i64::from(page_size)));
+        values.push(Value::Integer(offset as i64));
         let mut statement = self.conn.prepare(&format!(
             "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
                 media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
                 completed, progress_source, display_subtitle, episode_still_url, deleted
              FROM playback_history{filter}
-             ORDER BY updated_at DESC, identity_key ASC LIMIT ?1 OFFSET ?2"
+             ORDER BY updated_at DESC, identity_key ASC LIMIT ?{limit_parameter} OFFSET ?{offset_parameter}"
         )).map_err(|_| "Failed to read playback history entries.".to_string())?;
         let list = statement
-            .query_map(params![page_size, offset], map_history_entry)
+            .query_map(params_from_iter(values.iter()), map_history_entry)
             .map_err(|_| "Failed to read playback history entries.".to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| "Failed to read playback history entries.".to_string())?;
@@ -644,6 +667,41 @@ impl PlaybackHistoryStorage {
             has_more: offset.saturating_add(u64::from(page_size)) < total,
         })
     }
+}
+
+fn append_source_exclusions(
+    filter: &mut String,
+    values: &mut Vec<Value>,
+    excluded_source_ids: &[String],
+) {
+    if excluded_source_ids.is_empty() {
+        return;
+    }
+    filter.push_str(if filter.is_empty() {
+        " WHERE "
+    } else {
+        " AND "
+    });
+    filter.push_str("source_id NOT IN (");
+    for (index, source_id) in excluded_source_ids.iter().enumerate() {
+        if index > 0 {
+            filter.push(',');
+        }
+        values.push(Value::Text(source_id.clone()));
+        filter.push_str(&format!("?{}", values.len()));
+    }
+    filter.push(')');
+}
+
+fn normalize_excluded_source_ids(source_ids: Option<Vec<String>>) -> Result<Vec<String>, String> {
+    let mut source_ids = source_ids
+        .unwrap_or_default()
+        .into_iter()
+        .map(|source_id| normalize_id(source_id, "Invalid playback source."))
+        .collect::<Result<Vec<_>, _>>()?;
+    source_ids.sort();
+    source_ids.dedup();
+    Ok(source_ids)
 }
 
 fn initialize_schema(conn: &Connection) -> Result<(), String> {
@@ -1076,7 +1134,13 @@ mod tests {
             .expect("raw query")
             .expect("tombstone");
         assert!(deleted.deleted);
-        assert_eq!(storage.list_history(1, 10).expect("visible page").total, 0);
+        assert_eq!(
+            storage
+                .list_history(1, 10, &[])
+                .expect("visible page")
+                .total,
+            0
+        );
         assert_eq!(
             storage.list_history_sync(1, 10).expect("sync page").total,
             1
@@ -1121,7 +1185,13 @@ mod tests {
             .tombstone(&canonical)
             .expect("delete remote-only card");
 
-        assert_eq!(storage.list_history(1, 10).expect("visible page").total, 0);
+        assert_eq!(
+            storage
+                .list_history(1, 10, &[])
+                .expect("visible page")
+                .total,
+            0
+        );
         assert!(storage
             .get(&identity("server-home", "entry|9|work|202"))
             .expect("read legacy history")
@@ -1140,9 +1210,11 @@ mod tests {
                 .expect("insert paged history");
         }
 
-        let first = storage.list_history(1, 2).expect("first history page");
-        let second = storage.list_history(2, 2).expect("second history page");
-        let third = storage.list_history(3, 2).expect("third history page");
+        let first = storage.list_history(1, 2, &[]).expect("first history page");
+        let second = storage
+            .list_history(2, 2, &[])
+            .expect("second history page");
+        let third = storage.list_history(3, 2, &[]).expect("third history page");
         assert_eq!(first.total, 5);
         assert!(first.has_more);
         assert!(second.has_more);
@@ -1245,7 +1317,7 @@ mod tests {
             .unwrap();
         assert_eq!(saved.position, 0.0);
         assert!(!saved.completed);
-        assert_eq!(storage.list_history(1, 10).unwrap().total, 1);
+        assert_eq!(storage.list_history(1, 10, &[]).unwrap().total, 1);
 
         started.position = 180.0;
         storage.upsert(&started).expect("save real online progress");
@@ -1258,7 +1330,7 @@ mod tests {
         assert_eq!(resumed.library_id, started.library_id);
         assert_eq!(resumed.display_subtitle, started.display_subtitle);
         assert_eq!(resumed.media_identity, token);
-        assert_eq!(storage.list_history(1, 10).unwrap().total, 1);
+        assert_eq!(storage.list_history(1, 10, &[]).unwrap().total, 1);
 
         let mut other = progress("server-home", token);
         other.title = started.title.clone();
@@ -1277,7 +1349,7 @@ mod tests {
         storage
             .upsert(&other)
             .expect("save same-title other server");
-        assert_eq!(storage.list_history(1, 10).unwrap().total, 4);
+        assert_eq!(storage.list_history(1, 10, &[]).unwrap().total, 4);
         assert!(storage
             .get(&identity("missing-server", token))
             .unwrap()
