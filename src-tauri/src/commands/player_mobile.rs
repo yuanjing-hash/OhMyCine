@@ -94,13 +94,18 @@ pub async fn mpv_capture_screenshot(
     if format != "png" && format != "jpg" {
         return Err("不支持的截图格式。".to_string());
     }
-    state.run("captureScreenshot", ScreenshotPayload {
-        title: title.chars().take(160).collect(),
-        season_number,
-        episode_number,
-        directory_uri: directory.filter(|value| !value.trim().is_empty()),
-        format,
-    }).await
+    state
+        .run(
+            "captureScreenshot",
+            ScreenshotPayload {
+                title: title.chars().take(160).collect(),
+                season_number,
+                episode_number,
+                directory_uri: directory.filter(|value| !value.trim().is_empty()),
+                format,
+            },
+        )
+        .await
 }
 
 #[derive(Clone, Deserialize, Serialize)]

@@ -21,6 +21,7 @@ import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { loginServerAndCreateConfig, logoutServerBestEffort } from '@/services/datasource/server'
 import { getImageCacheStats, loadImageCacheSettings, saveImageCacheSettings } from '@/services/imageCache'
 import { loadNavigationShortcutBindings, resetNavigationShortcutBindings, saveNavigationShortcutBindings, shortcutDisplayLabel, shortcutFromKeyboardEvent, validateUniqueNavigationShortcuts } from '@/services/navigationShortcuts'
+import { clearLocalPlaybackHistoryAndResync } from '@/services/playbackHistorySync'
 import { loadPlayerInteractionSettings, normalizeLongPressPlaybackSpeed, savePlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { loadPlayerShortcutBindings, resetPlayerShortcutBindings, savePlayerShortcutBindings, validateUniquePlayerShortcuts } from '@/services/playerShortcuts'
 import { loadScreenshotSettings, pickScreenshotDirectory, saveScreenshotSettings, screenshotDirectoryLabel } from '@/services/screenshotSettings'
@@ -126,6 +127,8 @@ const playerShortcutForm = reactive<PlayerShortcutBindings>(loadPlayerShortcutBi
 const shortcutFeedback = ref<{ type: 'success' | 'error' | 'info', message: string } | null>(null)
 const isSavingShortcuts = ref(false)
 const isClearingPlayerCache = ref(false)
+const isClearingLocalHistory = ref(false)
+const historyFeedback = ref<{ type: 'success' | 'error', message: string } | null>(null)
 const updateForm = reactive<UpdaterSettingsFormState>({
   autoCheck: updaterStore.settings.autoCheck,
   channel: updaterStore.settings.channel,
@@ -808,6 +811,28 @@ async function clearPlaybackCache() {
   }
   finally {
     isClearingPlayerCache.value = false
+  }
+}
+
+async function clearLocalHistory() {
+  const confirmed = await confirmDialog(
+    '将清除这台设备的全部本地播放历史，包括尚未上传的记录，然后自动从已连接的 Server 重新同步。云端历史和 Emby/Jellyfin 的观看进度不会被删除。',
+    { title: '清除本地播放历史', kind: 'warning' },
+  )
+  if (!confirmed)
+    return
+
+  isClearingLocalHistory.value = true
+  historyFeedback.value = null
+  try {
+    await clearLocalPlaybackHistoryAndResync(store)
+    historyFeedback.value = { type: 'success', message: '本地播放历史已清除，并已开始从云端重新同步。暂时离线时会在下次连接后继续。' }
+  }
+  catch (error) {
+    historyFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '本地播放历史清除失败。') }
+  }
+  finally {
+    isClearingLocalHistory.value = false
   }
 }
 
@@ -1838,6 +1863,25 @@ function selectSourceType(type: EditableDataSourceType) {
               {{ screenshotFeedback.message }}
             </p>
           </div>
+        </div>
+
+        <div class="glass-panel rounded-[1.5rem] p-6">
+          <div class="flex flex-wrap items-center justify-between gap-5">
+            <div>
+              <h3 class="text-lg font-bold text-white">
+                清除本地播放历史
+              </h3>
+              <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
+                清除这台设备的播放历史并自动从云端重建。尚未上传的本地记录也会清除，不会删除云端记录或媒体文件。
+              </p>
+            </div>
+            <button type="button" class="rounded-2xl border border-red-300/20 bg-red-400/10 px-4 py-2 text-sm font-semibold text-red-100 hover:bg-red-400/16 disabled:cursor-wait disabled:opacity-55" :disabled="isClearingLocalHistory" @click="clearLocalHistory">
+              {{ isClearingLocalHistory ? '重建中…' : '清除本地播放历史' }}
+            </button>
+          </div>
+          <p v-if="historyFeedback" role="status" class="mt-4 text-sm" :class="historyFeedback.type === 'success' ? 'text-emerald-200' : 'text-red-200'">
+            {{ historyFeedback.message }}
+          </p>
         </div>
 
         <div class="glass-panel rounded-[1.5rem] p-6">

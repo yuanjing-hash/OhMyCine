@@ -31,7 +31,7 @@ import { artworkCacheKey } from '@/services/imageCache'
 import { isLocalVideoFileName } from '@/services/localPlaylist'
 import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
 import { getPlaybackMediaContext } from '@/services/playbackContext'
-import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { createSafeStreamIdentity, getPlaybackProgress, playbackHistoryOwnerScope, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings, normalizePlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS, savePlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { videoAspectRatioValue as aspectRatioValue, compactPlayerTrackLabel as compactTrackLabel, formatPlaybackTime, playerRenderBackendLabel as renderBackendLabel, playerRenderStatusLabel as renderStatusLabel, safePlayerMenuText as safeMenuText, playerVideoAspectLabel as videoAspectLabel, playerVideoFitLabel as videoFitLabel } from '@/services/playerPresentation'
@@ -195,6 +195,9 @@ let lastSavedPosition = -1
 let playbackStartPosition = 0
 let playbackProgressReady = false
 let playbackHistoryStarted = false
+let activeHistoryOwnerScope: string | null | undefined
+let savedHistoryDuration: number | undefined
+let completedHistoryItem = ''
 const resumeSeekTimers = new Set<number>()
 let pendingResumeSeek: { path: string, position: number } | null = null
 let activeCachedSubtitlePath: string | null = null
@@ -235,6 +238,9 @@ const {
   isPlaying,
   currentTime,
   duration,
+  lastConfirmedTime,
+  lastConfirmedDuration,
+  playbackEndReason,
   volume,
   videoBrightness,
   displayBrightness,
@@ -902,7 +908,7 @@ async function resolvePlaybackLoadRequest(variantId?: string): Promise<MediaStre
     : { url: await source.getStreamURL(request.itemId) }
 }
 
-function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'mediaIdentity'> | null {
+function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'mediaIdentity' | 'ownerScope'> | null {
   if (!mediaPath.value)
     return null
 
@@ -916,7 +922,7 @@ function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'me
   if (!sourceId || !mediaIdentity)
     return null
 
-  return { sourceId, mediaIdentity }
+  return { sourceId, mediaIdentity, ownerScope: activeHistoryOwnerScope }
 }
 
 function currentOriginItemId(): string {
@@ -1250,7 +1256,7 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
   const libraryId = activeLibraryId.value || queueItem?.libraryId
   const mediaType = activeMediaType.value ?? queueItem?.type
   const position = effectivePlaybackPosition()
-  const mediaDuration = duration.value > 0 ? duration.value : queueItem?.duration
+  const mediaDuration = duration.value > 0 ? duration.value : lastConfirmedDuration.value > 0 ? lastConfirmedDuration.value : savedHistoryDuration ?? queueItem?.duration
   const displayTitle = mediaType === 'episode' ? queueItem?.seriesName || mediaTitle.value : mediaTitle.value
   const displaySubtitle = mediaType === 'episode'
     ? queueItem?.displaySubtitle ?? episodeHistorySubtitle(queueItem?.seasonNumber, queueItem?.episodeNumber, queueItem?.name)
@@ -1270,7 +1276,7 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
     episodeStillUrl: queueItem?.episodeStillUrl,
     position,
     duration: mediaDuration,
-    completed: isCompletedPosition(position, mediaDuration),
+    completed: playbackEndedNaturally(),
   }
 }
 
@@ -1278,7 +1284,16 @@ function effectivePlaybackPosition(): number {
   const pending = pendingResumeSeek
   if (pending && pending.path === mediaPath.value)
     return Math.max(0, pending.position)
-  return Math.max(0, currentTime.value)
+  return Math.max(0, playbackHasFailed() || !fileLoaded.value ? lastConfirmedTime.value : currentTime.value)
+}
+
+function playbackHasFailed(): boolean {
+  return playbackEndReason.value === 'error' || playbackDiagnostics.value?.state === 'error'
+    || Boolean(playbackDiagnostics.value?.lastError)
+}
+
+function playbackEndedNaturally(): boolean {
+  return playbackEndReason.value === 'eof' && playbackDiagnostics.value?.state === 'ended' && !playbackHasFailed()
 }
 
 function currentMediaSourceId(): string | undefined {
@@ -1304,11 +1319,11 @@ function routeResumePosition(): number | undefined {
   return currentPlaybackItem()?.resumePosition
 }
 
-function shouldResumePosition(position: number | undefined, mediaDuration: number | undefined): position is number {
+function shouldResumePosition(position: number | undefined): position is number {
   if (typeof position !== 'number' || !Number.isFinite(position) || position < 30)
     return false
 
-  return !isCompletedPosition(position, mediaDuration)
+  return currentPlaybackItem()?.played !== true
 }
 
 function syncProviderDiagnostics(sourceId: string): void {
@@ -1412,7 +1427,7 @@ function shouldSaveLocalProgress(payload: PlaybackProgressUpsert, force: boolean
 }
 
 async function saveCurrentProgress(force = false, event: ProviderPlaybackProgressEvent = 'progress') {
-  if (!playbackProgressReady || !fileLoaded.value)
+  if (!playbackProgressReady || (!fileLoaded.value && !playbackHistoryStarted && !playbackEndedNaturally()))
     return
 
   const currentPayload = currentHistoryPayload()
@@ -1468,14 +1483,20 @@ async function readSavedProgress(): Promise<PlaybackHistoryEntry | null> {
   if (!identity)
     return null
 
-  return getPlaybackProgress(identity)
+  const path = mediaPath.value
+  const ownerScope = await playbackHistoryOwnerScope(identity.sourceId)
+  if (path !== mediaPath.value || currentHistoryIdentity()?.sourceId !== identity.sourceId)
+    return null
+  activeHistoryOwnerScope = ownerScope
+  const saved = await getPlaybackProgress({ ...identity, ownerScope })
+  savedHistoryDuration = saved?.duration ?? undefined
+  return saved
 }
 
 async function resumeSavedProgressIfAvailable() {
   const saved = await readSavedProgress()
   const fallbackPosition = routeResumePosition()
-  const fallbackDuration = duration.value > 0 ? duration.value : currentQueueItem.value?.duration
-  const position = shouldResumePosition(fallbackPosition, fallbackDuration)
+  const position = shouldResumePosition(fallbackPosition)
     ? fallbackPosition
     : shouldResumePlayback(saved)
       ? saved.position
@@ -1598,6 +1619,9 @@ function resetHistorySaveState() {
   playbackStartPosition = 0
   playbackProgressReady = false
   playbackHistoryStarted = false
+  activeHistoryOwnerScope = undefined
+  savedHistoryDuration = undefined
+  completedHistoryItem = ''
   resumeMessage.value = null
 }
 
@@ -2182,12 +2206,20 @@ watch(
   { immediate: true },
 )
 
-watch(playbackDiagnostics, (diagnostics) => {
-  if (diagnostics?.state !== 'ended' || diagnostics.lastEvent !== 'end-file') {
+watch([playbackEndReason, playbackDiagnostics], async () => {
+  if (!playbackEndedNaturally()) {
     autoAdvancedLocalQueueItem = ''
+    if (playbackHasFailed() && playbackHistoryStarted)
+      await saveCurrentProgress(true, 'stopped')
     return
   }
 
+  const identity = currentHistoryIdentity()
+  const completionKey = `${identity?.sourceId}:${identity?.mediaIdentity}:${mediaPath.value}`
+  if (completedHistoryItem !== completionKey) {
+    completedHistoryItem = completionKey
+    await saveCurrentProgress(true, 'completed')
+  }
   const queue = playbackQueue.value
   const item = currentQueueItem.value
   if (playbackCleanupStarted || isQueueSwitching.value || activeSourceId.value !== LOCAL_FILE_SOURCE_ID
@@ -2213,7 +2245,7 @@ watch(isPlaying, (playing) => {
     void saveCurrentProgress(false, 'resumed')
   }
   else {
-    void saveCurrentProgress(true, 'paused')
+    void saveCurrentProgress(true, playbackHasFailed() ? 'stopped' : 'paused')
   }
 })
 

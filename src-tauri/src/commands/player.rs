@@ -1,6 +1,12 @@
-use std::{fs, fs::OpenOptions, io::{Read, Seek, SeekFrom}, path::{Path, PathBuf}, time::Duration};
-use tauri::{AppHandle, State};
 use serde::Serialize;
+use std::{
+    fs,
+    fs::OpenOptions,
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tauri::{AppHandle, State};
 
 use super::player_shared::{
     prepare_external_subtitle, sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings,
@@ -43,12 +49,25 @@ fn screenshot_stem(title: &str, season_number: Option<i32>, episode_number: Opti
     let cleaned: String = title
         .chars()
         .filter(|value| !value.is_control())
-        .map(|value| if r#"<>:"/\|?*"#.contains(value) { ' ' } else { value })
+        .map(|value| {
+            if r#"<>:"/\|?*"#.contains(value) {
+                ' '
+            } else {
+                value
+            }
+        })
         .take(80)
         .collect();
     let cleaned = cleaned.trim().trim_matches('.').trim();
-    let title = if cleaned.is_empty() { "未命名视频" } else { cleaned };
-    let episode = match (season_number.filter(|value| *value >= 0), episode_number.filter(|value| *value >= 0)) {
+    let title = if cleaned.is_empty() {
+        "未命名视频"
+    } else {
+        cleaned
+    };
+    let episode = match (
+        season_number.filter(|value| *value >= 0),
+        episode_number.filter(|value| *value >= 0),
+    ) {
         (Some(season), Some(number)) => format!("-S{season:02}E{number:02}"),
         (None, Some(number)) => format!("-E{number:02}"),
         _ => String::new(),
@@ -57,9 +76,17 @@ fn screenshot_stem(title: &str, season_number: Option<i32>, episode_number: Opti
 }
 
 fn screenshot_file_complete(path: &Path, format: &str) -> bool {
-    let Ok(mut file) = fs::File::open(path) else { return false };
-    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else { return false };
-    let marker: &[u8] = if format == "png" { b"IEND\xaeB\x60\x82" } else { b"\xff\xd9" };
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+        return false;
+    };
+    let marker: &[u8] = if format == "png" {
+        b"IEND\xaeB\x60\x82"
+    } else {
+        b"\xff\xd9"
+    };
     if length < marker.len() as u64 {
         return false;
     }
@@ -90,8 +117,11 @@ pub async fn mpv_capture_screenshot(
     let player_state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let directory = screenshot_directory(directory.as_deref())?;
-        fs::create_dir_all(&directory).map_err(|_| "无法创建截图目录，请在设置中选择可写目录。".to_string())?;
-        let directory = directory.canonicalize().map_err(|_| "截图目录不可访问。".to_string())?;
+        fs::create_dir_all(&directory)
+            .map_err(|_| "无法创建截图目录，请在设置中选择可写目录。".to_string())?;
+        let directory = directory
+            .canonicalize()
+            .map_err(|_| "截图目录不可访问。".to_string())?;
         let stem = screenshot_stem(&title, season_number, episode_number);
         for number in 1..=9999 {
             let name = format!("{stem}{number:04}.{format}");
@@ -112,12 +142,18 @@ pub async fn mpv_capture_screenshot(
             }
             for _ in 0..200 {
                 if screenshot_file_complete(&path, &format) {
-                    return Ok(ScreenshotResult { name, path: path.display().to_string() });
+                    return Ok(ScreenshotResult {
+                        name,
+                        path: path.display().to_string(),
+                    });
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
             // A backend may fail after accepting the asynchronous screenshot command.
-            if fs::metadata(&path).map(|value| value.len() == 0).unwrap_or(false) {
+            if fs::metadata(&path)
+                .map(|value| value.len() == 0)
+                .unwrap_or(false)
+            {
                 let _ = fs::remove_file(&path);
             }
             return Err("截图写入超时，请检查目录权限和播放器日志。".to_string());

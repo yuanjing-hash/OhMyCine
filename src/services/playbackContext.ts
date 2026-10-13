@@ -23,6 +23,7 @@ export interface PlaybackQueueItem {
   episodeStillUrl?: string
   cardLayout?: MediaItem['cardLayout']
   resumePosition?: number
+  played?: boolean
   offlineOriginSourceId?: string
   offlineOriginItemId?: string
 }
@@ -101,6 +102,7 @@ export interface PlaybackQueueItemInput {
   episodeStillUrl?: string
   cardLayout?: MediaItem['cardLayout']
   resumePosition?: number
+  played?: boolean
   offlineOriginSourceId?: string
   offlineOriginItemId?: string
 }
@@ -194,6 +196,7 @@ export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
     episodeStillUrl: item.episodeStillUrl,
     cardLayout: item.cardLayout,
     resumePosition: item.resumePosition,
+    played: item.played,
     offlineOriginSourceId: item.offlineOriginSourceId,
     offlineOriginItemId: item.offlineOriginItemId,
   })
@@ -248,6 +251,7 @@ function normalizeQueueItem(item: PlaybackQueueItemInput): PlaybackQueueItem {
     episodeStillUrl: item.episodeStillUrl,
     cardLayout: item.cardLayout,
     resumePosition: item.resumePosition,
+    played: item.played,
     offlineOriginSourceId: item.offlineOriginSourceId,
     offlineOriginItemId: item.offlineOriginItemId,
   }

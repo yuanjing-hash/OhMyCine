@@ -183,6 +183,7 @@ function toMediaItem(item: OfflineItemSummary): MediaItem {
     type: mediaType(item.mediaType),
     size: item.videoBytes,
     modified: new Date(item.completedAt * 1000).toISOString(),
+    addedAt: new Date(item.completedAt * 1000).toISOString(),
     path: '',
     seriesName: item.seriesName,
     seasonNumber: item.seasonNumber,

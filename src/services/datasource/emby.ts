@@ -1563,6 +1563,7 @@ export class EmbyDataSource implements DataSource {
       duration: ticksToSeconds(item.RunTimeTicks),
       size: item.Size ?? mediaSourceSize,
       modified: item.DateCreated ?? item.DateLastMediaAdded,
+      addedAt: item.DateCreated ?? item.DateLastMediaAdded,
       path: item.Id,
       resumePosition,
       progress,

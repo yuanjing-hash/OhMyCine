@@ -2,12 +2,13 @@ import type { DataSourceConfig, MediaItem } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
 import { redactSensitiveText } from '@/services/datasource/errors'
 
-export type PlaybackProgressSource = 'local'
+export type PlaybackProgressSource = 'local' | 'server'
 export const PLAYED_STATE_CHANGED_EVENT = 'ohmycine:played-state-changed'
 
 export interface PlaybackProgressIdentity {
   sourceId: string
   mediaIdentity: string
+  ownerScope?: string | null
 }
 
 export interface PlaybackProgressUpsert extends PlaybackProgressIdentity {
@@ -58,14 +59,38 @@ const RESUME_MIN_POSITION = 30
 const COMPLETED_REMAINING_SECONDS = 90
 const COMPLETED_PROGRESS_RATIO = 0.92
 const SENSITIVE_URL_PATTERN = /[?&](?:api_key|apikey|access_key|accesskeyid|access_token|token|x-emby-token|expires|x-amz-expires|signature|sig|sign|password|passwd|pwd|security-token|x-amz-signature|x-amz-credential|x-amz-security-token|ossaccesskeyid|awsaccesskeyid)=/i
+let resolveOwnerScope: ((sourceId: string) => Promise<string | null>) | undefined
+let mutationEpoch = 0
+
+export function invalidatePendingPlaybackHistoryMutations(): void {
+  mutationEpoch++
+}
+
+export function configurePlaybackHistoryScopeResolver(resolver: (sourceId: string) => Promise<string | null>): () => void {
+  resolveOwnerScope = resolver
+  return () => {
+    if (resolveOwnerScope === resolver)
+      resolveOwnerScope = undefined
+  }
+}
+
+export async function playbackHistoryOwnerScope(sourceId: string): Promise<string | null> {
+  return resolveOwnerScope?.(sourceId).catch(() => null) ?? null
+}
 
 export async function savePlaybackProgress(input: PlaybackProgressUpsert): Promise<PlaybackHistoryEntry | null> {
+  const epoch = mutationEpoch
   const progress = sanitizeProgressInput(input)
   if (!progress)
     return null
 
   try {
-    const saved = await invoke<PlaybackHistoryEntry>('player_upsert_playback_progress', { progress })
+    const generation = await invoke<number>('player_get_playback_history_generation')
+    if (progress.ownerScope === undefined)
+      progress.ownerScope = await playbackHistoryOwnerScope(progress.sourceId)
+    if (epoch !== mutationEpoch)
+      return null
+    const saved = await invoke<PlaybackHistoryEntry>('player_upsert_playback_progress', { progress, generation })
     notifyPlaybackHistoryChanged('progress-saved')
     return saved
   }
@@ -79,7 +104,10 @@ export async function getPlaybackProgress(identity: PlaybackProgressIdentity): P
     return null
 
   try {
-    return await invoke<PlaybackHistoryEntry | null>('player_get_playback_progress', { identity })
+    return await invoke<PlaybackHistoryEntry | null>('player_get_playback_progress', { identity: {
+      ...identity,
+      ownerScope: identity.ownerScope === undefined ? await playbackHistoryOwnerScope(identity.sourceId) : identity.ownerScope,
+    } })
   }
   catch {
     return null
@@ -113,10 +141,10 @@ export async function listPlaybackHistoryPage(page = 1, pageSize = 24, excludedS
   }
 }
 
-export async function listPlaybackHistorySyncPage(page = 1, pageSize = 100): Promise<PlaybackHistoryPage> {
+export async function listPlaybackHistorySyncPage(page = 1, pageSize = 100, scope?: string): Promise<PlaybackHistoryPage> {
   const safePage = Number.isInteger(page) ? Math.max(1, Math.min(100_000, page)) : 1
   const safePageSize = Number.isInteger(pageSize) ? Math.max(1, Math.min(100, pageSize)) : 100
-  return invoke<PlaybackHistoryPage>('player_list_playback_history_sync', { page: safePage, pageSize: safePageSize })
+  return invoke<PlaybackHistoryPage>('player_list_playback_history_sync', { page: safePage, pageSize: safePageSize, scope })
 }
 
 export async function listPlaybackHistoryTombstones(): Promise<PlaybackHistoryEntry[]> {
@@ -131,19 +159,33 @@ export async function listPlaybackHistoryTombstones(): Promise<PlaybackHistoryEn
 }
 
 export async function setPlaybackCompleted(identity: PlaybackProgressIdentity, completed: boolean): Promise<boolean> {
+  const epoch = mutationEpoch
   if (!isValidIdentity(identity))
     return false
-  const changed = await invoke<boolean>('player_set_playback_completed', { identity, completed })
+  const generation = await invoke<number>('player_get_playback_history_generation')
+  const scopedIdentity = {
+    ...identity,
+    ownerScope: identity.ownerScope === undefined ? await playbackHistoryOwnerScope(identity.sourceId) : identity.ownerScope,
+  }
+  if (epoch !== mutationEpoch)
+    return false
+  const changed = await invoke<boolean>('player_set_playback_completed', { identity: scopedIdentity, completed, generation })
   if (changed)
     notifyPlaybackHistoryChanged('completion-changed')
   return changed
 }
 
 export async function removeContinueWatching(input: Omit<PlaybackProgressUpsert, 'position'>): Promise<PlaybackHistoryEntry> {
+  const epoch = mutationEpoch
   const progress = sanitizeProgressInput({ ...input, position: 0, completed: false })
   if (!progress)
     throw new Error('观看记录身份无效，未执行删除。')
-  const deleted = await invoke<PlaybackHistoryEntry>('player_remove_continue_watching', { progress })
+  const generation = await invoke<number>('player_get_playback_history_generation')
+  if (progress.ownerScope === undefined)
+    progress.ownerScope = await playbackHistoryOwnerScope(progress.sourceId)
+  if (epoch !== mutationEpoch)
+    throw new Error('本地历史已重置，请刷新后重试。')
+  const deleted = await invoke<PlaybackHistoryEntry>('player_remove_continue_watching', { progress, generation })
   if (!deleted.deleted)
     throw new Error('观看记录未被删除。')
   notifyPlaybackHistoryChanged('history-deleted')
@@ -218,9 +260,6 @@ export function shouldResumePlayback(entry: PlaybackHistoryEntry | null | undefi
   if (entry.position < RESUME_MIN_POSITION)
     return false
 
-  if (typeof entry.duration === 'number' && Number.isFinite(entry.duration) && entry.duration > 0)
-    return !isCompletedPosition(entry.position, entry.duration)
-
   return true
 }
 
@@ -249,7 +288,8 @@ export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaI
     path: entry.streamIdentity ?? entry.mediaIdentity,
     resumePosition: entry.position,
     progress: entry.progress ?? undefined,
-    progressSource: entry.progressSource,
+    played: entry.completed,
+    progressSource: entry.progressSource === 'local' ? 'local' : undefined,
     modified: new Date(entry.updatedAt).toISOString(),
   }
 }
@@ -277,6 +317,7 @@ function sanitizeProgressInput(input: PlaybackProgressUpsert): PlaybackProgressU
     libraryId: nonEmpty(input.libraryId),
     itemId: nonEmpty(input.itemId),
     mediaIdentity: sanitizeMediaIdentity(input.mediaIdentity),
+    ownerScope: input.ownerScope == null ? input.ownerScope : /^[a-f0-9]{64}$/.test(input.ownerScope) ? input.ownerScope : undefined,
     title: nonEmpty(input.title) ?? '未命名影片',
     streamIdentity: sanitizeStreamIdentity(input.streamIdentity),
     mediaType: input.mediaType,

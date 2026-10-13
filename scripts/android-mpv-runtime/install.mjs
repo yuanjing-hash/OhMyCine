@@ -86,6 +86,8 @@ function verifyFiles(manifest, pathForFile) {
   const jni = readFileSync(pathForFile('lib/arm64-v8a/libplayer.so'))
   if (!mpv.includes(Buffer.from('androidvk\0')))
     throw new Error('Android runtime has no Vulkan androidvk context')
+  if (!jni.includes(Buffer.from('eventEndFile\0')))
+    throw new Error('Android JNI has no typed end-file callback')
   for (const symbol of ['attachSurface', 'setPropertyStringChecked', 'commandChecked', 'addLoadHook', 'continueHook', 'stopAsync']) {
     if (!jni.includes(Buffer.from(`Java_is_xyz_mpv_MPVLib_${symbol}\0`)))
       throw new Error(`Android JNI capability missing: ${symbol}`)

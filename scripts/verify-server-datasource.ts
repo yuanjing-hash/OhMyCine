@@ -40,44 +40,44 @@ const bridge = {
       : request.path.startsWith('/api/v1/player/discovery/torrent-search?')
         ? { groups: [{ site_id: 7, site_name: 'Nyaa', site_type: 'bt', status: 'success', page: 2, has_next: true, skipped: 4, items: [{ token: 'opaque-result-token', title: 'Seven Samurai' }] }] }
         : request.path === '/api/v1/player/bootstrap'
-      ? { capabilities: ['media_catalog', 'direct_stream'] }
-      : request.path === '/api/v1/player/media-libraries'
-        ? { list: [
-            { id: 9, name: '115 电影', storage_type: 'pan115', entry_count: 102, work_count: 101, artwork_url: '/api/v1/assets/library-covers/library-cloud.png', artwork_revision: 'fixed-cloud-v1', artwork_source: 'fallback' },
-            { id: 10, name: '不安全封面', storage_type: 'local', entry_count: 0, artwork_url: 'https://attacker.example/cover.png' },
-          ], total: 2 }
-        : request.path === '/api/v1/player/media-libraries/9/categories'
-          ? { list: [{ id: 'category-movie', name: '外语电影', media_type: 'movie', item_count: 101, artwork_url: '/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artwork_revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artwork_source: 'generated' }], total: 1 }
-        : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${noPlayableItem().id}`)
-          ? {
-              item: noPlayableItem(),
-              versions: [{ id: 88, title: '不可播放版本', size: 512, modified_at: '2026-08-22T00:00:00Z', playable: false, exact_identity: '' }],
-            }
-          : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${seriesItem().id}`)
-            ? {
-                item: seriesItem(),
-                versions: [
-                  { id: 201, title: '改稻为桑', season: 1, episode: 1, overview: '第一集简介', still_path: '/episode-1.jpg', episode_still_url: '/api/v1/player/discovery/images/tmdb/episode-1', runtime_minutes: 47, rating: 8.2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/201/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:201' },
-                  { id: 202, title: '示例剧 - S01E02', season: 1, episode: 2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/202/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:202' },
-                  { id: 246, title: '落幕', season: 1, episode: 46, overview: '第四十六集简介', still_path: '/episode-46.jpg', episode_still_url: '/api/v1/player/discovery/images/tmdb/episode-46', runtime_minutes: 49, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/246/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:246' },
-                ],
-              }
-            : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${legacyArtworkItem().id}`)
-              ? {
-                  item: legacyArtworkItem(),
-                  versions: [{ id: 301, title: '旧 Server 电影', size: 1024, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/301/stream', exact_identity: 'server:entry:301' }],
-                }
-          : request.path.startsWith('/api/v1/player/media-libraries/9/catalog/')
-          ? {
-              item: mediaItem(),
-              versions: [
-                { id: 76, title: '不可播放旧版本', size: 512, modified_at: '2026-08-21T00:00:00Z', playable: false, exact_identity: '' },
-                { id: 77, title: '七武士 (1954)', size: 1024, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/77/stream', delivery_kind: 'server_redirect', exact_identity: 'ohmycine:artifact:artifact_test' },
-              ],
-            }
-          : request.path.startsWith('/api/v1/player/media-libraries/9/catalog')
-            ? { list: page === 1 ? Array.from({ length: 100 }, (_, index) => mediaItem(index)) : [mediaItem(100)], total: 101, page, page_size: 100 }
-            : { list: [], total: 0, page: 1, page_size: 50 }
+          ? { user: { id: 1 }, capabilities: ['media_catalog', 'direct_stream'] }
+          : request.path === '/api/v1/player/media-libraries'
+            ? { list: [
+                { id: 9, name: '115 电影', storage_type: 'pan115', entry_count: 102, work_count: 101, artwork_url: '/api/v1/assets/library-covers/library-cloud.png', artwork_revision: 'fixed-cloud-v1', artwork_source: 'fallback' },
+                { id: 10, name: '不安全封面', storage_type: 'local', entry_count: 0, artwork_url: 'https://attacker.example/cover.png' },
+              ], total: 2 }
+            : request.path === '/api/v1/player/media-libraries/9/categories'
+              ? { list: [{ id: 'category-movie', name: '外语电影', media_type: 'movie', item_count: 101, artwork_url: '/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artwork_revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', artwork_source: 'generated' }], total: 1 }
+              : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${noPlayableItem().id}`)
+                ? {
+                    item: noPlayableItem(),
+                    versions: [{ id: 88, title: '不可播放版本', size: 512, modified_at: '2026-08-22T00:00:00Z', playable: false, exact_identity: '' }],
+                  }
+                : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${seriesItem().id}`)
+                  ? {
+                      item: seriesItem(),
+                      versions: [
+                        { id: 201, item_token: `entry|9|${seriesItem().id}|201`, history_identity: `server:v1:episode:9:${seriesItem().id}:1:1`, title: '改稻为桑', season: 1, episode: 1, overview: '第一集简介', still_path: '/episode-1.jpg', episode_still_url: '/api/v1/player/discovery/images/tmdb/episode-1', runtime_minutes: 47, rating: 8.2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/201/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:201' },
+                        { id: 202, item_token: `entry|9|${seriesItem().id}|202`, history_identity: `server:v1:episode:9:${seriesItem().id}:1:2`, title: '示例剧 - S01E02', season: 1, episode: 2, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/202/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:202' },
+                        { id: 246, item_token: `entry|9|${seriesItem().id}|246`, history_identity: `server:v1:episode:9:${seriesItem().id}:1:46`, title: '落幕', season: 1, episode: 46, overview: '第四十六集简介', still_path: '/episode-46.jpg', episode_still_url: '/api/v1/player/discovery/images/tmdb/episode-46', runtime_minutes: 49, size: 2048, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/246/stream', delivery_kind: 'server_stream', exact_identity: 'server:entry:246' },
+                      ],
+                    }
+                  : request.path.startsWith(`/api/v1/player/media-libraries/9/catalog/${legacyArtworkItem().id}`)
+                    ? {
+                        item: legacyArtworkItem(),
+                        versions: [{ id: 301, item_token: `entry|9|${legacyArtworkItem().id}|301`, history_identity: legacyArtworkItem().history_identity, title: '旧 Server 电影', size: 1024, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/301/stream', exact_identity: 'server:entry:301' }],
+                      }
+                    : request.path.startsWith('/api/v1/player/media-libraries/9/catalog/')
+                      ? {
+                          item: mediaItem(),
+                          versions: [
+                            { id: 76, title: '不可播放旧版本', size: 512, modified_at: '2026-08-21T00:00:00Z', playable: false, exact_identity: '' },
+                            { id: 77, item_token: `entry|9|${mediaItem().id}|77`, history_identity: mediaItem().history_identity, title: '七武士 (1954)', size: 1024, modified_at: '2026-08-22T00:00:00Z', playable: true, stream_path: '/api/v1/player/media-entries/77/stream', delivery_kind: 'server_redirect', exact_identity: 'ohmycine:artifact:artifact_test' },
+                          ],
+                        }
+                      : request.path.startsWith('/api/v1/player/media-libraries/9/catalog')
+                        ? { list: page === 1 ? Array.from({ length: 100 }, (_, index) => mediaItem(index)) : [mediaItem(100)], total: 101, page, page_size: 100 }
+                        : { list: [], total: 0, page: 1, page_size: 50 }
     return { status: 200, body: { code: 0, message: 'success', data } }
   },
 }
@@ -87,8 +87,12 @@ const source = new ServerDataSource({
   readCredential: async () => ({ accessToken: token }),
 })
 await source.init({
-  id: 'server-home', type: 'server', name: '家庭 Server', order: 0,
-  url: 'http://127.0.0.1:3000', enabled: true,
+  id: 'server-home',
+  type: 'server',
+  name: '家庭 Server',
+  order: 0,
+  url: 'http://127.0.0.1:3000',
+  enabled: true,
   extra: { credentialRef: 'datasource:server-home:server-credential', deviceId: 'device-test' },
 })
 assert.equal(await source.test(), true)
@@ -293,8 +297,21 @@ const overviewSource = new ServerDataSource({
   bridge: {
     async request(request) {
       const path = request.path
-      const data = path === '/api/v1/player/media-libraries'
-        ? { list: [{ id: 9, name: '家庭影片', storage_type: 'local', entry_count: 1, work_count: 1, artwork_url: '/api/v1/assets/library-covers/library-local.png', artwork_revision: 'library-v1', artwork_source: 'provider' }], total: 1 }
+      const section = (list: unknown[]) => ({ status: 'ok' as const, list, has_more: false })
+      const data = path === '/api/v1/player/overview'
+        ? {
+            version: 'v1',
+            sections: {
+              featured: section([mediaItem()]),
+              continue_watching: section([{ history_identity: 'server:v1:movie:9:bW92aWU6dG1kYjozNDY', item_token: 'work|9|bW92aWU6dG1kYjozNDY', display_title: '七武士', media_type: 'movie', position: 300, duration: 1200, completed: false, updated_at: 1_788_220_800_000 }]),
+              recently_added: section([mediaItem()]),
+              favorites: section([mediaItem()]),
+              automatic_collections: section([{ id: overviewCollectionIds.automatic, name: '系统合集', kind: 'collection', source: 'tmdb', item_count: 2, poster_path: '/automatic.jpg' }]),
+              manual_collections: section([{ id: overviewCollectionIds.manual, name: '我的合集', kind: 'collection', source: 'manual', item_count: 1, poster_path: '/manual.jpg' }]),
+              recent_history: section([]),
+              media_libraries: section([{ id: 9, name: '家庭影片', storage_type: 'local', entry_count: 1, work_count: 1, artwork_url: '/api/v1/assets/library-covers/library-local.png', artwork_revision: 'library-v1', artwork_source: 'provider' }]),
+            },
+          }
         : path === '/api/v1/player/online-libraries'
           ? { list: [], total: 0 }
           : path === '/api/v1/player/home-contributions'
@@ -321,7 +338,13 @@ const overviewSource = new ServerDataSource({
 await overviewSource.init({ id: 'server-overview', type: 'server', name: '总览测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'overview-credential', deviceId: 'overview-device' } })
 const overviewSections = await overviewSource.getHomeSections()
 assert.deepEqual(overviewSections.filter(section => !section.providerIdentity).map(section => section.purpose ?? section.type), [
-  'hero', 'history', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'libraries',
+  'hero',
+  'history',
+  'recentlyAdded',
+  'favorites',
+  'automaticCollections',
+  'manualCollections',
+  'libraries',
 ])
 const automaticSection = overviewSections.find(section => section.purpose === 'automaticCollections')!
 assert.equal(automaticSection.collectionSource, 'automatic')
@@ -365,7 +388,13 @@ const fastOverviewSource = new ServerDataSource({
 await fastOverviewSource.init({ id: 'server-fast-overview', type: 'server', name: '聚合总览测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'fast-overview-credential', deviceId: 'fast-overview-device', capabilities: ['media_overview_v1'] } })
 const fastOverviewSections = await fastOverviewSource.getHomeSections()
 assert.deepEqual(fastOverviewSections.filter(section => !section.providerIdentity).map(section => section.purpose ?? section.type), [
-  'hero', 'history', 'recentlyAdded', 'favorites', 'automaticCollections', 'manualCollections', 'libraries',
+  'hero',
+  'history',
+  'recentlyAdded',
+  'favorites',
+  'automaticCollections',
+  'manualCollections',
+  'libraries',
 ])
 assert.equal(fastOverviewSections.find(section => section.purpose === 'manualCollections')?.errorCode, 'INTERNAL_ERROR')
 assert.equal(fastOverviewSections.find(section => section.purpose === 'favorites')?.items[0]?.favorite, true)
@@ -552,8 +581,14 @@ assert.deepEqual(logoutCalls, [{ path: '/api/v1/player/auth/logout', accessToken
 
 const merged = mergeMediaItemsByIdentity([
   {
-    id: 'emby-1', sourceId: 'emby-home', originType: 'emby', name: 'Seven Samurai', type: 'movie', path: '',
-    posterUrl: 'https://image.example.test/poster.jpg', workIdentity: { scheme: 'tmdb', mediaType: 'movie', value: '346' },
+    id: 'emby-1',
+    sourceId: 'emby-home',
+    originType: 'emby',
+    name: 'Seven Samurai',
+    type: 'movie',
+    path: '',
+    posterUrl: 'https://image.example.test/poster.jpg',
+    workIdentity: { scheme: 'tmdb', mediaType: 'movie', value: '346' },
     playbackTargets: [{ sourceId: 'emby-home', itemId: 'emby-1', label: 'Emby' }],
   },
   items[0],
@@ -605,7 +640,7 @@ const successfulLogin = await loginServerAndCreateConfig({
     if (request.path === '/api/v1/player/auth/login')
       return { status: 200, body: { code: 0, message: 'success', data: { access_token: token } } }
     if (request.path === '/api/v1/player/bootstrap')
-      return { status: 200, body: { code: 0, message: 'success', data: { capabilities: ['media_catalog', 'discovery_search', 'acquisition_create'] } } }
+      return { status: 200, body: { code: 0, message: 'success', data: { user: { id: 1 }, capabilities: ['media_catalog', 'discovery_search', 'acquisition_create'] } } }
     if (request.path === '/api/v1/player/media-libraries')
       return { status: 200, body: { code: 0, message: 'success', data: { list: [], total: 0 } } }
     return { status: 404, body: { code: 'NOT_FOUND', message: 'not found', data: {} } }
@@ -681,7 +716,7 @@ await assert.rejects(loginServerAndCreateConfig({
     if (request.path === '/api/v1/player/auth/logout')
       return { status: 200, body: { code: 0, message: 'success', data: {} } }
     if (request.path === '/api/v1/player/bootstrap')
-      return { status: 200, body: { code: 0, message: 'success', data: { capabilities: ['media_catalog'] } } }
+      return { status: 200, body: { code: 0, message: 'success', data: { user: { id: 1 }, capabilities: ['media_catalog'] } } }
     return { status: 200, body: { code: 0, message: 'success', data: { list: [], total: 0 } } }
   },
 }, async () => {
@@ -714,26 +749,27 @@ assert.match(historySyncSource, /change\.source_kind === 'server'[\s\S]*\? curre
 
 const historyConfigs = [
   { id: 'server-home', type: 'server' as const, name: '家庭 Server', order: 0, url: 'https://server.example.test', enabled: true },
-  { id: 'emby-home', type: 'emby' as const, name: '客厅 Emby', order: 1, url: 'https://emby.example.test', enabled: true },
-  { id: 'jellyfin-disabled', type: 'jellyfin' as const, name: '已停用 Jellyfin', order: 2, url: 'https://jellyfin.example.test', enabled: false },
+  { id: 'emby-home', type: 'emby' as const, name: '客厅 Emby', order: 1, url: 'https://emby.example.test', enabled: true, extra: { userId: 'emby-user' } },
+  { id: 'jellyfin-disabled', type: 'jellyfin' as const, name: '已停用 Jellyfin', order: 2, url: 'https://jellyfin.example.test', enabled: false, extra: { userId: 'jellyfin-user' } },
 ]
+const serverHistoryScope = 'a'.repeat(64)
+const providerHistoryScopes = new Map([['emby-home', 'b'.repeat(64)], ['jellyfin-disabled', 'c'.repeat(64)]])
 const historyUploads = await createServerHistoryUploadChanges([
-  { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'entry|9|bW92aWU|42', title: 'Server 电影', position: 60, updatedAt: 10_000, completed: false, progressSource: 'local' },
-  { sourceId: 'emby-home', mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', posterUrl: 'https://image.example.test/emby.jpg', position: 120, updatedAt: 11_000, completed: false, progressSource: 'local' },
-  { sourceId: 'jellyfin-disabled', mediaIdentity: 'jellyfin:item:84', itemId: '84', title: '已停用来源电影', position: 90, updatedAt: 11_500, completed: false, progressSource: 'local' },
-  { sourceId: 'local-file', mediaIdentity: 'local:file:demo', itemId: 'demo', title: '本机文件', position: 30, updatedAt: 12_000, completed: false, progressSource: 'local' },
-], historyConfigs, 'server-home')
+  { sourceId: 'server-home', ownerScope: serverHistoryScope, mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'entry|9|bW92aWU|42', title: 'Server 电影', position: 60, updatedAt: 1_791_888_010_000, completed: false, deleted: false, progressSource: 'local' },
+  { sourceId: 'emby-home', ownerScope: providerHistoryScopes.get('emby-home'), mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', posterUrl: 'https://image.example.test/emby.jpg', position: 120, updatedAt: 1_791_888_011_000, completed: false, deleted: false, progressSource: 'local' },
+  { sourceId: 'jellyfin-disabled', ownerScope: providerHistoryScopes.get('jellyfin-disabled'), mediaIdentity: 'jellyfin:item:84', itemId: '84', title: '已停用来源电影', position: 90, updatedAt: 1_791_888_011_500, completed: false, deleted: false, progressSource: 'local' },
+  { sourceId: 'local-file', mediaIdentity: 'local:file:demo', itemId: 'demo', title: '本机文件', position: 30, updatedAt: 1_791_888_012_000, completed: false, deleted: false, progressSource: 'local' },
+], historyConfigs, 'server-home', undefined, serverHistoryScope, providerHistoryScopes)
 assert.deepEqual(historyUploads.map(item => [item.source_kind, item.source_name, item.poster_url]), [
   ['server', '家庭 Server', undefined],
   ['emby', '客厅 Emby', 'https://image.example.test/emby.jpg'],
   ['jellyfin', '已停用 Jellyfin', undefined],
-  ['local-file', '本机文件', undefined],
 ])
 assert.equal(historyUploads[0]?.item_token, 'work|9|bW92aWU', 'movie history must survive a changed entry ID')
 const tombstoneUploads = await createServerHistoryUploadChanges([
-  { sourceId: 'emby-home', mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', position: 0, updatedAt: 13_000, completed: false, deleted: true, progressSource: 'local' },
-  { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'work|9|bW92aWU', title: 'Server 电影', position: 0, updatedAt: 13_001, completed: false, deleted: true, progressSource: 'local' },
-], historyConfigs, 'server-home')
+  { sourceId: 'emby-home', ownerScope: providerHistoryScopes.get('emby-home'), mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', position: 0, updatedAt: 1_791_888_013_000, completed: false, deleted: true, progressSource: 'local' },
+  { sourceId: 'server-home', ownerScope: serverHistoryScope, mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'work|9|bW92aWU', title: 'Server 电影', position: 0, updatedAt: 1_791_888_013_001, completed: false, deleted: true, progressSource: 'local' },
+], historyConfigs, 'server-home', undefined, serverHistoryScope, providerHistoryScopes)
 assert.equal(tombstoneUploads[0]?.deleted, true)
 assert.equal(tombstoneUploads[0]?.sync_key, historyUploads[1]?.sync_key, 'deletion must target the prior Emby record')
 assert.equal(tombstoneUploads[1]?.sync_key, historyUploads[0]?.sync_key, 'deletion must target the canonical Server record')
@@ -742,12 +778,12 @@ assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, 
 assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [{ ...tombstoneUploads[1]!, deleted: false }]), false, 'newer playback must not confirm deletion')
 assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [{ ...tombstoneUploads[1]!, updated_at: deletionFocus.updatedAt - 1 }]), false, 'older tombstone must not confirm deletion')
 assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [tombstoneUploads[0]!]), false, 'another record must not confirm deletion')
-const restoredTombstone = mapServerHistoryChangeToLocalEntry(tombstoneUploads[0]!, historyConfigs, historyConfigs[0]!)
+const restoredTombstone = mapServerHistoryChangeToLocalEntry(tombstoneUploads[0]!, historyConfigs, historyConfigs[0]!, serverHistoryScope, providerHistoryScopes)
 assert.equal(restoredTombstone[0]?.deleted, true, 'incoming deletion must remain a durable local tombstone')
 assert.equal(restoredTombstone[0]?.mediaIdentity, 'emby:item:42')
-assert.equal(mapServerHistoryChangeToLocalEntry(historyUploads[1]!, historyConfigs, historyConfigs[0]!).length, 1)
-assert.equal(mapServerHistoryChangeToLocalEntry({ ...historyUploads[1]!, source_locator: 'https://missing.example.test' }, historyConfigs, historyConfigs[0]!).length, 0)
-assert.equal(mapServerHistoryChangeToLocalEntry(historyUploads[2]!, historyConfigs, historyConfigs[0]!).length, 0)
+assert.equal(mapServerHistoryChangeToLocalEntry(historyUploads[1]!, historyConfigs, historyConfigs[0]!, serverHistoryScope, providerHistoryScopes).length, 1)
+assert.equal(mapServerHistoryChangeToLocalEntry({ ...historyUploads[1]!, source_locator: 'https://missing.example.test' }, historyConfigs, historyConfigs[0]!, serverHistoryScope, providerHistoryScopes).length, 0)
+assert.equal(mapServerHistoryChangeToLocalEntry(historyUploads[2]!, historyConfigs, historyConfigs[0]!, serverHistoryScope, providerHistoryScopes).length, 1)
 assert.deepEqual(chunkServerHistoryChanges(Array.from({ length: 501 }, () => historyUploads[0]!)).map(batch => batch.length), [500, 1])
 const parsedPartialHistorySync = parsePlaybackHistorySyncResponse({
   cursor: 7,
@@ -761,7 +797,6 @@ assert.throws(() => parsePlaybackHistorySyncResponse({
   cursor: 8,
   changes: [{ ...historyUploads[1]!, completed: 'false' }],
 }), /播放历史同步响应无效/)
-assert.match(historySyncSource, /mediaIdentity:\s*change\.deleted === true \? change\.media_identity : presentation\?\.historyIdentity/)
 const sourceLibraryView = fs.readFileSync(new URL('../src/views/SourceLibraryView.vue', import.meta.url), 'utf8')
 assert.match(sourceLibraryView, /const historySection = computed/)
 assert.match(sourceLibraryView, /section\.viewAllRoute/)
@@ -805,13 +840,40 @@ console.log(JSON.stringify({
 }, null, 2))
 
 function mediaItem(index = 0) {
+  const id = index === 0 ? 'bW92aWU6dG1kYjozNDY' : `movie-${index}`
   return {
-    id: index === 0 ? 'bW92aWU6dG1kYjozNDY' : `movie-${index}`, library_id: 9, title: index === 0 ? '七武士' : `电影 ${index}`, kind: 'movie', release_year: 1954,
-    original_title: '七人の侍', overview: '日本电影', tagline: '他们站了起来。', rating: 8.5, runtime_minutes: 207,
-    genres: ['剧情', '动作'], directors: ['黑泽明'], writers: ['桥本忍'], cast: ['三船敏郎', '志村乔'],
-    people: [{ tmdb_id: 1, name: '黑泽明', role: 'Director' }, { tmdb_id: 2, name: '三船敏郎', role: 'Actor', character: '菊千代', profile_path: '/mifune.jpg', profile_url: '/api/v1/player/discovery/images/tmdb/mifune' }], tmdb_id: 346, imdb_id: 'tt0047478',
-    poster_path: '', backdrop_path: '/backdrop.jpg', still_paths: ['/backdrop.jpg', '/still-2.jpg'], poster_url: '/api/v1/player/discovery/images/tmdb/poster-346', backdrop_url: '/api/v1/player/discovery/images/tmdb/backdrop-346', still_urls: ['/api/v1/player/discovery/images/tmdb/backdrop-346', '/api/v1/player/discovery/images/tmdb/still-2'], work_identity: { scheme: 'tmdb', media_type: 'movie', value: '346' },
-    file_count: 1, season_count: 0, episode_count: 0, modified_at: '2026-08-22T00:00:00Z', match_status: 'matched',
+    id,
+    item_token: `work|9|${id}`,
+    history_identity: `server:v1:movie:9:${id}`,
+    library_id: 9,
+    title: index === 0 ? '七武士' : `电影 ${index}`,
+    kind: 'movie',
+    release_year: 1954,
+    original_title: '七人の侍',
+    overview: '日本电影',
+    tagline: '他们站了起来。',
+    rating: 8.5,
+    runtime_minutes: 207,
+    genres: ['剧情', '动作'],
+    directors: ['黑泽明'],
+    writers: ['桥本忍'],
+    cast: ['三船敏郎', '志村乔'],
+    people: [{ tmdb_id: 1, name: '黑泽明', role: 'Director' }, { tmdb_id: 2, name: '三船敏郎', role: 'Actor', character: '菊千代', profile_path: '/mifune.jpg', profile_url: '/api/v1/player/discovery/images/tmdb/mifune' }],
+    tmdb_id: 346,
+    imdb_id: 'tt0047478',
+    poster_path: '',
+    backdrop_path: '/backdrop.jpg',
+    still_paths: ['/backdrop.jpg', '/still-2.jpg'],
+    poster_url: '/api/v1/player/discovery/images/tmdb/poster-346',
+    backdrop_url: '/api/v1/player/discovery/images/tmdb/backdrop-346',
+    still_urls: ['/api/v1/player/discovery/images/tmdb/backdrop-346', '/api/v1/player/discovery/images/tmdb/still-2'],
+    work_identity: { scheme: 'tmdb', media_type: 'movie', value: '346' },
+    file_count: 1,
+    season_count: 0,
+    episode_count: 0,
+    modified_at: '2026-08-22T00:00:00Z',
+    added_at: '2026-08-26T00:00:00Z',
+    match_status: 'matched',
   }
 }
 
@@ -819,6 +881,8 @@ function seriesItem() {
   return {
     ...mediaItem(),
     id: 'c2VyaWVzOnRtZGI6MTAw',
+    item_token: 'work|9|c2VyaWVzOnRtZGI6MTAw',
+    history_identity: undefined,
     title: '示例剧',
     original_title: 'Example Series',
     poster_path: '/series-poster.jpg',
@@ -837,6 +901,8 @@ function legacyArtworkItem() {
   return {
     ...mediaItem(),
     id: 'bW92aWU6dG1kYjozNDYtbGVnYWN5',
+    item_token: 'work|9|bW92aWU6dG1kYjozNDYtbGVnYWN5',
+    history_identity: 'server:v1:movie:9:bW92aWU6dG1kYjozNDYtbGVnYWN5',
     still_paths: undefined,
     still_urls: undefined,
   }
@@ -846,6 +912,8 @@ function noPlayableItem() {
   return {
     ...mediaItem(),
     id: 'movie-no-playable',
+    item_token: 'work|9|movie-no-playable',
+    history_identity: 'server:v1:movie:9:movie-no-playable',
     title: '无可播放版本',
   }
 }

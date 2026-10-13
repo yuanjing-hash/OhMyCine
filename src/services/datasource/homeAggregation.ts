@@ -68,7 +68,12 @@ function mergeSectionsOfType(
   },
 ): HomeSection | null {
   const typedSections = sections.filter(section => section.type === type)
-  const items = dedupeHomeItems(typedSections.flatMap(section => section.items))
+  const sourceItems = typedSections.flatMap(section => section.items)
+  // Merge duplicate catalog routes only after the newest admission is first.
+  // Otherwise an older Server library can hide the same work's new admission.
+  if (type === 'recentlyAdded')
+    sourceItems.sort(options.sortItems)
+  const items = dedupeHomeItems(sourceItems)
     .sort(options.sortItems)
     .slice(0, options.limit)
   if (items.length === 0)
@@ -106,14 +111,16 @@ function heroScore(item: MediaItem): number {
 }
 
 function compareRecentlyAddedItems(left: MediaItem, right: MediaItem): number {
-  return itemTimestamp(right) - itemTimestamp(left)
-    || (right.year ?? 0) - (left.year ?? 0)
-    || right.name.localeCompare(left.name, 'zh-Hans-CN')
+  const leftTime = itemTimestamp(left)
+  const rightTime = itemTimestamp(right)
+  if (leftTime !== rightTime)
+    return rightTime > leftTime ? 1 : -1
+  // Stable sort retains each provider's delivered tie/order. In particular,
+  // Server already orders equal admissions by library and work identity.
+  return left.sourceId.localeCompare(right.sourceId)
 }
 
 function itemTimestamp(item: MediaItem): number {
-  const modifiedTime = item.modified ? Date.parse(item.modified) : Number.NaN
-  if (Number.isFinite(modifiedTime))
-    return modifiedTime
-  return item.year ? Date.UTC(item.year, 0, 1) : 0
+  const addedTime = item.addedAt ? Date.parse(item.addedAt) : Number.NaN
+  return Number.isFinite(addedTime) ? addedTime : Number.NEGATIVE_INFINITY
 }

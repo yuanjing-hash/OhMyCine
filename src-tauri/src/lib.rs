@@ -21,10 +21,13 @@ use commands::downloads::{
 };
 use commands::emby::{emby_post_playback_json, emby_request_json};
 use commands::history::{
+    player_apply_playback_history_sync, player_clear_local_playback_history,
     player_delete_playback_history_for_source, player_get_playback_completion_batch,
-    player_get_playback_progress, player_list_continue_watching, player_list_playback_history,
-    player_list_playback_history_sync, player_list_playback_history_tombstones,
-    player_merge_playback_history, player_remove_continue_watching, player_set_playback_completed,
+    player_get_playback_history_generation, player_get_playback_history_sync_state,
+    player_get_playback_progress, player_invalidate_playback_history_sources,
+    player_list_continue_watching, player_list_playback_history, player_list_playback_history_sync,
+    player_list_playback_history_tombstones, player_remove_continue_watching,
+    player_restore_playback_history_scope, player_set_playback_completed,
     player_upsert_playback_progress,
 };
 use commands::image_cache::{
@@ -40,12 +43,12 @@ use commands::media_collections::{
     player_remove_media_collection_member, player_set_local_favorite,
 };
 use commands::player::{
-    mpv_capture_screenshot, player_screenshot_directory_label,
-    mpv_add_subtitle, mpv_apply_engine_settings, mpv_display_brightness_state, mpv_get_property,
-    mpv_init_render_surface, mpv_load, mpv_orientation_state, mpv_pause, mpv_playback_diagnostics,
-    mpv_render_status, mpv_resume, mpv_seek, mpv_set_display_brightness, mpv_set_orientation,
-    mpv_set_property, mpv_set_render_strategy, mpv_stop, mpv_track_state,
-    mpv_update_render_surface_bounds,
+    mpv_add_subtitle, mpv_apply_engine_settings, mpv_capture_screenshot,
+    mpv_display_brightness_state, mpv_get_property, mpv_init_render_surface, mpv_load,
+    mpv_orientation_state, mpv_pause, mpv_playback_diagnostics, mpv_render_status, mpv_resume,
+    mpv_seek, mpv_set_display_brightness, mpv_set_orientation, mpv_set_property,
+    mpv_set_render_strategy, mpv_stop, mpv_track_state, mpv_update_render_surface_bounds,
+    player_screenshot_directory_label,
 };
 use commands::preference::{
     player_clear_media_cache, player_delete_media_playback_preferences_for_source,
@@ -155,7 +158,12 @@ pub fn run() {
             player_set_playback_completed,
             player_remove_continue_watching,
             player_delete_playback_history_for_source,
-            player_merge_playback_history,
+            player_get_playback_history_generation,
+            player_get_playback_history_sync_state,
+            player_apply_playback_history_sync,
+            player_clear_local_playback_history,
+            player_invalidate_playback_history_sources,
+            player_restore_playback_history_scope,
             player_list_media_collections,
             player_create_media_collection,
             player_delete_media_collection,
@@ -249,6 +257,8 @@ pub fn run() {
         })
         .setup(|app| {
             storage::initialize(app.handle()).map_err(std::io::Error::other)?;
+            commands::history::initialize_playback_history_session(app.handle())
+                .map_err(std::io::Error::other)?;
             commands::downloads::recover_interrupted_downloads(app.handle())
                 .map_err(std::io::Error::other)?;
             commands::preference::clear_raw_scan_cache(app.handle())

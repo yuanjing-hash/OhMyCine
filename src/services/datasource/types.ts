@@ -19,6 +19,8 @@ export interface MediaItem {
   duration?: number
   size?: number
   modified?: string
+  /** Owning catalog's first admission time; independent from source modification or release year. */
+  addedAt?: string
   path: string
   resumePosition?: number
   progress?: number

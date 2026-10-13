@@ -17,12 +17,18 @@ const MAX_ID_LENGTH: usize = 512;
 const MAX_IDENTITY_LENGTH: usize = 2048;
 const MAX_TEXT_LENGTH: usize = 2048;
 const NOW_MILLIS_SQL: &str = "(CAST(strftime('%s','now') AS INTEGER) * 1000 + CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";
+const VISIBLE_SCOPE_SQL: &str = "((owner_scope IS NULL AND NOT EXISTS (
+    SELECT 1 FROM playback_history_source_scopes known
+    WHERE known.source_id=playback_history.source_id)) OR EXISTS (
+    SELECT 1 FROM playback_history_source_scopes current
+    WHERE current.source_id=playback_history.source_id AND current.scope=playback_history.owner_scope AND current.active=1))";
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaybackProgressIdentity {
     source_id: String,
     media_identity: String,
+    owner_scope: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -43,6 +49,7 @@ pub struct PlaybackProgressUpsert {
     position: f64,
     duration: Option<f64>,
     completed: Option<bool>,
+    owner_scope: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -67,6 +74,7 @@ pub struct PlaybackHistoryEntry {
     completed: bool,
     deleted: bool,
     progress_source: String,
+    owner_scope: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -99,22 +107,210 @@ pub struct PlaybackHistoryMerge {
     completed: bool,
     deleted: bool,
     updated_at: i64,
+    owner_scope: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackHistoryAcknowledgment {
+    source_id: String,
+    media_identity: String,
+    updated_at: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackHistorySyncApplyRequest {
+    source_id: String,
+    scope: String,
+    mapping_key: String,
+    generation: u64,
+    cursor: u64,
+    acknowledgments: Vec<PlaybackHistoryAcknowledgment>,
+    entries: Vec<PlaybackHistoryMerge>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackHistorySyncState {
+    cursor: u64,
+    generation: u64,
+}
+
+pub fn initialize_playback_history_session(app: &AppHandle) -> Result<(), String> {
+    PlaybackHistoryStorage::open(app)?
+        .conn
+        .execute("UPDATE playback_history_source_scopes SET active=0", [])
+        .map_err(|_| "Failed to initialize playback history account validation.".to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn player_invalidate_playback_history_sources(
+    app: AppHandle,
+    source_ids: Vec<String>,
+) -> Result<(), String> {
+    let source_ids = normalize_excluded_source_ids(Some(source_ids))?;
+    let mut storage = PlaybackHistoryStorage::open(&app)?;
+    let tx = storage
+        .conn
+        .transaction()
+        .map_err(|_| "Failed to begin history account invalidation.".to_string())?;
+    for source_id in source_ids {
+        tx.execute(
+            "UPDATE playback_history_source_scopes SET active=0 WHERE source_id=?1",
+            params![source_id],
+        )
+        .map_err(|_| "Failed to invalidate playback history account.".to_string())?;
+    }
+    tx.commit()
+        .map_err(|_| "Failed to persist playback history account invalidation.".to_string())
+}
+
+#[tauri::command]
+pub fn player_restore_playback_history_scope(
+    app: AppHandle,
+    source_id: String,
+    validation_key: String,
+) -> Result<Option<String>, String> {
+    let source_id = normalize_id(source_id, "Invalid playback source.")?;
+    validate_sync_scope(&validation_key)?;
+    let mut storage = PlaybackHistoryStorage::open(&app)?;
+    let tx = storage
+        .conn
+        .transaction()
+        .map_err(|_| "Failed to begin history account restore.".to_string())?;
+    let scope: Option<String> = tx.query_row(
+        "SELECT scope FROM playback_history_source_scopes WHERE source_id=?1 AND validation_key=?2",
+        params![source_id, validation_key], |row| row.get(0),
+    ).optional().map_err(|_| "Failed to restore playback history account.".to_string())?;
+    // A newly written offline record has an explicit credential-context owner until bootstrap
+    // validates its account. Unbound pre-existing rows are never assigned an account here.
+    let scope = scope.unwrap_or_else(|| validation_key.clone());
+    tx.execute(
+        "INSERT INTO playback_history_source_scopes (source_id, scope, active, validation_key) VALUES (?1,?2,1,?3)
+         ON CONFLICT(source_id) DO UPDATE SET scope=excluded.scope, active=1, validation_key=excluded.validation_key",
+        params![source_id, scope, validation_key],
+    ).map_err(|_| "Failed to reactivate playback history account.".to_string())?;
+    tx.commit()
+        .map_err(|_| "Failed to persist history account restore.".to_string())?;
+    Ok(Some(scope))
+}
+
+#[tauri::command]
+pub fn player_get_playback_history_generation(app: AppHandle) -> Result<u64, String> {
+    history_generation(&PlaybackHistoryStorage::open(&app)?.conn)
+}
+
+#[tauri::command]
+pub fn player_get_playback_history_sync_state(
+    app: AppHandle,
+    source_id: String,
+    scope: String,
+    mapping_key: String,
+    validation_key: String,
+) -> Result<PlaybackHistorySyncState, String> {
+    let source_id = normalize_id(source_id, "Invalid playback source.")?;
+    validate_sync_scope(&scope)?;
+    validate_sync_scope(&mapping_key)?;
+    validate_sync_scope(&validation_key)?;
+    let mut storage = PlaybackHistoryStorage::open(&app)?;
+    let tx = storage
+        .conn
+        .transaction()
+        .map_err(|_| "Failed to begin history sync state.".to_string())?;
+    let previous_scope: Option<String> = tx
+        .query_row(
+            "SELECT scope FROM playback_history_source_scopes WHERE source_id=?1",
+            params![source_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| "Failed to read previous playback history account.".to_string())?;
+    let account_changed = previous_scope.as_deref() != Some(&scope);
+    if previous_scope.as_deref() == Some(&validation_key) && scope != validation_key {
+        tx.execute(
+            "UPDATE playback_history SET owner_scope=?1 WHERE source_id=?2 AND owner_scope=?3 AND progress_source='local'",
+            params![scope, source_id, validation_key],
+        ).map_err(|_| "Failed to bind newly saved offline playback history.".to_string())?;
+    }
+    tx.execute(
+        "INSERT INTO playback_history_source_scopes (source_id, scope, active, validation_key) VALUES (?1, ?2, 1, ?3)
+         ON CONFLICT(source_id) DO UPDATE SET scope=excluded.scope, active=1, validation_key=excluded.validation_key",
+        params![source_id, scope, validation_key],
+    ).map_err(|_| "Failed to bind playback history account.".to_string())?;
+    tx.execute(
+        "INSERT INTO playback_history_sync_state (scope, mapping_key, cursor) VALUES (?1, ?2, 0)
+         ON CONFLICT(scope) DO UPDATE SET mapping_key=excluded.mapping_key,
+             cursor=CASE WHEN ?3=0 AND playback_history_sync_state.mapping_key=excluded.mapping_key
+                 THEN playback_history_sync_state.cursor ELSE 0 END",
+        params![scope, mapping_key, if account_changed { 1 } else { 0 }],
+    )
+    .map_err(|_| "Failed to initialize history sync checkpoint.".to_string())?;
+    let state = PlaybackHistorySyncState {
+        cursor: tx
+            .query_row(
+                "SELECT cursor FROM playback_history_sync_state WHERE scope=?1",
+                params![scope],
+                |row| row.get(0),
+            )
+            .map_err(|_| "Failed to read history sync checkpoint.".to_string())?,
+        generation: history_generation(&tx)?,
+    };
+    tx.commit()
+        .map_err(|_| "Failed to persist history sync state.".to_string())?;
+    Ok(state)
+}
+
+#[tauri::command]
+pub fn player_clear_local_playback_history(app: AppHandle) -> Result<u64, String> {
+    let mut storage = PlaybackHistoryStorage::open(&app)?;
+    let tx = storage
+        .conn
+        .transaction()
+        .map_err(|_| "Failed to begin local history reset.".to_string())?;
+    tx.execute_batch(
+        "DELETE FROM playback_history;
+         DELETE FROM playback_history_sync_ack;
+         DELETE FROM playback_history_sync_state;
+         UPDATE playback_history_meta SET generation=generation+1 WHERE id=1;",
+    )
+    .map_err(|_| "Failed to clear local playback history.".to_string())?;
+    let generation = history_generation(&tx)?;
+    tx.commit()
+        .map_err(|_| "Failed to persist local history reset.".to_string())?;
+    Ok(generation)
 }
 
 #[tauri::command]
 pub fn player_upsert_playback_progress(
     app: AppHandle,
     progress: PlaybackProgressUpsert,
+    generation: u64,
 ) -> Result<PlaybackHistoryEntry, String> {
-    let normalized = NormalizedProgress::from_payload(progress)?;
+    let mut normalized = NormalizedProgress::from_payload(progress)?;
     let storage = PlaybackHistoryStorage::open(&app)?;
+    let tx = storage
+        .conn
+        .unchecked_transaction()
+        .map_err(|_| "Failed to begin history save.".to_string())?;
+    ensure_history_generation(&tx, generation)?;
+    normalized.owner_scope = resolve_owner_scope(
+        &tx,
+        &normalized.source_id,
+        normalized.owner_scope.as_deref(),
+    )?;
     storage.upsert(&normalized)?;
-    storage
+    let saved = storage
         .get(&PlaybackProgressIdentity {
             source_id: normalized.source_id,
             media_identity: normalized.media_identity,
+            owner_scope: normalized.owner_scope,
         })?
-        .ok_or_else(|| "Failed to read saved playback progress.".to_string())
+        .ok_or_else(|| "Failed to read saved playback progress.".to_string())?;
+    tx.commit()
+        .map_err(|_| "Failed to persist history save.".to_string())?;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -122,8 +318,13 @@ pub fn player_get_playback_progress(
     app: AppHandle,
     identity: PlaybackProgressIdentity,
 ) -> Result<Option<PlaybackHistoryEntry>, String> {
-    let identity = normalize_identity(identity)?;
+    let mut identity = normalize_identity(identity)?;
     let storage = PlaybackHistoryStorage::open(&app)?;
+    identity.owner_scope = resolve_owner_scope(
+        &storage.conn,
+        &identity.source_id,
+        identity.owner_scope.as_deref(),
+    )?;
     storage.get(&identity)
 }
 
@@ -164,12 +365,16 @@ pub fn player_list_playback_history_sync(
     app: AppHandle,
     page: Option<u32>,
     page_size: Option<u32>,
+    scope: Option<String>,
 ) -> Result<PlaybackHistoryPage, String> {
     let page = page.unwrap_or(1).clamp(1, MAX_HISTORY_PAGE);
     let page_size = page_size
         .unwrap_or(DEFAULT_HISTORY_PAGE_SIZE)
         .clamp(1, MAX_HISTORY_PAGE_SIZE);
-    PlaybackHistoryStorage::open(&app)?.list_history_sync(page, page_size)
+    if let Some(scope) = scope.as_deref() {
+        validate_sync_scope(scope)?;
+    }
+    PlaybackHistoryStorage::open(&app)?.list_pending_history(page, page_size, scope.as_deref())
 }
 
 #[tauri::command]
@@ -190,26 +395,49 @@ pub fn player_set_playback_completed(
     app: AppHandle,
     identity: PlaybackProgressIdentity,
     completed: bool,
+    generation: u64,
 ) -> Result<bool, String> {
-    let identity = normalize_identity(identity)?;
+    let mut identity = normalize_identity(identity)?;
     let storage = PlaybackHistoryStorage::open(&app)?;
-    storage.set_completed(&identity, completed)
+    let tx = storage
+        .conn
+        .unchecked_transaction()
+        .map_err(|_| "Failed to begin history update.".to_string())?;
+    ensure_history_generation(&tx, generation)?;
+    identity.owner_scope =
+        resolve_owner_scope(&tx, &identity.source_id, identity.owner_scope.as_deref())?;
+    let changed = storage.set_completed(&identity, completed)?;
+    tx.commit()
+        .map_err(|_| "Failed to persist history update.".to_string())?;
+    Ok(changed)
 }
 
 #[tauri::command]
 pub fn player_remove_continue_watching(
     app: AppHandle,
     progress: PlaybackProgressUpsert,
+    generation: u64,
 ) -> Result<PlaybackHistoryEntry, String> {
-    let progress = NormalizedProgress::from_payload(progress)?;
+    let mut progress = NormalizedProgress::from_payload(progress)?;
     let storage = PlaybackHistoryStorage::open(&app)?;
+    let tx = storage
+        .conn
+        .unchecked_transaction()
+        .map_err(|_| "Failed to begin history removal.".to_string())?;
+    ensure_history_generation(&tx, generation)?;
+    progress.owner_scope =
+        resolve_owner_scope(&tx, &progress.source_id, progress.owner_scope.as_deref())?;
     storage.tombstone(&progress)?;
-    storage
+    let saved = storage
         .get_any(&PlaybackProgressIdentity {
             source_id: progress.source_id,
             media_identity: progress.media_identity,
+            owner_scope: progress.owner_scope,
         })?
-        .ok_or_else(|| "Failed to read playback history tombstone.".to_string())
+        .ok_or_else(|| "Failed to read playback history tombstone.".to_string())?;
+    tx.commit()
+        .map_err(|_| "Failed to persist history removal.".to_string())?;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -239,14 +467,39 @@ pub fn player_delete_playback_history_for_source(
 }
 
 #[tauri::command]
-pub fn player_merge_playback_history(
+pub fn player_apply_playback_history_sync(
     app: AppHandle,
-    entries: Vec<PlaybackHistoryMerge>,
+    request: PlaybackHistorySyncApplyRequest,
 ) -> Result<u64, String> {
-    if entries.len() > 500 {
+    let PlaybackHistorySyncApplyRequest {
+        source_id,
+        scope,
+        mapping_key,
+        generation,
+        cursor,
+        acknowledgments,
+        entries,
+    } = request;
+    if entries.len() > 500 || acknowledgments.len() > 500 {
         return Err("Too many playback history entries.".to_string());
     }
+    validate_sync_scope(&scope)?;
+    validate_sync_scope(&mapping_key)?;
     let storage = PlaybackHistoryStorage::open(&app)?;
+    let tx = storage
+        .conn
+        .unchecked_transaction()
+        .map_err(|_| "Failed to begin playback history merge.".to_string())?;
+    ensure_history_generation(&tx, generation)?;
+    let previous: Option<u64> = tx.query_row(
+        "SELECT state.cursor FROM playback_history_sync_state state
+         JOIN playback_history_source_scopes current ON current.scope=state.scope
+         WHERE state.scope=?1 AND current.source_id=?2 AND current.active=1 AND state.mapping_key=?3",
+        params![scope, source_id, mapping_key], |row| row.get(0),
+    ).optional().map_err(|_| "Failed to validate playback history account.".to_string())?;
+    if previous.is_none() || previous.is_some_and(|previous| cursor < previous) {
+        return Err("Playback history account or checkpoint changed.".to_string());
+    }
     let mut changed = 0_u64;
     for entry in entries {
         if entry.updated_at <= 0 {
@@ -270,7 +523,16 @@ pub fn player_merge_playback_history(
             position: entry.position,
             duration: entry.duration,
             completed: Some(entry.completed),
+            owner_scope: entry.owner_scope,
         })?;
+        if resolve_owner_scope(&tx, &progress.source_id, progress.owner_scope.as_deref())?
+            != progress.owner_scope
+        {
+            return Err("Playback history import has an unconfirmed account.".to_string());
+        }
+        if progress.source_id == source_id && progress.owner_scope.as_deref() != Some(&scope) {
+            return Err("Playback history entry belongs to a different account.".to_string());
+        }
         let key = identity_key(&progress.source_id, &progress.media_identity);
         if deleted {
             changed += storage.conn.execute(
@@ -278,23 +540,22 @@ pub fn player_merge_playback_history(
                     identity_key, source_id, library_id, item_id, media_identity, title,
                     stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
                     display_subtitle, episode_still_url, position, duration, completed, deleted,
-                    progress_source, created_at, updated_at
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,NULL,0,1,'server',?14,?14)
+                    progress_source, created_at, updated_at, owner_scope
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,NULL,0,1,'server',?14,?14,?15)
                  ON CONFLICT(identity_key) DO UPDATE SET
                     library_id=excluded.library_id, item_id=excluded.item_id, title=excluded.title,
                     media_type=excluded.media_type, poster_url=excluded.poster_url,
                     backdrop_url=excluded.backdrop_url, title_logo_url=excluded.title_logo_url,
                     display_subtitle=excluded.display_subtitle, episode_still_url=excluded.episode_still_url,
                     position=0, duration=NULL, completed=0, deleted=1,
-                    progress_source='server', updated_at=excluded.updated_at
-                 WHERE playback_history.updated_at < excluded.updated_at
-                    OR (playback_history.updated_at = excluded.updated_at AND playback_history.deleted = 0)",
+                    progress_source='server', updated_at=excluded.updated_at, owner_scope=excluded.owner_scope
+                 WHERE playback_history.updated_at <= excluded.updated_at
+                    OR playback_history.owner_scope IS NOT excluded.owner_scope",
                 params![key, progress.source_id, progress.library_id, progress.item_id,
                     progress.media_identity, progress.title, progress.stream_identity, progress.media_type,
                     progress.poster_url, progress.backdrop_url, progress.title_logo_url,
-                    progress.display_subtitle, progress.episode_still_url, updated_at],
+                    progress.display_subtitle, progress.episode_still_url, updated_at, progress.owner_scope],
             ).map_err(|_| "Failed to merge playback history deletion.".to_string())? as u64;
-            changed += storage.cleanup_legacy_identity_for_canonical(&progress, updated_at)?;
             continue;
         }
         changed += storage
@@ -304,8 +565,8 @@ pub fn player_merge_playback_history(
                 identity_key, source_id, library_id, item_id, media_identity, title,
                 stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
                 display_subtitle, episode_still_url, position, duration, completed, deleted,
-                progress_source, created_at, updated_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,0,'server',?17,?17)
+                progress_source, created_at, updated_at, owner_scope
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,0,'server',?17,?17,?18)
              ON CONFLICT(identity_key) DO UPDATE SET
                 library_id=excluded.library_id, item_id=excluded.item_id, title=excluded.title,
                 stream_identity=excluded.stream_identity, media_type=excluded.media_type,
@@ -314,10 +575,9 @@ pub fn player_merge_playback_history(
                 display_subtitle=excluded.display_subtitle,
                 episode_still_url=excluded.episode_still_url,
                 duration=excluded.duration, completed=excluded.completed, deleted=0,
-                progress_source='server', updated_at=excluded.updated_at
-             WHERE playback_history.updated_at < excluded.updated_at
-                OR (playback_history.updated_at = excluded.updated_at
-                    AND playback_history.deleted = 0 AND playback_history.completed = 0 AND excluded.completed = 1)",
+                progress_source='server', updated_at=excluded.updated_at, owner_scope=excluded.owner_scope
+             WHERE playback_history.updated_at <= excluded.updated_at
+                OR playback_history.owner_scope IS NOT excluded.owner_scope",
                 params![
                     key,
                     progress.source_id,
@@ -336,12 +596,31 @@ pub fn player_merge_playback_history(
                     progress.duration,
                     if progress.completed { 1 } else { 0 },
                     updated_at,
+                    progress.owner_scope,
                 ],
             )
             .map_err(|_| "Failed to merge playback history.".to_string())?
             as u64;
-        changed += storage.cleanup_legacy_identity_for_canonical(&progress, updated_at)?;
     }
+    for acknowledgment in acknowledgments {
+        let source_id = normalize_id(acknowledgment.source_id, "Invalid playback source.")?;
+        let media_identity = normalize_media_identity(acknowledgment.media_identity)?;
+        if acknowledgment.updated_at <= 0 {
+            return Err("Invalid history acknowledgment timestamp.".to_string());
+        }
+        tx.execute(
+            "INSERT INTO playback_history_sync_ack (scope, identity_key, updated_at) VALUES (?1,?2,?3)
+             ON CONFLICT(scope, identity_key) DO UPDATE SET updated_at=MAX(updated_at,excluded.updated_at)",
+            params![scope, identity_key(&source_id, &media_identity), acknowledgment.updated_at],
+        ).map_err(|_| "Failed to acknowledge playback history upload.".to_string())?;
+    }
+    tx.execute(
+        "UPDATE playback_history_sync_state SET cursor=?1 WHERE scope=?2",
+        params![cursor, scope],
+    )
+    .map_err(|_| "Failed to advance playback history checkpoint.".to_string())?;
+    tx.commit()
+        .map_err(|_| "Failed to persist playback history sync.".to_string())?;
     Ok(changed)
 }
 
@@ -365,6 +644,7 @@ struct NormalizedProgress {
     position: f64,
     duration: Option<f64>,
     completed: bool,
+    owner_scope: Option<String>,
 }
 
 impl PlaybackHistoryStorage {
@@ -372,6 +652,8 @@ impl PlaybackHistoryStorage {
         let db_path = storage::data_file(app, DATABASE_FILE)?;
         let conn = Connection::open(db_path)
             .map_err(|_| "Failed to open playback history database.".to_string())?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "Failed to configure playback history storage.".to_string())?;
         initialize_schema(&conn)?;
 
         Ok(Self { conn })
@@ -386,31 +668,6 @@ impl PlaybackHistoryStorage {
             )
             .map_err(|_| "Failed to delete playback history for source.".to_string())?;
         Ok(deleted as u64)
-    }
-
-    fn cleanup_legacy_identity_for_canonical(
-        &self,
-        progress: &NormalizedProgress,
-        updated_at: i64,
-    ) -> Result<u64, String> {
-        if !is_server_canonical_history_identity(&progress.media_identity) {
-            return Ok(0);
-        }
-        let Some(item_id) = progress
-            .item_id
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        else {
-            return Ok(0);
-        };
-        self.conn
-            .execute(
-                "DELETE FROM playback_history
-                 WHERE source_id = ?1 AND item_id = ?2 AND media_identity <> ?3 AND updated_at <= ?4",
-                params![progress.source_id, item_id, progress.media_identity, updated_at],
-            )
-            .map(|deleted| deleted as u64)
-            .map_err(|_| "Failed to reconcile legacy playback history.".to_string())
     }
 
     fn set_completed(
@@ -428,14 +685,16 @@ impl PlaybackHistoryStorage {
             .execute(
                 &format!(
                     "UPDATE playback_history
-                     SET completed = ?1, position = {position_expression},
+                     SET completed = ?1, position = {position_expression}, progress_source='local',
+                         owner_scope=COALESCE(?3,owner_scope),
                          updated_at = CASE WHEN updated_at >= {NOW_MILLIS_SQL}
                              THEN updated_at + 1 ELSE {NOW_MILLIS_SQL} END
-                     WHERE identity_key = ?2 AND deleted = 0"
+                     WHERE identity_key = ?2 AND deleted = 0 AND {VISIBLE_SCOPE_SQL}"
                 ),
                 params![
                     if completed { 1 } else { 0 },
-                    identity_key(&identity.source_id, &identity.media_identity)
+                    identity_key(&identity.source_id, &identity.media_identity),
+                    identity.owner_scope,
                 ],
             )
             .map_err(|_| "Failed to update playback completion state.".to_string())?;
@@ -448,8 +707,8 @@ impl PlaybackHistoryStorage {
                 identity_key, source_id, library_id, item_id, media_identity, title,
                 stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
                 display_subtitle, episode_still_url, position, duration, completed, deleted,
-                progress_source, created_at, updated_at
-            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,NULL,0,1,'local',{NOW_MILLIS_SQL},{NOW_MILLIS_SQL})
+                progress_source, created_at, updated_at, owner_scope
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,NULL,0,1,'local',{NOW_MILLIS_SQL},{NOW_MILLIS_SQL},?14)
             ON CONFLICT(identity_key) DO UPDATE SET
                 library_id=COALESCE(playback_history.library_id, excluded.library_id),
                 item_id=COALESCE(playback_history.item_id, excluded.item_id),
@@ -460,24 +719,15 @@ impl PlaybackHistoryStorage {
                 title_logo_url=COALESCE(playback_history.title_logo_url, excluded.title_logo_url),
                 display_subtitle=COALESCE(playback_history.display_subtitle, excluded.display_subtitle),
                 episode_still_url=COALESCE(playback_history.episode_still_url, excluded.episode_still_url),
-                position=0, duration=NULL, completed=0, deleted=1, progress_source='local',
-                updated_at=CASE WHEN playback_history.updated_at >= {NOW_MILLIS_SQL}
+                position=0, duration=NULL, completed=0, deleted=1, progress_source='local', owner_scope=excluded.owner_scope,
+                updated_at=CASE WHEN playback_history.owner_scope IS excluded.owner_scope AND playback_history.updated_at >= {NOW_MILLIS_SQL}
                     THEN playback_history.updated_at + 1 ELSE {NOW_MILLIS_SQL} END"),
             params![identity_key(&progress.source_id, &progress.media_identity),
                 progress.source_id, progress.library_id, progress.item_id, progress.media_identity,
                 progress.title, progress.stream_identity, progress.media_type, progress.poster_url,
                 progress.backdrop_url, progress.title_logo_url, progress.display_subtitle,
-                progress.episode_still_url],
+                progress.episode_still_url, progress.owner_scope],
         ).map_err(|_| "Failed to persist playback history deletion.".to_string())?;
-        let updated_at: i64 = self
-            .conn
-            .query_row(
-                "SELECT updated_at FROM playback_history WHERE identity_key = ?1",
-                params![identity_key(&progress.source_id, &progress.media_identity)],
-                |row| row.get(0),
-            )
-            .map_err(|_| "Failed to read playback history deletion timestamp.".to_string())?;
-        self.cleanup_legacy_identity_for_canonical(progress, updated_at)?;
         Ok(())
     }
 
@@ -488,9 +738,9 @@ impl PlaybackHistoryStorage {
                     identity_key, source_id, library_id, item_id, media_identity, title,
                     stream_identity, media_type, poster_url, backdrop_url, title_logo_url,
                     display_subtitle, episode_still_url, position, duration, completed, deleted,
-                    progress_source, created_at, updated_at
+                    progress_source, created_at, updated_at, owner_scope
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 0, 'local', {NOW_MILLIS_SQL}, {NOW_MILLIS_SQL})
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 0, 'local', {NOW_MILLIS_SQL}, {NOW_MILLIS_SQL}, ?17)
                 ON CONFLICT(identity_key) DO UPDATE SET
                     source_id = excluded.source_id,
                     library_id = excluded.library_id,
@@ -509,7 +759,8 @@ impl PlaybackHistoryStorage {
                     completed = excluded.completed,
                     deleted = 0,
                     progress_source = 'local',
-                    updated_at = CASE WHEN playback_history.updated_at >= {NOW_MILLIS_SQL}
+                    owner_scope = excluded.owner_scope,
+                    updated_at = CASE WHEN playback_history.owner_scope IS excluded.owner_scope AND playback_history.updated_at >= {NOW_MILLIS_SQL}
                         THEN playback_history.updated_at + 1 ELSE {NOW_MILLIS_SQL} END"),
                 params![
                     identity_key(&progress.source_id, &progress.media_identity),
@@ -528,6 +779,7 @@ impl PlaybackHistoryStorage {
                     progress.position,
                     progress.duration,
                     if progress.completed { 1 } else { 0 },
+                    progress.owner_scope,
                 ],
             )
             .map_err(|_| "Failed to save playback progress.".to_string())?;
@@ -540,12 +792,12 @@ impl PlaybackHistoryStorage {
     ) -> Result<Option<PlaybackHistoryEntry>, String> {
         self.conn
             .query_row(
-                "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
+                &format!("SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
                     media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
-                    completed, progress_source, display_subtitle, episode_still_url, deleted
+                    completed, progress_source, display_subtitle, episode_still_url, deleted, owner_scope
                  FROM playback_history
-                 WHERE identity_key = ?1 AND deleted = 0",
-                params![identity_key(&identity.source_id, &identity.media_identity)],
+                 WHERE identity_key = ?1 AND deleted = 0 AND {VISIBLE_SCOPE_SQL} AND (?2 IS NULL OR owner_scope=?2)"),
+                params![identity_key(&identity.source_id, &identity.media_identity), identity.owner_scope],
                 map_history_entry,
             )
             .optional()
@@ -557,11 +809,11 @@ impl PlaybackHistoryStorage {
         identity: &PlaybackProgressIdentity,
     ) -> Result<Option<PlaybackHistoryEntry>, String> {
         self.conn.query_row(
-            "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
+            &format!("SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
                 media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
-                completed, progress_source, display_subtitle, episode_still_url, deleted
-             FROM playback_history WHERE identity_key = ?1",
-            params![identity_key(&identity.source_id, &identity.media_identity)], map_history_entry,
+                completed, progress_source, display_subtitle, episode_still_url, deleted, owner_scope
+             FROM playback_history WHERE identity_key = ?1 AND {VISIBLE_SCOPE_SQL} AND (?2 IS NULL OR owner_scope=?2)"),
+            params![identity_key(&identity.source_id, &identity.media_identity), identity.owner_scope], map_history_entry,
         ).optional().map_err(|_| "Failed to read playback history entry.".to_string())
     }
 
@@ -570,14 +822,11 @@ impl PlaybackHistoryStorage {
         limit: u32,
         excluded_source_ids: &[String],
     ) -> Result<Vec<PlaybackHistoryEntry>, String> {
-        let mut values = vec![
-            Value::Real(MIN_RESUME_POSITION_SECONDS),
-            Value::Real(COMPLETED_REMAINING_SECONDS),
-        ];
+        let mut values = vec![Value::Real(MIN_RESUME_POSITION_SECONDS)];
         let mut filter = " WHERE deleted = 0 AND completed = 0
-            AND position >= ?1
-            AND (duration IS NULL OR duration <= 0 OR position < duration - ?2)"
+            AND position >= ?1"
             .to_string();
+        filter.push_str(&format!(" AND {VISIBLE_SCOPE_SQL}"));
         append_source_exclusions(&mut filter, &mut values, excluded_source_ids);
         values.push(Value::Integer(i64::from(limit)));
         let mut statement = self
@@ -585,9 +834,9 @@ impl PlaybackHistoryStorage {
             .prepare(&format!(
                 "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
                     media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
-                    completed, progress_source, display_subtitle, episode_still_url, deleted
+                    completed, progress_source, display_subtitle, episode_still_url, deleted, owner_scope
                  FROM playback_history{filter}
-                 ORDER BY updated_at DESC
+                 ORDER BY updated_at DESC, identity_key ASC
                  LIMIT ?{}",
                 values.len()
             ))
@@ -608,15 +857,25 @@ impl PlaybackHistoryStorage {
         page_size: u32,
         excluded_source_ids: &[String],
     ) -> Result<PlaybackHistoryPage, String> {
-        self.list_history_filter(page, page_size, Some(false), excluded_source_ids)
+        self.list_history_filter(page, page_size, Some(false), excluded_source_ids, None)
     }
 
+    #[cfg(test)]
     fn list_history_sync(&self, page: u32, page_size: u32) -> Result<PlaybackHistoryPage, String> {
-        self.list_history_filter(page, page_size, None, &[])
+        self.list_history_filter(page, page_size, None, &[], None)
+    }
+
+    fn list_pending_history(
+        &self,
+        page: u32,
+        page_size: u32,
+        scope: Option<&str>,
+    ) -> Result<PlaybackHistoryPage, String> {
+        self.list_history_filter(page, page_size, None, &[], scope)
     }
 
     fn list_tombstones(&self, page: u32, page_size: u32) -> Result<PlaybackHistoryPage, String> {
-        self.list_history_filter(page, page_size, Some(true), &[])
+        self.list_history_filter(page, page_size, Some(true), &[], None)
     }
 
     fn list_history_filter(
@@ -625,6 +884,7 @@ impl PlaybackHistoryStorage {
         page_size: u32,
         deleted: Option<bool>,
         excluded_source_ids: &[String],
+        pending_scope: Option<&str>,
     ) -> Result<PlaybackHistoryPage, String> {
         let mut filter = match deleted {
             Some(true) => " WHERE deleted = 1",
@@ -633,6 +893,18 @@ impl PlaybackHistoryStorage {
         }
         .to_string();
         let mut values = Vec::new();
+        filter.push_str(if filter.is_empty() {
+            " WHERE "
+        } else {
+            " AND "
+        });
+        filter.push_str(VISIBLE_SCOPE_SQL);
+        if let Some(scope) = pending_scope {
+            values.push(Value::Text(scope.to_string()));
+            filter.push_str(" AND progress_source='local' AND NOT EXISTS (
+                SELECT 1 FROM playback_history_sync_ack ack WHERE ack.scope=?1
+                AND ack.identity_key=playback_history.identity_key AND ack.updated_at=playback_history.updated_at)");
+        }
         append_source_exclusions(&mut filter, &mut values, excluded_source_ids);
         let total = self
             .conn
@@ -650,7 +922,7 @@ impl PlaybackHistoryStorage {
         let mut statement = self.conn.prepare(&format!(
             "SELECT source_id, library_id, item_id, media_identity, title, stream_identity,
                 media_type, poster_url, backdrop_url, title_logo_url, position, duration, updated_at,
-                completed, progress_source, display_subtitle, episode_still_url, deleted
+                completed, progress_source, display_subtitle, episode_still_url, deleted, owner_scope
              FROM playback_history{filter}
              ORDER BY updated_at DESC, identity_key ASC LIMIT ?{limit_parameter} OFFSET ?{offset_parameter}"
         )).map_err(|_| "Failed to read playback history entries.".to_string())?;
@@ -725,13 +997,23 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
             completed INTEGER NOT NULL DEFAULT 0,
             deleted INTEGER NOT NULL DEFAULT 0,
             progress_source TEXT NOT NULL DEFAULT 'local',
+            owner_scope TEXT,
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
             updated_at INTEGER NOT NULL DEFAULT (unixepoch())
         );
         CREATE INDEX IF NOT EXISTS idx_playback_history_continue
             ON playback_history (completed, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_playback_history_source
-            ON playback_history (source_id);",
+            ON playback_history (source_id);
+        CREATE TABLE IF NOT EXISTS playback_history_meta (id INTEGER PRIMARY KEY, generation INTEGER NOT NULL);
+        INSERT OR IGNORE INTO playback_history_meta (id,generation) VALUES (1,0);
+        CREATE TABLE IF NOT EXISTS playback_history_source_scopes (
+            source_id TEXT PRIMARY KEY, scope TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 0, validation_key TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS playback_history_sync_state (
+            scope TEXT PRIMARY KEY, mapping_key TEXT NOT NULL, cursor INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS playback_history_sync_ack (
+            scope TEXT NOT NULL, identity_key TEXT NOT NULL, updated_at INTEGER NOT NULL,
+            PRIMARY KEY (scope,identity_key));",
     )
     .map_err(|_| "Failed to initialize playback history database.".to_string())?;
     let _ = conn.execute(
@@ -750,9 +1032,68 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE playback_history ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
         params![],
     );
+    let _ = conn.execute(
+        "ALTER TABLE playback_history ADD COLUMN owner_scope TEXT",
+        params![],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE playback_history_source_scopes ADD COLUMN active INTEGER NOT NULL DEFAULT 0",
+        params![],
+    );
+    let _ = conn.execute("ALTER TABLE playback_history_source_scopes ADD COLUMN validation_key TEXT NOT NULL DEFAULT ''", params![]);
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_playback_history_deleted_updated ON playback_history (deleted, updated_at DESC, identity_key ASC)")
         .map_err(|_| "Failed to index playback history deletions.".to_string())?;
     Ok(())
+}
+
+fn validate_sync_scope(scope: &str) -> Result<(), String> {
+    if scope.len() == 64
+        && scope
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        Ok(())
+    } else {
+        Err("Invalid playback history account scope.".to_string())
+    }
+}
+
+fn history_generation(conn: &Connection) -> Result<u64, String> {
+    conn.query_row(
+        "SELECT generation FROM playback_history_meta WHERE id=1",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|_| "Failed to read playback history generation.".to_string())
+}
+
+fn ensure_history_generation(conn: &Connection, expected: u64) -> Result<(), String> {
+    if history_generation(conn)? == expected {
+        Ok(())
+    } else {
+        Err("Local playback history was reset.".to_string())
+    }
+}
+
+fn resolve_owner_scope(
+    conn: &Connection,
+    source_id: &str,
+    scope: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(scope) = scope else {
+        return Ok(None);
+    };
+    validate_sync_scope(scope)?;
+    let current: Option<(String, String)> = conn.query_row(
+        "SELECT scope, validation_key FROM playback_history_source_scopes WHERE source_id=?1 AND active=1",
+        params![source_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|_| "Failed to validate playback history account.".to_string())?;
+    match current {
+        Some((current_scope, context_key)) if current_scope == scope || context_key == scope => {
+            Ok(Some(current_scope))
+        }
+        _ => Err("Playback history account changed.".to_string()),
+    }
 }
 
 impl NormalizedProgress {
@@ -760,11 +1101,21 @@ impl NormalizedProgress {
         let identity = normalize_identity(PlaybackProgressIdentity {
             source_id: payload.source_id,
             media_identity: payload.media_identity,
+            owner_scope: payload.owner_scope.clone(),
         })?;
 
         let position = sanitize_position(payload.position)?;
         let duration = payload.duration.map(sanitize_duration).transpose()?;
-        let completed = payload.completed.unwrap_or(false) || is_completed(position, duration);
+        let completed = payload
+            .completed
+            .unwrap_or_else(|| is_completed(position, duration));
+        let owner_scope = payload
+            .owner_scope
+            .map(|scope| {
+                validate_sync_scope(&scope)?;
+                Ok::<String, String>(scope)
+            })
+            .transpose()?;
         let title = sanitize_text(payload.title, "Untitled", MAX_TEXT_LENGTH);
 
         Ok(Self {
@@ -795,6 +1146,7 @@ impl NormalizedProgress {
             position,
             duration,
             completed,
+            owner_scope,
         })
     }
 }
@@ -822,6 +1174,7 @@ fn map_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaybackHistor
         completed: row.get::<_, i64>(13)? != 0,
         deleted: row.get::<_, i64>(17)? != 0,
         progress_source: row.get(14)?,
+        owner_scope: row.get(18)?,
     })
 }
 
@@ -833,16 +1186,13 @@ fn identity_key(source_id: &str, media_identity: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn is_server_canonical_history_identity(value: &str) -> bool {
-    value.starts_with("server:v1:movie:") || value.starts_with("server:v1:episode:")
-}
-
 fn normalize_identity(
     identity: PlaybackProgressIdentity,
 ) -> Result<PlaybackProgressIdentity, String> {
     Ok(PlaybackProgressIdentity {
         source_id: normalize_id(identity.source_id, "Invalid playback source.")?,
         media_identity: normalize_media_identity(identity.media_identity)?,
+        owner_scope: identity.owner_scope,
     })
 }
 
@@ -1172,34 +1522,6 @@ mod tests {
     }
 
     #[test]
-    fn canonical_deletion_also_hides_older_legacy_identity() {
-        let conn = Connection::open_in_memory().expect("open playback history test database");
-        initialize_schema(&conn).expect("initialize playback history schema");
-        let storage = PlaybackHistoryStorage { conn };
-        let mut legacy = progress("server-home", "entry|9|work|202");
-        legacy.item_id = Some("entry|9|work|202".to_string());
-        storage.upsert(&legacy).expect("insert legacy history");
-        let mut canonical = progress("server-home", "server:v1:episode:9:work:1:2");
-        canonical.item_id = legacy.item_id.clone();
-        storage
-            .tombstone(&canonical)
-            .expect("delete remote-only card");
-
-        assert_eq!(
-            storage
-                .list_history(1, 10, &[])
-                .expect("visible page")
-                .total,
-            0
-        );
-        assert!(storage
-            .get(&identity("server-home", "entry|9|work|202"))
-            .expect("read legacy history")
-            .is_none());
-        assert_eq!(storage.list_tombstones(1, 10).expect("sync page").total, 1);
-    }
-
-    #[test]
     fn full_history_uses_stable_bounded_pages() {
         let conn = Connection::open_in_memory().expect("open playback history test database");
         initialize_schema(&conn).expect("initialize playback history schema");
@@ -1254,46 +1576,6 @@ mod tests {
             saved.episode_still_url.as_deref(),
             Some("https://image.example.test/episode.jpg")
         );
-    }
-
-    #[test]
-    fn canonical_merge_cleanup_only_removes_same_item_legacy_identity() {
-        let conn = Connection::open_in_memory().expect("open playback history test database");
-        initialize_schema(&conn).expect("initialize playback history schema");
-        let storage = PlaybackHistoryStorage { conn };
-        let mut legacy = progress("server-home", "entry|9|work|202");
-        legacy.item_id = Some("entry|9|work|202".to_string());
-        storage.upsert(&legacy).expect("insert legacy history");
-        let mut unrelated = progress("server-home", "entry|9|work|203");
-        unrelated.item_id = Some("entry|9|work|203".to_string());
-        unrelated.title = legacy.title.clone();
-        storage
-            .upsert(&unrelated)
-            .expect("insert unrelated history");
-        let mut canonical = progress("server-home", "server:v1:episode:9:work:1:2");
-        canonical.item_id = legacy.item_id.clone();
-        storage
-            .upsert(&canonical)
-            .expect("insert canonical history");
-
-        assert_eq!(
-            storage
-                .cleanup_legacy_identity_for_canonical(&canonical, i64::MAX)
-                .expect("cleanup legacy identity"),
-            1
-        );
-        assert!(storage
-            .get(&identity("server-home", "entry|9|work|202"))
-            .expect("read legacy history")
-            .is_none());
-        assert!(storage
-            .get(&identity("server-home", "server:v1:episode:9:work:1:2"))
-            .expect("read canonical history")
-            .is_some());
-        assert!(storage
-            .get(&identity("server-home", "entry|9|work|203"))
-            .expect("read unrelated history")
-            .is_some());
     }
 
     #[test]
@@ -1368,6 +1650,7 @@ mod tests {
         PlaybackProgressIdentity {
             source_id: source_id.to_string(),
             media_identity: media_identity.to_string(),
+            owner_scope: None,
         }
     }
 
@@ -1388,6 +1671,7 @@ mod tests {
             position: 120.0,
             duration: Some(3600.0),
             completed: false,
+            owner_scope: None,
         }
     }
 }

@@ -400,8 +400,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
         listPlaybackHistoryTombstones().catch(() => [] as PlaybackHistoryEntry[]),
       ])
       const localContinueItems = await enrichLocalContinueWatchingItems(localContinueEntries.map(toContinueWatchingMediaItem))
-      const serverSourceIds = new Set(orderedConfigs.value.filter(config => config.type === 'server').map(config => config.id))
-      const continueSection = mergeContinueWatchingSections(sections, localContinueItems, tombstones, serverSourceIds)
+      const continueSection = mergeContinueWatchingSections(sections, localContinueItems, tombstones)
       const nonContinueSections = sections.filter(section => section.type !== 'continueWatching')
       const mergedSections = continueSection.items.length > 0
         ? [continueSection, ...nonContinueSections]
@@ -489,6 +488,19 @@ export const useDataSourceStore = defineStore('datasource', () => {
     void persistDisplayCache()
   }
 
+  function clearPlaybackHistoryDisplayCache() {
+    homeLoadId++
+    isLoading.value = false
+    homeSections.value = homeSections.value.filter(section => section.type !== 'continueWatching')
+    sourceRootSnapshots.value = Object.fromEntries(Object.entries(sourceRootSnapshots.value).map(([id, snapshot]) => [id, {
+      ...snapshot,
+      updatedAt: 0,
+      homeSections: snapshot.homeSections.filter(section => section.type !== 'continueWatching'),
+    }]))
+    dataSourceManager.clearAllSourceCaches()
+    invalidateHomeCache()
+  }
+
   function pruneOfflineProjection() {
     homeSections.value = stripOfflineProjectionSections(homeSections.value)
     homeLoadedAt.value = 0
@@ -519,11 +531,14 @@ export const useDataSourceStore = defineStore('datasource', () => {
       return
     try {
       const cache = sanitizePersistedDisplayCache(JSON.parse(raw) as unknown)
-      homeSections.value = excludeDisabledHomeSections(cache.homeSections)
+      // Account-bound history is rebuilt only after this session validates its account.
+      homeSections.value = excludeDisabledHomeSections(cache.homeSections.filter(section => section.type !== 'continueWatching'))
       // Display the saved snapshot immediately, then revalidate Server state after restart.
       homeLoadedAt.value = 0
       sourceRootSnapshots.value = Object.fromEntries(
-        Object.entries(cache.sourceRootSnapshots).filter(([sourceId]) => !disabledHistorySourceIds.value.includes(sourceId)),
+        Object.entries(cache.sourceRootSnapshots)
+          .filter(([sourceId]) => !disabledHistorySourceIds.value.includes(sourceId))
+          .map(([sourceId, snapshot]) => [sourceId, { ...snapshot, homeSections: snapshot.homeSections.filter(section => section.type !== 'continueWatching') }]),
       )
       rememberPlaybackTargetsForItems([
         ...homeSections.value.flatMap(section => section.items),
@@ -628,6 +643,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     setSourceRootSnapshot,
     invalidateSourceRootSnapshot,
     invalidateHomeCache,
+    clearPlaybackHistoryDisplayCache,
     pruneOfflineProjection,
     searchAllSources,
     getSource,
@@ -728,6 +744,7 @@ function sanitizeDisplayMediaItem(value: unknown): MediaItem {
     duration: optionalNumber(item.duration),
     size: optionalNumber(item.size),
     modified: optionalText(item.modified),
+    addedAt: optionalText(item.addedAt),
     path: '',
     resumePosition: optionalNumber(item.resumePosition),
     progress: optionalNumber(item.progress),
@@ -905,18 +922,14 @@ function mergeContinueWatchingSections(
   sections: readonly HomeSection[],
   localItems: readonly MediaItem[],
   tombstones: readonly PlaybackHistoryEntry[],
-  serverSourceIds: ReadonlySet<string>,
 ): HomeSection {
-  const keyFor = (item: MediaItem) => continueWatchingKey(item, serverSourceIds)
+  const keyFor = continueWatchingKey
   const suppressed = new Map<string, number>()
   const suppress = (key: string, updatedAt: number) => suppressed.set(key, Math.max(suppressed.get(key) ?? 0, updatedAt))
   for (const entry of tombstones) {
     suppress(`${entry.sourceId}:${entry.mediaIdentity}`, entry.updatedAt)
     if (entry.itemId)
       suppress(`${entry.sourceId}:${entry.itemId}`, entry.updatedAt)
-    const canonical = serverMovieHistoryIdentity(entry.sourceId, entry.itemId, entry.mediaType, serverSourceIds)
-    if (canonical)
-      suppress(`${entry.sourceId}:${canonical}`, entry.updatedAt)
   }
   const hiddenByTombstone = (item: MediaItem, key: string) => {
     const deletedAt = suppressed.get(key)
@@ -981,7 +994,7 @@ function usableResumePosition(item: MediaItem): number | undefined {
   const position = item.resumePosition
   if (typeof position !== 'number' || !Number.isFinite(position) || position < 30)
     return undefined
-  return isCompletedPosition(position, item.duration) ? undefined : position
+  return item.played === false || !isCompletedPosition(position, item.duration) ? position : undefined
 }
 
 function progressRatio(position: number, duration: number | undefined): number | undefined {
@@ -1016,27 +1029,8 @@ async function listLocalContinueWatchingSafely(limit: number, excludedSourceIds:
   }
 }
 
-function continueWatchingKey(item: MediaItem, serverSourceIds: ReadonlySet<string>): string {
-  const canonical = serverMovieHistoryIdentity(item.sourceId, item.id, item.type, serverSourceIds)
-  return `${item.sourceId}:${canonical ?? item.historyIdentity ?? item.id}`
-}
-
-function serverMovieHistoryIdentity(
-  sourceId: string,
-  itemId: string | null | undefined,
-  mediaType: MediaItem['type'] | null | undefined,
-  serverSourceIds: ReadonlySet<string>,
-): string | undefined {
-  if (!serverSourceIds.has(sourceId) || mediaType !== 'movie' || !itemId)
-    return undefined
-  const parts = itemId.split('|')
-  if ((parts[0] !== 'work' || parts.length !== 3) && (parts[0] !== 'entry' || parts.length !== 4))
-    return undefined
-  if (!/^[1-9]\d*$/.test(parts[1] ?? '') || !/^[\w-]{1,512}$/.test(parts[2] ?? ''))
-    return undefined
-  if (parts[0] === 'entry' && !/^[1-9]\d*$/.test(parts[3] ?? ''))
-    return undefined
-  return `server:v1:movie:${parts[1]}:${parts[2]}`
+function continueWatchingKey(item: MediaItem): string {
+  return `${item.sourceId}:${item.historyIdentity ?? item.id}`
 }
 
 function sanitizeConfigs(value: unknown): DataSourceConfig[] {

@@ -24,6 +24,8 @@ pub fn start_event_forwarder(app_handle: AppHandle) {
 
         while let Some(state) = app_handle.try_state::<MpvState>() {
             let snapshot = state.lock().ok().map(|mut player| {
+                // Capture usable properties before END_FILE removes the native demuxer/VO.
+                player.capture_playback_facts();
                 let events = player.drain_events(MAX_EVENTS_PER_TICK);
                 (
                     player.time_pos(),

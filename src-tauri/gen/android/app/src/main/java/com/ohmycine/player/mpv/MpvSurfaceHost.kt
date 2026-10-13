@@ -17,6 +17,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     private const val FALLBACK_ANDROID_VIDEO_OUTPUT = "gpu"
     private const val MAX_DIAGNOSTIC_LOGS = 24
     private const val FSR_SHADER_ASSET = "mpv/ohmycine-fsr-v1.glsl"
+    private const val RENDERER_TRANSITION_TIMEOUT_MS = 10_000L
 
     @Volatile
     private var initialized = false
@@ -42,6 +43,24 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     private var legacyFallbackUsed = false
     @Volatile
     private var rendererTransitionPending = false
+    @Volatile
+    private var rendererTransition: RendererTransition? = null
+    @Volatile
+    private var nativeFileActive = false
+    private var currentLoad: PendingLoad? = null
+    private val externalSubtitles = mutableListOf<ExternalSubtitle>()
+    private val rendererFailureLogs = ArrayDeque<String>()
+    @Volatile
+    private var endReason: String? = null
+    @Volatile
+    private var lastPosition = 0.0
+    @Volatile
+    private var lastDuration = 0.0
+    private var pendingRendererResume: Double? = null
+    private var lastSourceColor: MpvColorDiagnostics? = null
+    private var lastVideoFormat: String? = null
+    private var lastAudioCodec: String? = null
+    private var lastHardwareDecoder: String? = null
     @Volatile
     private var hdrHintRequested = false
     @Volatile
@@ -150,6 +169,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         surfaceView = null
         surfaceContainer = null
         pendingLoad = null
+        currentLoad = null
+        nativeFileActive = false
+        clearPlaybackFacts()
         surfaceAttached = false
         initialized = false
         initializationError = null
@@ -195,6 +217,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     @Synchronized
     private fun play(request: PendingLoad) {
         pendingLoad = null
+        val replacingNativeFile = nativeFileActive
+        currentLoad = request
+        externalSubtitles.clear()
+        clearPlaybackFacts()
         playbackState = "loading"
         lastPlaybackEvent = "load-command"
         lastPlaybackError = null
@@ -209,19 +235,31 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         fsrReason = if (fsrMode == "off") null else "等待确认 SDR 片源；HDR 与杜比视界不使用当前 FSR。"
         val context = if (preferredVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
             && hdrCapabilities?.canTryVulkan() == true) "androidvk" else "android"
+        if (replacingNativeFile) {
+            beginRendererTransition(context, PRIMARY_ANDROID_VIDEO_OUTPUT, false, 0.0, false, preserveTracks = false)
+            return
+        }
         // Unknown/Dolby sources retain gpu-next even when the saved legacy preference is gpu.
         runCatching { configureRenderer(context, PRIMARY_ANDROID_VIDEO_OUTPUT) }
             .onFailure { recoverRendererFailure(context) }
         check(playbackState != "error") { lastPlaybackError ?: "Android 渲染配置失败。" }
         playbackTransport = if (request.path.startsWith("http://127.0.0.1:")) "rust-loopback" else "direct"
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
+        loadNativeFile(request)
+    }
+
+    private fun loadNativeFile(request: PendingLoad, position: Double? = null, paused: Boolean = false) {
         val headers = request.headers
         val headerFields = headers.joinToString(",") { "${it.name}: ${it.value}" }
         MPVLib.setPropertyString("http-header-fields", headerFields)
-        val command = request.audioPath?.let {
-            arrayOf("loadfile", request.path, "replace", "-1", "audio-file=$it")
-        } ?: arrayOf("loadfile", request.path, "replace")
-        MPVLib.command(command)
+        val options = mutableListOf<String>()
+        request.audioPath?.let { options.add("audio-file=$it") }
+        if (position != null && position.isFinite() && position >= 0.0)
+            options.add("start=$position")
+        options.add("pause=${if (paused) "yes" else "no"}")
+        check(MPVLib.commandChecked(arrayOf("loadfile", request.path, "replace", "-1", options.joinToString(","))) >= 0) {
+            "媒体加载命令被拒绝。"
+        }
     }
 
     @Synchronized
@@ -261,17 +299,27 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
     fun addSubtitle(url: String, title: String?, language: String?) {
         requireInitialized()
+        externalSubtitles.add(ExternalSubtitle(url, title, language))
+        val transition = rendererTransition
+        if (transition != null) {
+            transition.selection.externalSubtitleUrl = url
+            return
+        }
         MPVLib.command(arrayOf("sub-add", url, "select", title ?: "", language ?: ""))
     }
 
     fun pause(paused: Boolean) {
         requireInitialized()
+        rendererTransition?.paused = paused
         MPVLib.setPropertyBoolean("pause", paused)
     }
 
     fun stop() {
+        capturePlaybackFacts()
         playbackGeneration += 1
         pendingLoad = null
+        currentLoad = null
+        endReason = "stop"
         loadPrepared = false
         waitingForStartFile = false
         if (initialized) {
@@ -289,11 +337,27 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
     fun seek(position: Double) {
         requireInitialized()
+        pendingRendererResume = null
+        if (endReason == "eof" && fileLoaded) {
+            endReason = null
+            playbackState = "playing"
+        }
         MPVLib.command(arrayOf("seek", position.toString(), "absolute+exact"))
     }
 
     fun setProperty(name: String, value: String) {
         requireInitialized()
+        rendererTransition?.let { transition ->
+            when (name) {
+                "aid" -> transition.selection.audio = value
+                "sid" -> {
+                    transition.selection.subtitle = value
+                    transition.selection.externalSubtitleUrl = null
+                }
+                "pause" -> transition.paused = value == "true" || value == "1" || value == "yes"
+                in transition.settings -> transition.settings[name] = value
+            }
+        }
         when (name) {
             "volume", "time-pos", "duration", "speed", "panscan", "video-zoom",
             "brightness", "sub-delay" -> MPVLib.setPropertyDouble(name, value.toDouble())
@@ -306,7 +370,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         requireInitialized()
         return when (name) {
             "pause", "paused-for-cache" -> (MPVLib.getPropertyBoolean(name) ?: false).toString()
-            "volume", "time-pos", "duration", "speed", "panscan", "video-zoom",
+            "time-pos" -> snapshot().time.toString()
+            "duration" -> snapshot().duration.toString()
+            "volume", "speed", "panscan", "video-zoom",
             "brightness", "sub-delay", "cache-speed" -> (MPVLib.getPropertyDouble(name) ?: 0.0).toString()
             else -> MPVLib.getPropertyString(name) ?: ""
         }
@@ -319,11 +385,59 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         MPVLib.command(arrayOf("screenshot-to-file", path, "subtitles"))
     }
 
-    fun snapshot(): MpvSnapshot = MpvSnapshot(
-        time = if (initialized) MPVLib.getPropertyDouble("time-pos") ?: 0.0 else 0.0,
-        duration = if (initialized) MPVLib.getPropertyDouble("duration") ?: 0.0 else 0.0,
-        paused = if (initialized) MPVLib.getPropertyBoolean("pause") ?: true else true,
-    )
+    fun snapshot(): MpvSnapshot {
+        capturePlaybackFacts()
+        return MpvSnapshot(
+            time = lastPosition,
+            duration = lastDuration,
+            paused = if (initialized && playbackState == "playing") MPVLib.getPropertyBoolean("pause") ?: true else true,
+        )
+    }
+
+    private fun clearPlaybackFacts() {
+        endReason = null
+        lastPosition = 0.0
+        lastDuration = 0.0
+        pendingRendererResume = null
+        lastSourceColor = null
+        lastVideoFormat = null
+        lastAudioCodec = null
+        lastHardwareDecoder = null
+        synchronized(rendererFailureLogs) { rendererFailureLogs.clear() }
+    }
+
+    private fun capturePlaybackFacts() {
+        confirmRendererTransition()
+        if (!initialized || !fileLoaded || playbackState != "playing" || rendererTransitionPending || stopRequested)
+            return
+        MPVLib.getPropertyDouble("time-pos")?.takeIf { it.isFinite() && it >= 0.0 }?.let { position ->
+            val resume = pendingRendererResume
+            if (resume == null || kotlin.math.abs(position - resume) <= 5.0) {
+                lastPosition = position
+                pendingRendererResume = null
+            }
+        }
+        MPVLib.getPropertyDouble("duration")?.takeIf { it.isFinite() && it > 0.0 }?.let { lastDuration = it }
+        safePropertyString("video-format")?.let { lastVideoFormat = it }
+        safePropertyString("audio-codec-name")?.let { lastAudioCodec = it }
+        safePropertyString("hwdec-current")?.let { lastHardwareDecoder = it }
+        if (sourceMetadataReady)
+            lastSourceColor = colorDiagnostics()
+    }
+
+    private fun captureSourceMetadata() {
+        if (!initialized || !nativeFileActive || waitingForStartFile || playbackState == "error")
+            return
+        // Decoded-frame metadata may arrive before FILE_LOADED or before a failed VO exists.
+        val gamma = MpvColorPolicy.metadata(safePropertyString("video-params/gamma"))
+        val profile = MpvColorPolicy.dolbyProfile(safePropertyString("current-tracks/video/dolby-vision-profile"))
+        if (gamma == null && profile == null)
+            return
+        sourceMetadataReady = true
+        lastSourceColor = colorDiagnostics()
+        safePropertyString("video-format")?.let { lastVideoFormat = it }
+        safePropertyString("hwdec-current")?.let { lastHardwareDecoder = it }
+    }
 
     fun hasActivePlayback(): Boolean = pendingLoad != null || playbackState == "loading" || playbackState == "playing"
 
@@ -356,16 +470,21 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     fun playbackDiagnostics(): MpvPlaybackDiagnostics {
-        val logs = synchronized(diagnosticLogs) { diagnosticLogs.toList() }
+        capturePlaybackFacts()
+        val logs = synchronized(rendererFailureLogs) { rendererFailureLogs.toList() } +
+            synchronized(diagnosticLogs) { diagnosticLogs.toList() }
         return MpvPlaybackDiagnostics(
             state = playbackState,
+            endReason = endReason,
+            position = lastPosition,
+            duration = lastDuration,
             lastEvent = lastPlaybackEvent,
             lastError = lastPlaybackError,
             fileLoaded = fileLoaded,
-            videoFormat = safePropertyString("video-format"),
-            audioCodec = safePropertyString("audio-codec-name"),
+            videoFormat = lastVideoFormat,
+            audioCodec = lastAudioCodec,
             voConfigured = safePropertyBoolean("vo-configured") ?: false,
-            hardwareDecoder = safePropertyString("hwdec-current"),
+            hardwareDecoder = lastHardwareDecoder,
             videoOutput = activeVideoOutput,
             videoOutputFallbackUsed = videoOutputFallbackUsed,
             playbackTransport = playbackTransport,
@@ -381,8 +500,25 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     override fun eventProperty(property: String, value: Long) = Unit
 
     override fun eventProperty(property: String, value: Boolean) {
+        if (property == "eof-reached" && !value && fileLoaded && endReason == "eof") {
+            endReason = null
+            playbackState = "playing"
+            lastPlaybackEvent = "playback-resumed-from-eof"
+            refreshColorPolicy()
+        }
+        if (property == "eof-reached" && value && fileLoaded && playbackState == "playing"
+            && !stopRequested && !rendererTransitionPending && lastPlaybackError == null
+            && safePropertyBoolean("vo-configured") == true) {
+            capturePlaybackFacts()
+            // keep-open retains the final frame; it does not issue END_FILE until stopped.
+            endReason = "eof"
+            playbackState = "ended"
+            lastPlaybackEvent = "natural-eof"
+            hdrCapabilities?.requestWindowHdr(false)
+        }
         if (property == "vo-configured" && value) {
-            lastPlaybackEvent = "video-output-ready"
+            confirmRendererTransition()
+            if (playbackState != "error") lastPlaybackEvent = "video-output-ready"
             refreshColorPolicy()
         }
     }
@@ -392,7 +528,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             "video-format" -> if (value.isNotBlank()) lastPlaybackEvent = "video-format-ready"
             "audio-codec-name" -> if (value.isNotBlank()) lastPlaybackEvent = "audio-format-ready"
             "video-params/gamma", "current-tracks/video/dolby-vision-profile" -> {
-                if (sourceMetadataReady) refreshColorPolicy()
+                captureSourceMetadata()
+                if (sourceMetadataReady && fileLoaded) refreshColorPolicy()
             }
         }
     }
@@ -408,8 +545,18 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             loadPrepared = false
             sourceMetadataReady = false
             fileLoaded = false
-            if (activeVideoOutput == FALLBACK_ANDROID_VIDEO_OUTPUT)
-                configureRenderer("android", PRIMARY_ANDROID_VIDEO_OUTPUT)
+            if (activeVideoOutput == FALLBACK_ANDROID_VIDEO_OUTPUT) {
+                // A bounded retry reloads the exact same already-confirmed SDR source.
+                // START_FILE precedes on_load, so changing GPU options here would tear
+                // down an active media chain. New/unknown sources must start gpu-next
+                // through play()'s idle configuration or fail safely at this barrier.
+                val transition = rendererTransition
+                check(transition?.stage == "reloading"
+                    && transition.generation == playbackGeneration
+                    && transition.request === currentLoad
+                    && transition.videoOutput == FALLBACK_ANDROID_VIDEO_OUTPUT
+                    && confirmedSdrSource()) { "当前片源尚未确认可使用兼容 GPU 渲染。" }
+            }
             // The native hook waits for this callback, then continues exactly once.
             check(clearManagedFsrShader(true))
             fsrStatus = if (fsrMode == "off") "disabled" else "bypassed"
@@ -422,7 +569,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     override fun event(eventId: Int) {
         when (eventId) {
             MPVLib.MpvEvent.START_FILE -> {
+                if (playbackState == "error") return
                 waitingForStartFile = false
+                nativeFileActive = true
+                endReason = null
                 stopRequested = false
                 playbackState = "loading"
                 lastPlaybackEvent = "start-file"
@@ -435,57 +585,85 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 fsrReason = if (fsrMode == "off") null else "等待确认当前片源的色彩信息。"
             }
             MPVLib.MpvEvent.FILE_LOADED -> {
-                if (waitingForStartFile)
+                if (waitingForStartFile || playbackState == "error")
                     return
-                playbackState = "playing"
+                playbackState = if (rendererTransitionPending) "loading" else "playing"
                 lastPlaybackEvent = "file-loaded"
                 lastPlaybackError = null
                 fileLoaded = true
                 // VIDEO_RECONFIG supplies current decoded-frame metadata; old VO metadata
                 // can still be unavailable or stale while FILE_LOADED is being delivered.
                 sourceMetadataReady = false
+                captureSourceMetadata()
+                confirmRendererTransition()
                 refreshColorPolicy()
             }
             MPVLib.MpvEvent.VIDEO_RECONFIG -> {
-                lastPlaybackEvent = "video-reconfig"
+                if (playbackState != "error" && endReason == null) lastPlaybackEvent = "video-reconfig"
+                captureSourceMetadata()
                 if (fileLoaded && !waitingForStartFile && hasActivePlayback()) {
-                    sourceMetadataReady = true
+                    confirmRendererTransition()
+                    capturePlaybackFacts()
                     refreshColorPolicy()
                 }
             }
-            MPVLib.MpvEvent.AUDIO_RECONFIG -> lastPlaybackEvent = "audio-reconfig"
+            MPVLib.MpvEvent.AUDIO_RECONFIG -> if (playbackState != "error" && endReason == null) {
+                lastPlaybackEvent = "audio-reconfig"
+                safePropertyString("audio-codec-name")?.let { lastAudioCodec = it }
+            }
             MPVLib.MpvEvent.PLAYBACK_RESTART -> {
-                if (fileLoaded && !waitingForStartFile && playbackState != "error") {
-                    playbackState = "playing"
+                if (fileLoaded && !waitingForStartFile && playbackState != "error" && endReason != "eof") {
+                    playbackState = if (rendererTransitionPending) "loading" else "playing"
                     lastPlaybackEvent = "playback-restart"
-                    sourceMetadataReady = true
+                    captureSourceMetadata()
+                    confirmRendererTransition()
+                    capturePlaybackFacts()
                     refreshColorPolicy()
                 }
-            }
-            MPVLib.MpvEvent.END_FILE -> {
-                if (stopRequested) {
-                    playbackState = "idle"
-                    lastPlaybackEvent = "stopped"
-                    stopRequested = false
-                    return
-                }
-                val error = safePropertyString("error")
-                if (!fileLoaded || (!error.isNullOrBlank() && error != "success")) {
-                    playbackState = "error"
-                    lastPlaybackEvent = "end-file-error"
-                    lastPlaybackError = error?.takeUnless { it == "success" }
-                        ?: lastPlaybackError ?: "媒体文件未能完成加载，请打开播放诊断查看原因。"
-                } else {
-                    playbackState = "ended"
-                    lastPlaybackEvent = "end-file"
-                }
-                fileLoaded = false
-                waitingForStartFile = false
-                loadPrepared = false
-                resetColorSession()
-                clearManagedFsrShader()
             }
         }
+    }
+
+    override fun eventEndFile(reason: Int, error: Int) {
+        nativeFileActive = false
+        val transition = rendererTransition
+        if (transition != null && transition.stage == "waiting-stop" && !stopRequested
+            && playbackState != "error" && reason != MPVLib.MpvEndReason.QUIT) {
+            fileLoaded = false
+            sourceMetadataReady = false
+            surfaceView?.post { finishRendererTransition(transition) }
+            return
+        }
+        if (playbackState == "error") {
+            endReason = "error"
+        } else if (stopRequested || reason == MPVLib.MpvEndReason.STOP || reason == MPVLib.MpvEndReason.QUIT) {
+            endReason = if (reason == MPVLib.MpvEndReason.QUIT) "quit" else "stop"
+            playbackState = "idle"
+            lastPlaybackEvent = "stopped"
+        } else if (reason == MPVLib.MpvEndReason.REDIRECT) {
+            endReason = "redirect"
+            playbackState = "loading"
+            lastPlaybackEvent = "playlist-redirect"
+        } else if (reason == MPVLib.MpvEndReason.EOF && fileLoaded && lastPlaybackError == null) {
+            endReason = "eof"
+            playbackState = "ended"
+            lastPlaybackEvent = "natural-eof"
+        } else {
+            endReason = "error"
+            playbackState = "error"
+            lastPlaybackEvent = "end-file-error"
+            lastPlaybackError = lastPlaybackError ?: "媒体加载失败（mpv 结束原因 $reason，错误 $error）。"
+        }
+        stopRequested = false
+        fileLoaded = false
+        sourceMetadataReady = false
+        waitingForStartFile = false
+        loadPrepared = false
+        rendererTransition = null
+        rendererTransitionPending = false
+        hdrHintRequested = false
+        hdrCapabilities?.requestWindowHdr(false)
+        clearManagedFsrShader()
     }
 
     override fun logMessage(prefix: String, level: Int, text: String) {
@@ -501,7 +679,12 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             lastPlaybackError = line
         if (shouldFallbackFsr(level, line))
             recordFsrFallback("FSR Shader 编译失败，已恢复普通缩放。")
-        if (shouldFallbackVideoOutput(level, line)) {
+        if (shouldFallbackVideoOutput(prefix, level, line)) {
+            captureSourceMetadata()
+            synchronized(rendererFailureLogs) {
+                if (line !in rendererFailureLogs) rendererFailureLogs.addLast(line)
+                while (rendererFailureLogs.size > 4) rendererFailureLogs.removeFirst()
+            }
             if (activeGpuContext == "androidvk" && !vulkanFallbackUsed) {
                 vulkanFallbackUsed = true
                 rendererFallbackReason = "Vulkan 渲染或 HDR Surface 协商失败，已改用 GLES 的 SDR 映射。"
@@ -522,6 +705,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         vulkanFallbackUsed = false
         legacyFallbackUsed = false
         rendererTransitionPending = false
+        rendererTransition = null
         hdrHintRequested = false
         fsrFailedForPlayback = false
         videoOutputFallbackUsed = false
@@ -532,12 +716,12 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     private fun sourceGamma(): String? = if (sourceMetadataReady)
-        MpvColorPolicy.metadata(safePropertyString("video-params/gamma")) else null
+        MpvColorPolicy.metadata(safePropertyString("video-params/gamma")) else lastSourceColor?.sourceGamma
 
     private fun sourceDolbyProfile(): Int? = if (sourceMetadataReady)
-        MpvColorPolicy.dolbyProfile(safePropertyString("current-tracks/video/dolby-vision-profile")) else null
+        MpvColorPolicy.dolbyProfile(safePropertyString("current-tracks/video/dolby-vision-profile")) else lastSourceColor?.dolbyVisionProfile
 
-    private fun confirmedSdrSource(): Boolean = sourceMetadataReady
+    private fun confirmedSdrSource(): Boolean = (sourceMetadataReady || lastSourceColor != null)
         && MpvColorPolicy.confirmedSdr(sourceGamma(), sourceDolbyProfile())
 
     private fun effectiveHardwareDecoder(): String =
@@ -550,7 +734,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     private fun configureRenderer(context: String, videoOutput: String) {
         if (!initialized)
             return
-        if (rendererNeedsConfiguration || activeGpuContext != context || activeVideoOutput != videoOutput) {
+        val changed = activeGpuContext != context || activeVideoOutput != videoOutput
+        if (changed) {
+            // Both GPU options have UPDATE_VO in pinned mpv. Never change them on a live file.
+            check(!nativeFileActive) { "不能在仍活动的媒体链上更换 GPU 上下文。" }
             rendererNeedsConfiguration = true
             setRenderProperty("vo", "null")
             setRenderProperty("gpu-api", if (context == "androidvk") "vulkan" else "opengl")
@@ -559,28 +746,33 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             setRenderProperty("target-colorspace-hint", "no")
             setRenderProperty("target-trc", "auto")
             setRenderProperty("target-prim", "auto")
-            if (surfaceAttached)
-                setRenderProperty("vo", videoOutput)
             activeGpuContext = context
             activeVideoOutput = videoOutput
+        }
+        if (rendererNeedsConfiguration && surfaceAttached) {
+            setRenderProperty("vo", videoOutput)
             rendererNeedsConfiguration = !surfaceAttached
         }
     }
 
     private fun failRenderer(reason: String) {
+        captureSourceMetadata()
+        capturePlaybackFacts()
         playbackState = "error"
+        endReason = "error"
         lastPlaybackEvent = "render-error"
         lastPlaybackError = reason
         pendingLoad = null
         fileLoaded = false
         sourceMetadataReady = false
+        rendererTransition = null
+        rendererTransitionPending = false
         hdrHintRequested = false
         rendererNeedsConfiguration = true
         managedFsrAttached = false
         managedFsrOptions = null
         hdrCapabilities?.requestWindowHdr(false)
         if (initialized) {
-            runCatching { MPVLib.setPropertyStringChecked("vo", "null") }
             runCatching { MPVLib.stopAsync() }
         }
     }
@@ -604,31 +796,115 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     private fun requestRendererTransition(context: String, videoOutput: String, fallback: Boolean = true) {
-        if (rendererTransitionPending || !hasActivePlayback())
+        if (rendererTransition?.stage == "waiting-stop" || !hasActivePlayback())
             return
+        capturePlaybackFacts()
+        val oldTransition = rendererTransition
+        beginRendererTransition(context, videoOutput, fallback,
+            oldTransition?.position ?: lastPosition,
+            oldTransition?.paused ?: (safePropertyBoolean("pause") ?: false), oldTransition)
+    }
+
+    private fun beginRendererTransition(context: String, videoOutput: String, fallback: Boolean, position: Double, paused: Boolean,
+        previous: RendererTransition? = null, preserveTracks: Boolean = true) {
         val surface = surfaceView ?: return
+        val request = currentLoad ?: return
+        val transition = RendererTransition(context, videoOutput, fallback, request, position, paused,
+            if (preserveTracks) previous?.selection ?: currentTrackSelection() else RendererTrackSelection(null, null, null),
+            previous?.settings ?: listOf("speed", "volume", "mute", "sub-delay", "video-zoom", "panscan", "brightness")
+                .mapNotNull { name -> safePropertyString(name)?.let { name to it } }.toMap().toMutableMap(),
+            playbackGeneration)
+        rendererTransition = transition
         rendererTransitionPending = true
-        val generation = playbackGeneration
-        surface.post {
-            synchronized(this) {
-                if (generation != playbackGeneration || !initialized || !hasActivePlayback())
-                    return@synchronized
-                if (fallback)
-                    videoOutputFallbackUsed = true
-                hdrHintRequested = false
-                hdrCapabilities?.requestWindowHdr(false)
-                if (!clearManagedFsrShader()) {
-                    rendererTransitionPending = false
-                    return@synchronized
-                }
-                runCatching { configureRenderer(context, videoOutput) }
-                    .onFailure { recoverRendererFailure(context) }
-                rendererTransitionPending = false
-                if (playbackState != "error") {
-                    lastPlaybackEvent = if (fallback) "video-output-fallback" else "video-output-selected"
-                    refreshColorPolicy()
-                }
+        playbackState = "loading"
+        endReason = null
+        lastPlaybackError = null
+        lastPlaybackEvent = "renderer-transition"
+        hdrHintRequested = false
+        hdrCapabilities?.requestWindowHdr(false)
+        if (nativeFileActive) {
+            if (MPVLib.stopAsync() < 0) failRenderer("渲染切换未能停止旧的媒体链。")
+        } else {
+            surface.post { finishRendererTransition(transition) }
+        }
+        surface.postDelayed({
+            if (rendererTransition === transition && transition.generation == playbackGeneration)
+                failRenderer("渲染切换超时，请打开播放诊断查看原生错误。")
+        }, RENDERER_TRANSITION_TIMEOUT_MS)
+    }
+
+    @Synchronized
+    private fun finishRendererTransition(transition: RendererTransition) {
+        if (rendererTransition !== transition || transition.generation != playbackGeneration
+            || !initialized || !surfaceAttached || playbackState == "error" || nativeFileActive)
+            return
+        if (!clearManagedFsrShader()) return
+        runCatching { configureRenderer(transition.context, transition.videoOutput) }
+            .onFailure { recoverRendererFailure(transition.context) }
+        if (playbackState == "error") return
+        transition.context = activeGpuContext
+        transition.videoOutput = activeVideoOutput
+        transition.stage = "reloading"
+        pendingRendererResume = transition.position.takeIf { it > 0.0 }
+        fileLoaded = false
+        sourceMetadataReady = false
+        waitingForStartFile = true
+        loadPrepared = true
+        playbackTransport = if (transition.request.path.startsWith("http://127.0.0.1:")) "rust-loopback" else "direct"
+        runCatching { loadNativeFile(transition.request, transition.position, transition.paused) }
+            .onFailure { failRenderer("渲染切换后的媒体重新加载失败。") }
+    }
+
+    private fun confirmRendererTransition() {
+        val transition = rendererTransition ?: return
+        if (transition.stage != "reloading" || !fileLoaded || !sourceMetadataReady || !surfaceAttached
+            || safePropertyBoolean("vo-configured") != true
+            || safePropertyString("current-vo") != transition.videoOutput)
+            return
+        val restoredPosition = MPVLib.getPropertyDouble("time-pos")
+            ?.takeIf { it.isFinite() && it >= 0.0 }
+        if (transition.position > 0.0
+            && (restoredPosition == null || kotlin.math.abs(restoredPosition - transition.position) > 5.0))
+            return
+        // FILE_LOADED/VIDEO_RECONFIG may precede the seek. Keep the bounded
+        // transition pending until native playback proves the saved position.
+        restoredPosition?.let { lastPosition = it }
+        pendingRendererResume = null
+        rendererTransition = null
+        rendererTransitionPending = false
+        playbackState = "playing"
+        if (transition.fallback) videoOutputFallbackUsed = true
+        lastPlaybackEvent = if (transition.fallback) "video-output-fallback" else "video-output-selected"
+        for (subtitle in externalSubtitles.toList()) {
+            runCatching {
+                MPVLib.commandChecked(arrayOf("sub-add", subtitle.url, "auto", subtitle.title ?: "", subtitle.language ?: ""))
             }
+        }
+        val selected = transition.selection
+        selected.audio?.let { MPVLib.setPropertyString("aid", it) }
+        val subtitleId = selected.externalSubtitleUrl?.let { trackIdForExternalSubtitle(it) } ?: selected.subtitle
+        subtitleId?.let { MPVLib.setPropertyString("sid", it) }
+        for ((name, value) in transition.settings) MPVLib.setPropertyString(name, value)
+        refreshColorPolicy()
+    }
+
+    private fun currentTrackSelection(): RendererTrackSelection {
+        val subtitle = safePropertyString("sid")
+        val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+        val external = (0 until count).firstNotNullOfOrNull { index ->
+            val prefix = "track-list/$index"
+            if (safePropertyString("$prefix/type") == "sub" && safePropertyString("$prefix/id") == subtitle)
+                safePropertyString("$prefix/external-filename") else null
+        }
+        return RendererTrackSelection(safePropertyString("aid"), subtitle, external)
+    }
+
+    private fun trackIdForExternalSubtitle(url: String): String? {
+        val count = MPVLib.getPropertyInt("track-list/count") ?: 0
+        return (0 until count).firstNotNullOfOrNull { index ->
+            val prefix = "track-list/$index"
+            if (safePropertyString("$prefix/type") == "sub" && safePropertyString("$prefix/external-filename") == url)
+                safePropertyString("$prefix/id") else null
         }
     }
 
@@ -686,6 +962,13 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     private fun colorDiagnostics(): MpvColorDiagnostics {
+        val retainedSource = lastSourceColor
+        if (!sourceMetadataReady && retainedSource != null) {
+            return retainedSource.copy(targetGamma = null, targetPrimaries = null, targetPixelFormat = null,
+                outputMode = "unknown", gpuContext = null,
+                reason = rendererFallbackReason ?: if (playbackState == "error")
+                    "保留故障前确认的片源信息；渲染目标当前不可用。" else "渲染目标正在重新建立。")
+        }
         fun metadata(name: String): String? = MpvColorPolicy.metadata(safePropertyString(name))
         val targetReady = hasActivePlayback() && sourceMetadataReady && surfaceAttached && !rendererTransitionPending
             && safePropertyBoolean("vo-configured") == true
@@ -866,15 +1149,15 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         return if (cleanPrefix.isBlank()) cleanText else "$cleanPrefix: $cleanText"
     }
 
-    private fun shouldFallbackVideoOutput(level: Int, line: String): Boolean {
-        if (level > 20 || rendererTransitionPending || !hasActivePlayback())
+    private fun shouldFallbackVideoOutput(prefix: String, level: Int, line: String): Boolean {
+        if (level > 20 || !surfaceAttached || rendererTransition?.stage == "waiting-stop" || !hasActivePlayback())
             return false
         val normalized = line.lowercase()
+        val owner = prefix.lowercase()
+        val rendererLog = owner == "vo" || owner.startsWith("vo/") || owner == "libplacebo"
+            || owner == "vulkan" || normalized.contains("error opening/initializing the selected video_out")
         return activeVideoOutput == PRIMARY_ANDROID_VIDEO_OUTPUT
-            && !normalized.contains("shader")
-            && !normalized.contains("glsl")
-            && !normalized.contains("hook")
-            && (normalized.contains("gpu") || normalized.contains("vo") || normalized.contains("vulkan") || normalized.contains("swapchain"))
+            && rendererLog && !shouldFallbackFsr(level, line)
             && (normalized.contains("fail") || normalized.contains("error") || normalized.contains("not supported"))
     }
 
@@ -941,6 +1224,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 MPVLib.observeProperty("video-format", MPVLib.MpvFormat.STRING)
                 MPVLib.observeProperty("audio-codec-name", MPVLib.MpvFormat.STRING)
                 MPVLib.observeProperty("vo-configured", MPVLib.MpvFormat.FLAG)
+                MPVLib.observeProperty("eof-reached", MPVLib.MpvFormat.FLAG)
                 MPVLib.observeProperty("hwdec-current", MPVLib.MpvFormat.STRING)
                 MPVLib.observeProperty("video-params/gamma", MPVLib.MpvFormat.STRING)
                 MPVLib.observeProperty("current-tracks/video/dolby-vision-profile", MPVLib.MpvFormat.STRING)
@@ -976,6 +1260,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             MPVLib.setOptionString("force-window", "yes")
             surfaceAttached = true
             rendererNeedsConfiguration = true
+            rendererTransition?.takeIf { it.stage == "waiting-stop" && !nativeFileActive }?.let {
+                finishRendererTransition(it)
+                return
+            }
             runCatching { configureRenderer(activeGpuContext, activeVideoOutput) }
                 .onFailure { recoverRendererFailure(activeGpuContext) }
             lastPlaybackEvent = "surface-attached"
@@ -994,10 +1282,11 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         override fun surfaceDestroyed(holder: SurfaceHolder) {
             if (!surfaceAttached)
                 return
+            capturePlaybackFacts()
+            surfaceAttached = false
             MPVLib.setPropertyString("vo", "null")
             MPVLib.setPropertyString("force-window", "no")
             MPVLib.detachSurface()
-            surfaceAttached = false
             rendererNeedsConfiguration = true
             lastPlaybackEvent = "surface-detached"
             hdrHintRequested = false
@@ -1059,6 +1348,9 @@ internal data class MpvTrackState(
 )
 internal data class MpvPlaybackDiagnostics(
     val state: String,
+    val endReason: String?,
+    val position: Double,
+    val duration: Double,
     val lastEvent: String,
     val lastError: String?,
     val fileLoaded: Boolean,
@@ -1073,4 +1365,19 @@ internal data class MpvPlaybackDiagnostics(
     val fsrReason: String?,
     val color: MpvColorDiagnostics?,
     val logs: List<String>,
+)
+
+private data class ExternalSubtitle(val url: String, val title: String?, val language: String?)
+private data class RendererTrackSelection(var audio: String?, var subtitle: String?, var externalSubtitleUrl: String?)
+private data class RendererTransition(
+    var context: String,
+    var videoOutput: String,
+    val fallback: Boolean,
+    val request: PendingLoad,
+    val position: Double,
+    var paused: Boolean,
+    val selection: RendererTrackSelection,
+    val settings: MutableMap<String, String>,
+    val generation: Long,
+    var stage: String = "waiting-stop",
 )

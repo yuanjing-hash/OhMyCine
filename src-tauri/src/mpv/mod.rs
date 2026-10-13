@@ -7,6 +7,7 @@ pub mod mobile;
 pub mod mobile_proxy;
 #[cfg(not(mobile))]
 pub mod platform;
+pub mod playback;
 #[cfg(not(mobile))]
 pub mod player;
 pub mod render;

@@ -76,6 +76,11 @@ object MPVLib {
     }
 
     @JvmStatic
+    fun eventEndFile(reason: Int, error: Int) = synchronized(observers) {
+        observers.forEach { it.eventEndFile(reason, error) }
+    }
+
+    @JvmStatic
     fun eventHook(id: Long) = synchronized(observers) {
         observers.forEach { it.eventHook(id) }
     }
@@ -98,6 +103,7 @@ object MPVLib {
         fun eventProperty(property: String, value: String)
         fun eventProperty(property: String, value: Double)
         fun event(eventId: Int)
+        fun eventEndFile(reason: Int, error: Int) = Unit
         fun eventHook(id: Long) = Unit
     }
 
@@ -120,5 +126,13 @@ object MPVLib {
         const val VIDEO_RECONFIG = 17
         const val AUDIO_RECONFIG = 18
         const val PLAYBACK_RESTART = 21
+    }
+
+    object MpvEndReason {
+        const val EOF = 0
+        const val STOP = 2
+        const val QUIT = 3
+        const val ERROR = 4
+        const val REDIRECT = 5
     }
 }

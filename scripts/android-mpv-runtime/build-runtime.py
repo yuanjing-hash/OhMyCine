@@ -80,6 +80,17 @@ LOAD_HOOK_EVENT = '''        case MPV_EVENT_HOOK: {
         }
 '''
 
+END_FILE_EVENT = '''        case MPV_EVENT_END_FILE: {
+            // Copy native terminal facts before any Java callback can issue commands.
+            const mpv_event_end_file *end = (mpv_event_end_file*)mp_event->data;
+            const int reason = end ? end->reason : MPV_END_FILE_REASON_ERROR;
+            const int error = end ? end->error : MPV_ERROR_GENERIC;
+            jmethodID callback = env->GetStaticMethodID(mpv_MPVLib, "eventEndFile", "(II)V");
+            if (callback) env->CallStaticVoidMethod(mpv_MPVLib, callback, (jint)reason, (jint)error);
+            break;
+        }
+'''
+
 
 def run(args, cwd=None, env=None):
     print("+", " ".join(map(str, args)), flush=True)
@@ -239,6 +250,12 @@ def build(work, jobs):
         last = event_text.index("        case MPV_EVENT_PROPERTY_CHANGE:", first)
         event.write_text(event_text[:first] + event_text[last:])
     replace(event, "        case MPV_EVENT_PROPERTY_CHANGE:", LOAD_HOOK_EVENT + "        case MPV_EVENT_PROPERTY_CHANGE:")
+    event_text = event.read_text()
+    if "        case MPV_EVENT_END_FILE: {" in event_text:
+        first = event_text.index("        case MPV_EVENT_END_FILE: {")
+        last = event_text.index("        case MPV_EVENT_PROPERTY_CHANGE:", first)
+        event.write_text(event_text[:first] + event_text[last:])
+    replace(event, "        case MPV_EVENT_PROPERTY_CHANGE:", END_FILE_EVENT + "        case MPV_EVENT_PROPERTY_CHANGE:")
     replace(event, "        }\n    }\n\n    g_vm->DetachCurrentThread();", '''        }
         // Never carry a pending Java exception into the next native callback.
         if (env->ExceptionCheck()) {
@@ -319,6 +336,7 @@ def build(work, jobs):
     artifact["builderInputsSha256"] = builder_hash.hexdigest()
     artifact["jniBridgePatchSha256"] = hashlib.sha256(CHECKED_JNI.encode()).hexdigest()
     artifact["loadHookPatchSha256"] = hashlib.sha256(LOAD_HOOK_EVENT.encode()).hexdigest()
+    artifact["endFilePatchSha256"] = hashlib.sha256(END_FILE_EVENT.encode()).hexdigest()
     artifact["files"] = {str(path.relative_to(output)): hashlib.sha256(path.read_bytes()).hexdigest()
                          for path in sorted(output.rglob("*"))
                          if path.is_file() and path != output / "runtime-manifest.json"}

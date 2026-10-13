@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { computed, onUnmounted, ref } from 'vue'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
-import { describeVideoSourceColor, describeVideoTargetColor, normalizeDolbyVisionProfile, normalizeVideoColorMetadata } from '@/services/videoColor'
+import { describeVideoSourceColor, describeVideoTargetColor } from '@/services/videoColor'
 
 export type { MpvColorDiagnostics, VideoDynamicRangeState } from '@/services/videoColor'
 
@@ -115,6 +115,9 @@ export interface MpvRenderState {
 
 export interface MpvPlaybackDiagnostics {
   state: 'idle' | 'loading' | 'playing' | 'ended' | 'error' | 'desktop' | string
+  endReason: MpvEndReason | null
+  position: number
+  duration: number
   lastEvent: string
   lastError?: string | null
   fileLoaded: boolean
@@ -130,6 +133,8 @@ export interface MpvPlaybackDiagnostics {
   color?: MpvColorDiagnostics | null
   logs: string[]
 }
+
+export type MpvEndReason = 'eof' | 'stop' | 'quit' | 'error' | 'redirect'
 
 export interface RenderSurfaceBounds {
   x: number
@@ -267,6 +272,9 @@ export function useMpv() {
   const isPlaying = ref(false)
   const currentTime = ref(0)
   const duration = ref(0)
+  const playbackEndReason = ref<MpvEndReason | null>(null)
+  const lastConfirmedTime = ref(0)
+  const lastConfirmedDuration = ref(0)
   const volume = ref(100)
   const isMuted = ref(false)
   const videoBrightness = ref(50)
@@ -319,10 +327,18 @@ export function useMpv() {
 
   const unlistenPromises = [
     listen<{ time: number }>('mpv:time-update', (event) => {
+      if (disposed || !playbackActive || mediaLoadPending || !Number.isFinite(event.payload.time) || event.payload.time < 0
+        || playbackEndReason.value === 'error' || playbackEndReason.value === 'stop' || playbackEndReason.value === 'quit') {
+        return
+      }
       currentTime.value = event.payload.time
+      lastConfirmedTime.value = event.payload.time
     }),
     listen<{ duration: number }>('mpv:duration-change', (event) => {
+      if (disposed || !playbackActive || mediaLoadPending || !Number.isFinite(event.payload.duration) || event.payload.duration <= 0)
+        return
       duration.value = event.payload.duration
+      lastConfirmedDuration.value = event.payload.duration
       if (event.payload.duration > 0 && !trackRefreshScheduledForCurrentMedia) {
         trackRefreshScheduledForCurrentMedia = true
         scheduleTrackRefresh(150)
@@ -332,7 +348,8 @@ export function useMpv() {
       isPlaying.value = false
     }),
     listen('mpv:resumed', () => {
-      isPlaying.value = true
+      if (playbackActive && !playbackEndReason.value)
+        isPlaying.value = true
     }),
     listen('mpv:video-ready', () => {
       if (disposed || !playbackActive)
@@ -407,35 +424,37 @@ export function useMpv() {
       if (disposed || generation !== playbackGeneration)
         return
 
-      const currentColor = playbackActive && !mediaLoadPending && diagnostics.fileLoaded && diagnostics.voConfigured && colorGeneration === videoColorGeneration
+      const currentColor = playbackActive && !mediaLoadPending && colorGeneration === videoColorGeneration
       playbackDiagnostics.value = { ...diagnostics, color: currentColor ? diagnostics.color : null }
-      if (currentColor) {
-        if (diagnostics.color === undefined)
-          await refreshSourceColorFromProperties(generation, colorGeneration)
-        else
-          videoDynamicRange.value = describeVideoSourceColor(diagnostics.color)
-      }
-      else {
+      if (currentColor)
+        videoDynamicRange.value = describeVideoSourceColor(diagnostics.color)
+      else
         videoDynamicRange.value = describeVideoSourceColor(null)
-      }
       if (disposed || generation !== playbackGeneration)
         return
+      if (playbackActive && !mediaLoadPending) {
+        playbackEndReason.value = diagnostics.state === 'error' ? 'error' : diagnostics.endReason
+        if (Number.isFinite(diagnostics.position) && diagnostics.position >= 0) {
+          lastConfirmedTime.value = diagnostics.position
+          currentTime.value = diagnostics.position
+        }
+        if (Number.isFinite(diagnostics.duration) && diagnostics.duration > 0) {
+          lastConfirmedDuration.value = diagnostics.duration
+          duration.value = diagnostics.duration
+        }
+      }
       if (playbackActive && !mediaLoadPending && diagnostics.state !== 'desktop')
         fileLoaded.value = diagnostics.fileLoaded
       if (playbackActive && !mediaLoadPending && diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
         videoReady.value = true
       if (!mediaLoadPending && (diagnostics.state === 'error' || diagnostics.state === 'ended' || diagnostics.state === 'idle')) {
         isPlaying.value = false
-        resetVideoColorState()
         if (diagnostics.state === 'error')
           videoReady.value = false
       }
     }
     catch {
-      if (!disposed && generation === playbackGeneration) {
-        playbackDiagnostics.value = null
-        resetVideoColorState()
-      }
+      // A transient diagnostic read failure cannot erase confirmed media/end facts.
     }
   }
 
@@ -672,25 +691,6 @@ export function useMpv() {
     return transition
   }
 
-  async function refreshSourceColorFromProperties(generation: number, colorGeneration: number) {
-    const [gamma, primaries, pixelFormat, hardwarePixelFormat, doviProfile] = await Promise.all([
-      readMpvProperty('video-params/gamma'),
-      readMpvProperty('video-params/primaries'),
-      readMpvProperty('video-params/pixelformat'),
-      readMpvProperty('video-params/hw-pixelformat'),
-      readMpvProperty('current-tracks/video/dolby-vision-profile'),
-    ])
-    if (disposed || !playbackActive || mediaLoadPending || generation !== playbackGeneration || colorGeneration !== videoColorGeneration)
-      return
-    videoDynamicRange.value = describeVideoSourceColor({
-      sourceGamma: normalizeVideoColorMetadata(gamma),
-      sourcePrimaries: normalizeVideoColorMetadata(primaries),
-      sourcePixelFormat: normalizeVideoColorMetadata(pixelFormat),
-      sourceHardwarePixelFormat: normalizeVideoColorMetadata(hardwarePixelFormat),
-      dolbyVisionProfile: normalizeDolbyVisionProfile(doviProfile),
-    })
-  }
-
   function setKnownSubtitleTracks(tracks: readonly KnownSubtitleTrackInput[]) {
     knownSubtitleTracks.value = tracks.map(toKnownSubtitleTrack)
     if (selectedKnownSubtitle.value && !knownSubtitleTracks.value.some(track => track.id === selectedKnownSubtitle.value)) {
@@ -711,6 +711,9 @@ export function useMpv() {
     selectedKnownSubtitle.value = null
     currentTime.value = 0
     duration.value = 0
+    lastConfirmedTime.value = 0
+    lastConfirmedDuration.value = 0
+    playbackEndReason.value = null
     trackRefreshScheduledForCurrentMedia = false
     trackStateReady.value = false
     isPlaying.value = false
@@ -756,8 +759,7 @@ export function useMpv() {
         await refreshDisplayBrightness()
         if (!isCurrentPlaybackGeneration(generation))
           return
-        currentTime.value = 0
-        isPlaying.value = true
+        isPlaying.value = !playbackEndReason.value
         await applyPlaybackSpeed(playbackSpeed.value)
         if (!isCurrentPlaybackGeneration(generation))
           return
@@ -946,6 +948,9 @@ export function useMpv() {
     isPlaying.value = false
     currentTime.value = 0
     duration.value = 0
+    lastConfirmedTime.value = 0
+    lastConfirmedDuration.value = 0
+    playbackEndReason.value = null
     embeddedSubtitleTracks.value = []
     knownSubtitleTracks.value = []
     audioTracks.value = []
@@ -976,6 +981,9 @@ export function useMpv() {
     isPlaying,
     currentTime,
     duration,
+    playbackEndReason,
+    lastConfirmedTime,
+    lastConfirmedDuration,
     volume,
     isMuted,
     videoBrightness,

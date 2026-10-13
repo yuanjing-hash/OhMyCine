@@ -123,6 +123,8 @@ const player = createContext({
   playbackProgressReady: false,
   fileLoaded: { value: false },
   playbackHistoryStarted: false,
+  playbackEndReason: { value: null },
+  playbackDiagnostics: { value: null },
   isPlaying: { value: true },
   lastSavedPosition: 0,
   HISTORY_MIN_SAVE_POSITION: 5,
@@ -136,7 +138,7 @@ const player = createContext({
   syncProviderProgress: async (_value: PlaybackProgressUpsert, event: string) => { events.push(`system:${event}`) },
   scheduleHomeSectionsRefreshAfterPlayback: () => {},
 })
-runInContext(await viewFunctions('../src/views/PlayerView.vue', ['syncProviderPlaybackStarted', 'saveCurrentProgress', 'shouldSaveLocalProgress', 'providerEventForPayload', 'isLowPositionTerminalEvent', 'shouldRefreshHomeAfterProgressEvent']), player)
+runInContext(await viewFunctions('../src/views/PlayerView.vue', ['syncProviderPlaybackStarted', 'saveCurrentProgress', 'shouldSaveLocalProgress', 'providerEventForPayload', 'isLowPositionTerminalEvent', 'shouldRefreshHomeAfterProgressEvent', 'playbackEndedNaturally', 'playbackHasFailed']), player)
 async function flush() {
   await setImmediate()
   await setImmediate()
@@ -171,14 +173,15 @@ player.syncProviderPlaybackStarted()
 assert.equal(saved.length, 2)
 
 const config: DataSourceConfig = { id: 'server-home', type: 'server', name: 'Server', order: 0, url: 'https://server.example.test', enabled: true }
-const entry: PlaybackHistoryEntry = { ...saved[1], completed: false, deleted: false, updatedAt: 1_791_600_010_000, progressSource: 'local' }
-const [change] = await createServerHistoryUploadChanges([entry], [config], config.id)
+const scope = 'a'.repeat(64)
+const entry: PlaybackHistoryEntry = { ...saved[1], ownerScope: scope, completed: false, deleted: false, updatedAt: 1_791_600_010_000, progressSource: 'local' }
+const [change] = await createServerHistoryUploadChanges([entry], [config], config.id, undefined, scope)
 assert.equal(change.history_identity, items[1].id)
 assert.equal(change.item_token, items[1].id)
 assert.equal(change.sync_key, createHash('sha256').update(items[1].id).digest('hex'))
 assert.equal(change.library_id, 'online-library|library%2Fone')
 const otherDevice = { ...config, id: 'same-server-other-device' }
-const [incoming] = mapServerHistoryChangeToLocalEntry(change, [otherDevice], otherDevice)
+const [incoming] = mapServerHistoryChangeToLocalEntry(change, [otherDevice], otherDevice, 'b'.repeat(64))
 assert.equal(incoming.sourceId, otherDevice.id)
 assert.equal(incoming.mediaIdentity, items[1].id)
 assert.equal(incoming.itemId, items[1].id)
@@ -195,6 +198,7 @@ const workCard = createContext({
   activeSourceId: { value: 'server-home' },
   activeItemId: { value: 'online-work|library%2Fone|work%2F%E7%BB%BC%E8%89%BA' },
   activeStreamRequest: { itemId: items[1].id, historyIdentity: items[1].id },
+  activeHistoryOwnerScope: scope,
   currentQueueItem: { value: undefined },
   LOCAL_FILE_SOURCE_ID: 'local-file',
   currentPlaybackContext: () => ({ sourceId: 'server-home', itemId: 'online-work|library%2Fone|work%2F%E7%BB%BC%E8%89%BA' }),
@@ -207,28 +211,22 @@ assert.equal(workCard.currentHistoryIdentity().mediaIdentity, items[1].id, 'Real
 
 // Equal titles and ordering never merge distinct versions/libraries or servers.
 const isolatedEntries: PlaybackHistoryEntry[] = [entry, { ...entry, mediaIdentity: items[0].id, itemId: items[0].id }, { ...entry, mediaIdentity: items[1].id.replace('library%2Fone', 'library%2Ftwo'), itemId: items[1].id.replace('library%2Fone', 'library%2Ftwo'), libraryId: 'online-library|library%2Ftwo' }]
-const isolated = await createServerHistoryUploadChanges(isolatedEntries, [config], config.id)
+const isolated = await createServerHistoryUploadChanges(isolatedEntries, [config], config.id, undefined, scope)
 assert.equal(new Set(isolated.map(item => item.sync_key)).size, 3)
-assert.deepEqual(await createServerHistoryUploadChanges([entry], [config], 'another-server'), [])
+assert.deepEqual(await createServerHistoryUploadChanges([entry], [config], 'another-server', undefined, scope), [])
 
-let upgraded = false
-const legacyServer = new ServerDataSource({
+const currentServer = new ServerDataSource({
   readCredential: async () => ({ accessToken: `omc_player_${'a'.repeat(43)}` }),
-  bridge: { async request() { return { status: 200, body: { code: 0, data: { capabilities: upgraded ? ['online_playback_history_v1'] : [] } } } } },
+  bridge: { async request() { return { status: 200, body: { code: 0, data: { user: { id: 1 }, capabilities: ['online_playback_history_v1'] } } } } },
 })
-await legacyServer.init({ ...config, extra: { credentialRef: 'fixture' } })
+await currentServer.init({ ...config, extra: { credentialRef: 'fixture' } })
+await currentServer.refreshCapabilities()
 const physical = { ...entry, mediaIdentity: 'server:v1:movie:9:work-one', itemId: 'work|9|work-one', libraryId: '9', mediaType: 'movie' as const }
 const tombstone = { ...entry, deleted: true }
 const batch = [physical, entry, tombstone]
-const oldUpload = await createServerHistoryUploadChanges(batch, [config], config.id, identity => legacyServer.canSyncOnlineHistory(identity))
-assert.deepEqual(oldUpload.map(change => change.media_identity), [physical.mediaIdentity])
-assert.equal(entry.deleted, false)
-assert.equal(tombstone.deleted, true, 'Skipped canonical online tombstones retain their local state')
-upgraded = true
-await legacyServer.refreshCapabilities()
-const newUpload = await createServerHistoryUploadChanges(batch, [config], config.id, identity => legacyServer.canSyncOnlineHistory(identity))
-assert.equal(newUpload.length, 3, 'Capability refresh makes retained online start/progress/tombstone rows eligible')
-assert.equal(newUpload[1].history_identity, entry.mediaIdentity)
-assert.equal(newUpload[2].deleted, true)
+const upload = await createServerHistoryUploadChanges(batch, [config], config.id, identity => currentServer.canSyncOnlineHistory(identity), scope)
+assert.equal(upload.length, 3, 'The current Server contract accepts bound physical and canonical online history')
+assert.equal(upload[1].history_identity, entry.mediaIdentity)
+assert.equal(upload[2].deleted, true)
 
 console.log(JSON.stringify({ realViewHistoryPolicy: true, failedOpenNotWatched: true, actualNativeOpenStartsOnce: true, localBeforeSystem: true, exactOnlineProgress: true, editionGroups: true, officialTitles: true, canonicalSystemHistory: true, otherDeviceResume: true, sourceLibrarySegmentVersionIsolation: true }, null, 2))

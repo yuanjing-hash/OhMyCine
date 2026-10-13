@@ -53,6 +53,7 @@ internal class AndroidHdrCapabilities(
             && features.getBoolean("vulkan") && features.getBoolean("androidvk")
             && features.getBoolean("gpuNext") && features.getBoolean("opengl")
             && features.getBoolean("checkedJni") && features.getBoolean("loadHook")
+            && features.getBoolean("endFileReason")
     }.getOrDefault(false)
     val runtimeVulkan: Boolean = runtimeCompatible
     val deviceVulkan: Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
