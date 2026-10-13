@@ -2,13 +2,13 @@ package com.ohmycine.player.mpv
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
-import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Display
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicLong
 
 /** Source classification never relies on gamut or peak strings as booleans. */
 internal object MpvColorPolicy {
@@ -43,6 +43,7 @@ internal class AndroidHdrCapabilities(
 ) : DisplayManager.DisplayListener {
     private val manager = activity.getSystemService(DisplayManager::class.java)
     private var originalColorMode: Int? = null
+    private val windowRequestGeneration = AtomicLong()
     val runtimeCompatible: Boolean = runCatching {
         val manifest = activity.assets.open("mpv/runtime-manifest.json").bufferedReader().use {
             JSONObject(it.readText())
@@ -50,14 +51,15 @@ internal class AndroidHdrCapabilities(
         val features = manifest.getJSONObject("features")
         manifest.getInt("schemaVersion") == 1
             && manifest.getString("runtimeId") == "ohmycine-mpv-android-vulkan-2026-04-25-v1"
-            && features.getBoolean("vulkan") && features.getBoolean("androidvk")
+            && features.getBoolean("vulkan") && features.getBoolean("vulkanLoader")
+            && features.getBoolean("androidvk")
             && features.getBoolean("gpuNext") && features.getBoolean("opengl")
+            && features.getBoolean("androidHdrEgl") && features.getBoolean("externalOesHighp")
+            && features.getBoolean("hdrHighPrecisionFbo") && features.getBoolean("strictHardwareDecode")
+            && features.getBoolean("doviHardwareGuard")
             && features.getBoolean("checkedJni") && features.getBoolean("loadHook")
             && features.getBoolean("endFileReason")
     }.getOrDefault(false)
-    val runtimeVulkan: Boolean = runtimeCompatible
-    val deviceVulkan: Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
-        && activity.packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, 0x00401000)
 
     init {
         manager?.registerDisplayListener(this, Handler(Looper.getMainLooper()))
@@ -84,19 +86,32 @@ internal class AndroidHdrCapabilities(
         else -> false
     }
 
-    fun canTryVulkan(): Boolean = runtimeVulkan && deviceVulkan
-        && hdrTypes().orEmpty().any { it == "hdr10" || it == "hdr10plus" || it == "hlg" }
+    fun outputTransfer(sourceGamma: String?): String? = when {
+        supports(sourceGamma) -> MpvColorPolicy.transfer(sourceGamma)
+        supports("pq") -> "pq"
+        supports("hlg") -> "hlg"
+        else -> null
+    }
+
+    fun canRequestHdrEgl(): Boolean = runtimeCompatible && outputTransfer(null) != null
 
     fun requestWindowHdr(enabled: Boolean) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O)
             return
+        val generation = windowRequestGeneration.incrementAndGet()
         activity.runOnUiThread {
+            if (generation != windowRequestGeneration.get())
+                return@runOnUiThread
             if (enabled) {
                 if (originalColorMode == null)
                     originalColorMode = activity.window.colorMode
-                activity.window.colorMode = ActivityInfo.COLOR_MODE_HDR
+                if (activity.window.colorMode != ActivityInfo.COLOR_MODE_HDR)
+                    activity.window.colorMode = ActivityInfo.COLOR_MODE_HDR
             } else {
-                originalColorMode?.let { activity.window.colorMode = it }
+                originalColorMode?.let {
+                    if (activity.window.colorMode != it)
+                        activity.window.colorMode = it
+                }
                 originalColorMode = null
             }
         }

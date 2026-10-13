@@ -195,7 +195,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build/android-mpv-runtime/output
-          key: android-mpv-vulkan-arm64-${{ hashFiles('scripts/android-mpv-runtime/sources.json', 'scripts/android-mpv-runtime/build-runtime.py', 'scripts/android-mpv-runtime/shaderc.sh', 'scripts/android-mpv-runtime/Dockerfile') }}
+          key: android-mpv-vulkan-arm64-${{ hashFiles('scripts/android-mpv-runtime/sources.json', 'scripts/android-mpv-runtime/build-runtime.py', 'scripts/android-mpv-runtime/shaderc.sh', 'scripts/android-mpv-runtime/Dockerfile', 'scripts/android-mpv-runtime/android-hdr-egl.c') }}
 
       - name: Build pinned Android mpv runtime on cache miss
         if: steps.android-mpv-runtime.outputs.cache-hit != 'true'

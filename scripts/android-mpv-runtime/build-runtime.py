@@ -133,6 +133,26 @@ def replace(path, old, new):
     path.write_text(data.replace(old, new))
 
 
+def reconfigure_meson(path):
+    # Re-resolve static dependency flags as well as changed build options.
+    replace(path, "meson setup $build --cross-file", '''meson_reconfigure=()
+if [ -f "$build/meson-private/coredata.dat" ]; then
+    meson_reconfigure+=(--reconfigure)
+fi
+meson setup "${meson_reconfigure[@]}" $build --cross-file''')
+
+
+def install_hdr_egl_source(mpv):
+    relative = "video/out/opengl/context_android.c"
+    path = mpv / relative
+    original = subprocess.check_output(["git", "show", "HEAD:" + relative],
+                                       cwd=mpv, text=True)
+    current = path.read_text()
+    if current != original and "OHMYCINE_ANDROID_HDR_EGL_V1" not in current:
+        raise RuntimeError("Unexpected Android EGL source changes: " + str(path))
+    path.write_text((BUILDER / "android-hdr-egl.c").read_text())
+
+
 def export_licenses(output, upstream, scripts, sdk):
     licenses = output / "licenses"
     if licenses.is_symlink():
@@ -226,7 +246,15 @@ def build(work, jobs):
 
     replace(scripts / "buildall.sh", "local apilvl=21", "local apilvl=24")
     replace(scripts / "include/depinfo.sh", "dep_libplacebo=()", "dep_shaderc=()\ndep_libplacebo=(shaderc)")
-    replace(scripts / "scripts/libplacebo.sh", "-Dvulkan=disabled -Ddemos=false", "-Dvulkan=enabled -Dshaderc=enabled -Dglslang=disabled -Dvk-proc-addr=disabled -Dopengl=enabled -Ddemos=false")
+    placebo_script = scripts / "scripts/libplacebo.sh"
+    # mpv does not supply pl_vk_inst_create.get_proc_addr. libplacebo must link
+    # Android's Vulkan loader and resolve vkGetInstanceProcAddr itself.
+    if "-Dvk-proc-addr=disabled" in placebo_script.read_text():
+        replace(placebo_script, "-Dvk-proc-addr=disabled", "-Dvk-proc-addr=enabled")
+    replace(placebo_script, "-Dvulkan=disabled -Ddemos=false", "-Dvulkan=enabled -Dshaderc=enabled -Dglslang=disabled -Dvk-proc-addr=enabled -Dopengl=enabled -Ddemos=false")
+    # A cached Meson build otherwise ignores changed setup options. Reconfigure
+    # in place; retain the pinned source/dependency cache rather than deleting it.
+    reconfigure_meson(placebo_script)
     mpv_script = scripts / "scripts/mpv.sh"
     # Resume workspaces created before correcting mpv's OpenGL option name.
     if "-Dopengl=enabled" in mpv_script.read_text():
@@ -235,6 +263,83 @@ def build(work, jobs):
         replace(mpv_script, "-Degl=enabled", "-Degl=disabled -Degl-android=enabled")
     # Android discovers NDK libEGL directly. Generic EGL expects desktop pkg-config.
     replace(mpv_script, "-Diconv=disabled -Dlua=enabled", "-Diconv=disabled -Dlua=enabled -Dvulkan=enabled -Dgl=enabled -Degl=disabled -Degl-android=enabled")
+    reconfigure_meson(mpv_script)
+    mpv_source = scripts / "deps/mpv"
+    install_hdr_egl_source(mpv_source)
+    # EGL's component type defaults to FIXED. Include floating-point configs
+    # in automatic enumeration so Android's refiner can select real FP16 when
+    # no ten-bit config is available. Explicit output formats retain their
+    # exact fixed/float type, and drivers without the extension are unchanged.
+    replace(mpv_source / "video/out/opengl/egl_helpers.c", """        opts->output_format && has_float_format_ext ? EGL_COLOR_COMPONENT_TYPE_EXT : EGL_NONE,
+        request_float_fmt ? EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT : EGL_COLOR_COMPONENT_TYPE_FIXED_EXT,""", """        has_float_format_ext ? EGL_COLOR_COMPONENT_TYPE_EXT : EGL_NONE,
+        !opts->output_format ? EGL_DONT_CARE :
+            request_float_fmt ? EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT : EGL_COLOR_COMPONENT_TYPE_FIXED_EXT,""")
+    # MediaCodec's current external RGB route drops Dolby Vision RPU metadata.
+    # Reject known DV before creating that decoder instead of silently treating
+    # its HEVC base layer as the complete Dolby Vision presentation.
+    mediacodec = scripts / "deps/ffmpeg/libavcodec/mediacodecdec.c"
+    replace(mediacodec, '#include "libavutil/common.h"',
+            '#include "libavutil/common.h"\n#include "libavutil/dovi_meta.h"')
+    replace(mediacodec, """    MediaCodecH264DecContext *s = avctx->priv_data;
+
+    if (s->use_ndk_codec < 0)""", """    MediaCodecH264DecContext *s = avctx->priv_data;
+
+    const AVPacketSideData *dovi_sd = ff_get_coded_side_data(avctx, AV_PKT_DATA_DOVI_CONF);
+    if (dovi_sd) {
+        if (!dovi_sd->data || dovi_sd->size < sizeof(AVDOVIDecoderConfigurationRecord)) {
+            av_log(avctx, AV_LOG_ERROR, "Invalid Dolby Vision configuration for hardware output.\\n");
+            return AVERROR_INVALIDDATA;
+        }
+        const AVDOVIDecoderConfigurationRecord *dovi = (const void *)dovi_sd->data;
+        av_log(avctx, AV_LOG_ERROR, "Dolby Vision profile %u hardware output is unsupported by the current external RGB path; RPU-preserving output is required.\\n", dovi->dv_profile);
+        return AVERROR(ENOSYS);
+    }
+
+    if (s->use_ndk_codec < 0)""")
+    # External OES samplers otherwise default to lowp under GLES, which loses
+    # the precision supplied by MediaCodec's opaque hardware buffers.
+    replace(scripts / "deps/libplacebo/src/dispatch.c",
+            "} else if (gpu->glsl.gles && prefix != ' ') {",
+            "} else if (gpu->glsl.gles && (prefix != ' ' || tex->sampler_type == PL_SAMPLER_EXTERNAL)) {")
+    # gpu-next does not read mpv's legacy fbo-format option. Keep actual HDR
+    # intermediate formats above eight bits inside the renderer itself.
+    replace(scripts / "deps/libplacebo/src/renderer.c",
+            """        if (params->force_low_bit_depth_fbos && configs[i].depth > 8)
+            continue;
+""", """        bool hdr_gles = rr->gpu->glsl.gles &&
+            (pl_color_space_is_hdr(&pass->image.color) ||
+             pl_color_space_is_hdr(&pass->target.color) ||
+             pass->image.repr.sys == PL_COLOR_SYSTEM_DOLBYVISION);
+        if (hdr_gles && configs[i].depth < 16)
+            continue;
+        if (params->force_low_bit_depth_fbos && configs[i].depth > 8)
+            continue;
+""")
+    replace(scripts / "deps/libplacebo/src/renderer.c", """    find_fbo_format(pass);
+    pass_fix_frames(pass);""", """    find_fbo_format(pass);
+    if (pass->rr->gpu->glsl.gles && !pass->fbofmt[4] &&
+        (pl_color_space_is_hdr(&pass->image.color) ||
+         pl_color_space_is_hdr(&pass->target.color) ||
+         pass->image.repr.sys == PL_COLOR_SYSTEM_DOLBYVISION)) {
+        PL_ERR(pass->rr, "Android HDR requires high precision intermediate textures.");
+        goto error;
+    }
+    pass_fix_frames(pass);""")
+    # Strict hardware initialization/reinitialization failure is not a natural
+    # EOF, even when the decoder already presented frames earlier in the file.
+    replace(mpv_source / "player/video.c", """        if (check_for_forced_eof(mpctx)) {
+            uninit_video_chain(mpctx);
+            handle_force_window(mpctx, true);
+            return;
+        }""", """        if (check_for_forced_eof(mpctx)) {
+            MP_ERR(mpctx, "Hardware decoding failed with software fallback disabled.\\n");
+            mpctx->error_playing = MPV_ERROR_GENERIC;
+            mpctx->stop_play = PT_ERROR;
+            uninit_video_chain(mpctx);
+            handle_force_window(mpctx, true);
+            mp_wakeup_core(mpctx);
+            return;
+        }""")
     replace(upstream / "app/src/main/jni/Application.mk", "APP_PLATFORM := android-21", "APP_PLATFORM := android-24")
     jni = upstream / "app/src/main/jni/property.cpp"
     if "setPropertyStringChecked" not in jni.read_text():
@@ -297,14 +402,21 @@ def build(work, jobs):
     mpv = libs / "libmpv.so"
     if not mpv.exists() or b"androidvk\x00" not in mpv.read_bytes():
         raise RuntimeError("Built libmpv has no androidvk context")
+    for marker in [b"OHMYCINE_ANDROID_HDR_EGL_V1",
+                   b"Android HDR requires high precision intermediate textures.",
+                   b"Hardware decoding failed with software fallback disabled."]:
+        if marker not in mpv.read_bytes():
+            raise RuntimeError("Built libmpv lacks the hardware HDR patch: " + marker.decode())
+    if b"RPU-preserving output is required." not in (libs / "libavcodec.so").read_bytes():
+        raise RuntimeError("Built FFmpeg lacks the known Dolby Vision hardware guard")
     features = (scripts / "deps/mpv/_build-arm64/config.h").read_text()
     if any("#define " + name + " 1" not in features
            for name in ["HAVE_VULKAN", "HAVE_LIBPLACEBO", "HAVE_GL", "HAVE_EGL_ANDROID", "HAVE_LIBASS"]):
         raise RuntimeError("Built mpv feature verification failed")
-    placebo_config = next((scripts / "deps/libplacebo/_build-arm64").rglob("config.h"))
+    placebo_config = prefix / "include/libplacebo/config.h"
     if any("#define " + name + " 1" not in placebo_config.read_text()
-           for name in ["PL_HAVE_VULKAN", "PL_HAVE_OPENGL", "PL_HAVE_SHADERC"]):
-        raise RuntimeError("Built libplacebo Vulkan/OpenGL/shaderc verification failed")
+           for name in ["PL_HAVE_VULKAN", "PL_HAVE_OPENGL", "PL_HAVE_SHADERC", "PL_HAVE_VK_PROC_ADDR"]):
+        raise RuntimeError("Built libplacebo Vulkan/loader/OpenGL/shaderc verification failed")
     # Extract only the fixed release's CA asset; the complete JNI set is built together above.
     apk = work / "official-ca.apk"
     download(MANIFEST["officialApk"], apk)
@@ -312,6 +424,9 @@ def build(work, jobs):
     with zipfile.ZipFile(apk) as archive:
         (output / "assets/cacert.pem").write_bytes(archive.read("assets/cacert.pem"))
     readelf = sdk / "android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+    mpv_symbols = subprocess.check_output([str(readelf), "--dyn-syms", "--wide", str(mpv)], text=True)
+    if not re.search(r"\bUND\s+vkGetInstanceProcAddr(?:@\S+)?(?:\s|$)", mpv_symbols):
+        raise RuntimeError("Built libmpv does not import Android's Vulkan loader")
     symbols = subprocess.check_output([str(readelf), "--dyn-syms", "--wide", str(libs / "libplayer.so")], text=True)
     for symbol in ["attachSurface", "setPropertyStringChecked", "commandChecked", "addLoadHook", "continueHook", "stopAsync"]:
         if "Java_is_xyz_mpv_MPVLib_" + symbol not in symbols:
@@ -325,11 +440,13 @@ def build(work, jobs):
         if set(needed) - supplied - platform:
             raise RuntimeError("Unpackaged ELF dependency for " + path.name + ": " + str(needed))
         dependencies[path.name] = needed
+    if "libvulkan.so" not in dependencies.get("libmpv.so", []):
+        raise RuntimeError("Built libmpv has no Android Vulkan loader dependency")
     license_origins = export_licenses(output, upstream, scripts, sdk)
     artifact = dict(MANIFEST)
     artifact["sourceManifestSha256"] = hashlib.sha256((BUILDER / "sources.json").read_bytes()).hexdigest()
     builder_hash = hashlib.sha256()
-    for name in ["sources.json", "build-runtime.py", "shaderc.sh", "Dockerfile"]:
+    for name in ["sources.json", "build-runtime.py", "shaderc.sh", "Dockerfile", "android-hdr-egl.c"]:
         builder_hash.update(name.encode())
         builder_hash.update(b"\0")
         builder_hash.update((BUILDER / name).read_bytes())

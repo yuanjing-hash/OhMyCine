@@ -10,7 +10,7 @@ const builderDir = fileURLToPath(new URL('.', import.meta.url))
 const sourcesPath = join(builderDir, 'sources.json')
 const expected = JSON.parse(readFileSync(sourcesPath, 'utf8'))
 const sourceHash = sha256(sourcesPath)
-const builderInputs = ['sources.json', 'build-runtime.py', 'shaderc.sh', 'Dockerfile']
+const builderInputs = ['sources.json', 'build-runtime.py', 'shaderc.sh', 'Dockerfile', 'android-hdr-egl.c']
 const builderHash = createHash('sha256')
 for (const name of builderInputs)
   builderHash.update(name).update('\0').update(readFileSync(join(builderDir, name)))
@@ -66,6 +66,10 @@ function validateManifest(manifest) {
   }
   if (!manifest.files['assets/cacert.pem'])
     throw new Error('Android runtime CA asset hash missing')
+  if (!Array.isArray(manifest.elfDependencies?.['libmpv.so'])
+    || !manifest.elfDependencies['libmpv.so'].includes('libvulkan.so')) {
+    throw new Error('Android runtime does not link the platform Vulkan loader')
+  }
 }
 
 function installedPath(name) {
@@ -83,9 +87,19 @@ function verifyFiles(manifest, pathForFile) {
       throw new Error(`Android runtime checksum mismatch: ${name}`)
   }
   const mpv = readFileSync(pathForFile('lib/arm64-v8a/libmpv.so'))
+  const codec = readFileSync(pathForFile('lib/arm64-v8a/libavcodec.so'))
   const jni = readFileSync(pathForFile('lib/arm64-v8a/libplayer.so'))
   if (!mpv.includes(Buffer.from('androidvk\0')))
     throw new Error('Android runtime has no Vulkan androidvk context')
+  if (!mpv.includes(Buffer.from('vkGetInstanceProcAddr\0')))
+    throw new Error('Android runtime has no platform Vulkan loader import')
+  if (!mpv.includes(Buffer.from('OHMYCINE_ANDROID_HDR_EGL_V1'))
+    || !mpv.includes(Buffer.from('Android HDR requires high precision intermediate textures.'))
+    || !mpv.includes(Buffer.from('Hardware decoding failed with software fallback disabled.'))) {
+    throw new Error('Android runtime has no hardware HDR EGL or strict decoder patch')
+  }
+  if (!codec.includes(Buffer.from('RPU-preserving output is required.')))
+    throw new Error('Android runtime has no known Dolby Vision hardware guard')
   if (!jni.includes(Buffer.from('eventEndFile\0')))
     throw new Error('Android JNI has no typed end-file callback')
   for (const symbol of ['attachSurface', 'setPropertyStringChecked', 'commandChecked', 'addLoadHook', 'continueHook', 'stopAsync']) {

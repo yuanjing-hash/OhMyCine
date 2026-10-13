@@ -33,5 +33,5 @@
   },
   "lua": { "url": "https://www.lua.org/ftp/lua-5.2.4.tar.gz", "sha256": "b9e2e4aad6789b3b63a056d442f7b39f0ecfca3ae0f1fc0ae4e9614401b69f4b" },
   "vulkanHeadersCommit": "74d8a6cb930c68ef617b202c3ff3c59d919e086b",
-  "features": { "vulkan": true, "androidvk": true, "opengl": true, "shaderc": true, "gpuNext": true, "mediacodec": true, "libass": true, "screenshot": true, "checkedJni": true, "loadHook": true, "endFileReason": true }
+  "features": { "vulkan": true, "vulkanLoader": true, "androidvk": true, "opengl": true, "androidHdrEgl": true, "externalOesHighp": true, "hdrHighPrecisionFbo": true, "strictHardwareDecode": true, "doviHardwareGuard": true, "shaderc": true, "gpuNext": true, "mediacodec": true, "libass": true, "screenshot": true, "checkedJni": true, "loadHook": true, "endFileReason": true }
 }
