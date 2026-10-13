@@ -494,7 +494,7 @@ async function flushTouchLevelUpdates() {
 }
 
 function isTouchGestureTarget(target: EventTarget | null): boolean {
-  return !(target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
+  return !(target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore], [data-player-scroll-region]'))
 }
 
 function isProtectedSystemGestureStart(event: PointerEvent, bounds: DOMRect): boolean {
@@ -673,14 +673,15 @@ function handleVisibilityChange() {
 }
 
 function toggleChromeFromTouch() {
-  chromeManuallyHidden.value = false
-  if (chromeVisible.value) {
+  if (shouldShowChrome.value) {
     clearHideTimer()
+    chromeManuallyHidden.value = true
     playerControlsRef.value?.dismissTransientUi()
     controlsInteracting.value = false
     chromeVisible.value = false
     return
   }
+  chromeManuallyHidden.value = false
   chromeVisible.value = true
   scheduleChromeHide()
 }
@@ -2650,6 +2651,8 @@ function handleRenderBounds(bounds: RenderSurfaceBounds) {
 
 function toggleDiagnosticsPanel() {
   diagnosticsOpen.value = !diagnosticsOpen.value
+  if (diagnosticsOpen.value)
+    void refreshPlaybackDiagnostics()
 }
 
 async function handleSetStrategy(strategy: MpvZOrderStrategy) {
@@ -2781,6 +2784,11 @@ function handleBeforeUnload() {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && diagnosticsOpen.value) {
+    event.preventDefault()
+    diagnosticsOpen.value = false
+    return
+  }
   if (event.key === 'Escape' && danmakuSearchOpen.value) {
     event.preventDefault()
     closeDanmakuSearch()
@@ -2801,11 +2809,11 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   // Ctrl+Shift+D (or Cmd+Shift+D) surfaces the diagnostics panel from the WebView overlay.
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'D' || event.key === 'd')) {
     event.preventDefault()
-    diagnosticsOpen.value = !diagnosticsOpen.value
+    toggleDiagnosticsPanel()
     return
   }
 
-  if (!hasMedia.value || shouldIgnorePlaybackShortcut(event))
+  if (diagnosticsOpen.value || !hasMedia.value || shouldIgnorePlaybackShortcut(event))
     return
   const hasModifier = event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
   if (!hasModifier && event.code === 'Space') {
@@ -2851,6 +2859,7 @@ function shouldIgnorePlaybackShortcut(event: KeyboardEvent): boolean {
   if (!(target instanceof HTMLElement))
     return false
   return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+    || target.closest('[data-player-scroll-region]') !== null
 }
 
 function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight', owner: 'keyboard' | 'touch'): boolean {
@@ -2906,11 +2915,12 @@ async function releaseHeldArrow(triggerTap: boolean, owner?: 'keyboard' | 'touch
 }
 
 function handlePlayerAreaClick(event: MouseEvent) {
-  if (Date.now() < suppressPlayerClickUntil)
+  const target = event.target
+  const isStatusContentTap = target instanceof Element && target.closest('[data-player-scroll-region]') !== null
+  if (!isStatusContentTap && Date.now() < suppressPlayerClickUntil)
     return
   if (!hasMedia.value || event.button !== 0 || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value || danmakuSearchOpen.value)
     return
-  const target = event.target
   if (target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
     return
   if (isNativeAndroidPlayer) {
@@ -3776,15 +3786,8 @@ watch(
 
 }
 
-@media (any-pointer: coarse) {
-  .player-view {
-    touch-action: none;
-  }
-}
-
 .player-view--native-mobile {
   cursor: default !important;
-  touch-action: none;
 }
 
 .player-view--native-mobile .player-top-chrome {
