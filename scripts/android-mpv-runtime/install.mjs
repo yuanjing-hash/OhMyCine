@@ -94,15 +94,19 @@ function verifyFiles(manifest, pathForFile) {
   if (!mpv.includes(Buffer.from('vkGetInstanceProcAddr\0')))
     throw new Error('Android runtime has no platform Vulkan loader import')
   if (!mpv.includes(Buffer.from('OHMYCINE_ANDROID_HDR_EGL_V1'))
+    || !mpv.includes(Buffer.from('OHMYCINE_EGL_FAILURE_V2'))
+    || !mpv.includes(Buffer.from('OHMYCINE_EGL_BOOTSTRAP_V2'))
+    || !mpv.includes(Buffer.from('GLES 3.x +'))
     || !mpv.includes(Buffer.from('Android HDR requires high precision intermediate textures.'))
     || !mpv.includes(Buffer.from('Hardware decoding failed with software fallback disabled.'))) {
     throw new Error('Android runtime has no hardware HDR EGL or strict decoder patch')
   }
   if (!codec.includes(Buffer.from('RPU-preserving output is required.')))
     throw new Error('Android runtime has no known Dolby Vision hardware guard')
-  if (!jni.includes(Buffer.from('eventEndFile\0')))
-    throw new Error('Android JNI has no typed end-file callback')
-  for (const symbol of ['attachSurface', 'setPropertyStringChecked', 'commandChecked', 'addLoadHook', 'continueHook', 'stopAsync']) {
+  if (!jni.includes(Buffer.from('eventEndFile\0')) || !jni.includes(Buffer.from('eventStartFile\0'))
+    || !jni.includes(Buffer.from('(IIJJI)V\0')) || !jni.includes(Buffer.from('OHMYCINE_MPV_ENTRY_ID_V1')))
+    throw new Error('Android JNI has no authoritative playlist-entry callbacks')
+  for (const symbol of ['attachSurface', 'setPropertyStringChecked', 'commandChecked', 'loadFileChecked', 'addLoadHook', 'continueHook', 'stopAsync']) {
     if (!jni.includes(Buffer.from(`Java_is_xyz_mpv_MPVLib_${symbol}\0`)))
       throw new Error(`Android JNI capability missing: ${symbol}`)
   }

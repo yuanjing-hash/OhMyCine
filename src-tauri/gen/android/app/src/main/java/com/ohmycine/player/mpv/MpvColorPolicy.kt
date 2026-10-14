@@ -34,6 +34,9 @@ internal object MpvColorPolicy {
         profile == null && transfer(gamma) in sdrTransfers
 
     fun hdrTransfer(gamma: String?): Boolean = transfer(gamma) in setOf("pq", "hlg")
+
+    fun sdrTarget(gamma: String?): Boolean =
+        confirmedSdr(gamma, null) || transfer(gamma) == "linear"
 }
 
 /** Display declarations guide requests. Actual renderer target metadata confirms negotiation. */
@@ -44,6 +47,8 @@ internal class AndroidHdrCapabilities(
     private val manager = activity.getSystemService(DisplayManager::class.java)
     private var originalColorMode: Int? = null
     private val windowRequestGeneration = AtomicLong()
+    private val windowRequestLock = Any()
+    private var latestPlaybackGeneration = Long.MIN_VALUE
     val runtimeCompatible: Boolean = runCatching {
         val manifest = activity.assets.open("mpv/runtime-manifest.json").bufferedReader().use {
             JSONObject(it.readText())
@@ -55,10 +60,11 @@ internal class AndroidHdrCapabilities(
             && features.getBoolean("androidvk")
             && features.getBoolean("gpuNext") && features.getBoolean("opengl")
             && features.getBoolean("androidHdrEgl") && features.getBoolean("externalOesHighp")
+            && features.getBoolean("androidEglInitV2")
             && features.getBoolean("hdrHighPrecisionFbo") && features.getBoolean("strictHardwareDecode")
             && features.getBoolean("doviHardwareGuard")
             && features.getBoolean("checkedJni") && features.getBoolean("loadHook")
-            && features.getBoolean("endFileReason")
+            && features.getBoolean("endFileReason") && features.getBoolean("playlistEntryIdentity")
     }.getOrDefault(false)
 
     init {
@@ -95,10 +101,15 @@ internal class AndroidHdrCapabilities(
 
     fun canRequestHdrEgl(): Boolean = runtimeCompatible && outputTransfer(null) != null
 
-    fun requestWindowHdr(enabled: Boolean) {
+    fun requestWindowHdr(enabled: Boolean, playbackGeneration: Long = 0L) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O)
             return
-        val generation = windowRequestGeneration.incrementAndGet()
+        val generation = synchronized(windowRequestLock) {
+            if (playbackGeneration < latestPlaybackGeneration)
+                return
+            latestPlaybackGeneration = playbackGeneration
+            windowRequestGeneration.incrementAndGet()
+        }
         activity.runOnUiThread {
             if (generation != windowRequestGeneration.get())
                 return@runOnUiThread
@@ -119,7 +130,7 @@ internal class AndroidHdrCapabilities(
 
     fun close() {
         manager?.unregisterDisplayListener(this)
-        requestWindowHdr(false)
+        requestWindowHdr(false, Long.MAX_VALUE)
     }
 
     override fun onDisplayAdded(displayId: Int) = changed()

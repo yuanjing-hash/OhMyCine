@@ -18,8 +18,32 @@ window config. Its HDR callback creates a PQ/HLG Surface and reads back the EGL
 colorspace and config component depth before reporting the target. HDR also
 requires GLES 3 and renderable high precision textures. libplacebo samples
 external OES with highp precision and refuses eight-bit HDR intermediate FBOs.
+The Android HDR-capable EGL path explicitly requests an ES3-renderable config
+and GLES 3 context; the pinned helper otherwise only requests GLES 2. Bootstrap
+uses a LINEAR Surface because RGB10/FP16 configs do not guarantee an sRGB default
+framebuffer. This is an unrendered startup carrier; source hints still create the
+real PQ/HLG target before the first HDR frame. Queried LINEAR stays LINEAR in
+diagnostics rather than being relabeled sRGB.
 SDR displays use an intentional SDR output; the saved legacy VO preference only
 applies after confirming SDR input.
+
+`OHMYCINE_EGL_FAILURE_V2` reports a bounded native stage, immediate EGL error,
+native geometry status, requested colorspace, config depth and requested GLES
+version. `OHMYCINE_EGL_BOOTSTRAP_V2` records successful context/Surface readback.
+These are diagnostic/build facts, not physical HDR display acceptance. Host uses
+the safe failure explanation only with a genuine terminal error; individual
+probe logs do not stop playback. Closing/pre-START logs are not attributed to a
+new requested load, and already resolved media disables the ytdl extractor.
+
+`loadFileChecked` returns the pinned mpv `loadfile` result's immutable
+`playlist_entry_id`. START and END carry their native entry identities; END also
+supplies the first inserted ID/count for a real playlist redirect. File callbacks
+are tagged by the native event thread's current START identity and buffered while
+the command result is being bound. Old START/STOP/ERROR callbacks cannot adopt or
+terminate a replacement load. Native owns the on_load FSR clearing/continuation,
+so this bounded handoff does not block the hook or require a guessed property ID.
+Logs have no producer file identity: their receipt-stage tag still cannot prove
+that a delayed global message originated from that file.
 
 This fixed FFmpeg revision's MediaCodec copy output only supports eight-bit
 NV12/YUV420P, so that copy route is not selected. The external hardware buffer

@@ -81,7 +81,7 @@ export function describeVideoTargetColor(color: MpvColorDiagnostics | null | und
   let label = '未知'
   if (color?.outputMode === 'hdr' && (transfer === 'pq' || transfer === 'hlg'))
     label = transfer === 'pq' ? 'PQ HDR 目标' : 'HLG HDR 目标'
-  else if (color?.outputMode === 'sdr' && transfer === 'sdr')
+  else if (color?.outputMode === 'sdr' && (transfer === 'sdr' || color.targetGamma?.toLowerCase() === 'linear'))
     label = 'SDR 目标'
 
   const parts = [

@@ -17,6 +17,7 @@ MANIFEST = json.loads((BUILDER / "sources.json").read_text())
 
 CHECKED_JNI = r'''
 // OhMyCine: return native status so HDR negotiation cannot report an ignored failure.
+#include <string.h>
 extern "C" {
 jni_func(jint, setPropertyStringChecked, jstring jproperty, jstring jvalue) {
     CHECK_MPV_INIT();
@@ -38,6 +39,48 @@ jni_func(jint, commandChecked, jobjectArray jarray) {
     for (int i = 0; i < len; ++i)
         env->ReleaseStringUTFChars((jstring)env->GetObjectArrayElement(jarray, i), arguments[i]);
     return result;
+}
+jni_func(jlong, loadFileChecked, jobjectArray jarray) {
+    CHECK_MPV_INIT();
+    const int len = env->GetArrayLength(jarray);
+    if (len < 2 || len >= 128) return MPV_ERROR_INVALID_PARAMETER;
+    jstring strings[128] = {0};
+    const char *arguments[128] = {0};
+    int status = 0;
+    for (int i = 0; i < len; ++i) {
+        strings[i] = (jstring)env->GetObjectArrayElement(jarray, i);
+        if (!strings[i] || !(arguments[i] = env->GetStringUTFChars(strings[i], NULL))) {
+            status = MPV_ERROR_INVALID_PARAMETER;
+            break;
+        }
+    }
+    mpv_node result = {};
+    if (status >= 0) {
+        status = strcmp(arguments[0], "loadfile") == 0
+            ? mpv_command_ret(g_mpv, arguments, &result) : MPV_ERROR_INVALID_PARAMETER;
+    }
+    for (int i = 0; i < len; ++i) {
+        if (arguments[i]) env->ReleaseStringUTFChars(strings[i], arguments[i]);
+        if (strings[i]) env->DeleteLocalRef(strings[i]);
+    }
+    int64_t entry_id = MPV_ERROR_GENERIC;
+    if (status >= 0 && result.format == MPV_FORMAT_NODE_MAP && result.u.list) {
+        const mpv_node_list *list = result.u.list;
+        for (int i = 0; i < list->num; ++i) {
+            if (strcmp(list->keys[i], "playlist_entry_id") == 0
+                && list->values[i].format == MPV_FORMAT_INT64) {
+                entry_id = list->values[i].u.int64;
+                break;
+            }
+        }
+    }
+    mpv_free_node_contents(&result);
+    if (status < 0) return status;
+    if (entry_id <= 0) {
+        ALOGE("OHMYCINE_MPV_ENTRY_ID_V1 loadfile returned no valid playlist entry identity");
+        return MPV_ERROR_GENERIC;
+    }
+    return (jlong)entry_id;
 }
 jni_func(jint, addLoadHook) {
     CHECK_MPV_INIT();
@@ -85,8 +128,21 @@ END_FILE_EVENT = '''        case MPV_EVENT_END_FILE: {
             const mpv_event_end_file *end = (mpv_event_end_file*)mp_event->data;
             const int reason = end ? end->reason : MPV_END_FILE_REASON_ERROR;
             const int error = end ? end->error : MPV_ERROR_GENERIC;
-            jmethodID callback = env->GetStaticMethodID(mpv_MPVLib, "eventEndFile", "(II)V");
-            if (callback) env->CallStaticVoidMethod(mpv_MPVLib, callback, (jint)reason, (jint)error);
+            const int64_t entry_id = end ? end->playlist_entry_id : -1;
+            const int64_t insert_id = end ? end->playlist_insert_id : 0;
+            const int insert_count = end ? end->playlist_insert_num_entries : 0;
+            jmethodID callback = env->GetStaticMethodID(mpv_MPVLib, "eventEndFile", "(IIJJI)V");
+            if (callback) env->CallStaticVoidMethod(mpv_MPVLib, callback, (jint)reason, (jint)error,
+                (jlong)entry_id, (jlong)insert_id, (jint)insert_count);
+            break;
+        }
+'''
+
+START_FILE_EVENT = '''        case MPV_EVENT_START_FILE: {
+            const mpv_event_start_file *start = (mpv_event_start_file*)mp_event->data;
+            const int64_t entry_id = start ? start->playlist_entry_id : -1;
+            jmethodID callback = env->GetStaticMethodID(mpv_MPVLib, "eventStartFile", "(J)V");
+            if (callback) env->CallStaticVoidMethod(mpv_MPVLib, callback, (jlong)entry_id);
             break;
         }
 '''
@@ -266,6 +322,72 @@ def build(work, jobs):
     reconfigure_meson(mpv_script)
     mpv_source = scripts / "deps/mpv"
     install_hdr_egl_source(mpv_source)
+    # The pinned helper requests GLES 2 even when an Android HDR carrier needs
+    # GLES 3. Pass the required native version explicitly, including config
+    # renderable bits; retain its ordinary default for other callers.
+    replace(mpv_source / "video/out/opengl/egl_helpers.h", """    void *user_data;
+};""", """    void *user_data;
+    int gles_version; // zero preserves the ordinary GLES 2 request
+    void (*report_error)(void *user_data, const char *stage, EGLint error);
+};""")
+    egl_helper = mpv_source / "video/out/opengl/egl_helpers.c"
+    replace(egl_helper, """        rend = EGL_OPENGL_ES2_BIT;
+        name = "GLES 2.x +";""", """        rend = cb.gles_version >= 3 ? EGL_OPENGL_ES3_BIT_KHR : EGL_OPENGL_ES2_BIT;
+        name = cb.gles_version >= 3 ? "GLES 3.x +" : "GLES 2.x +";""")
+    replace(egl_helper, """    if (!eglBindAPI(api)) {
+        MP_VERBOSE(ctx, "Could not bind API!\\n");""", """    if (!eglBindAPI(api)) {
+        if (cb.report_error)
+            cb.report_error(cb.user_data, "api-bind", eglGetError());
+        MP_VERBOSE(ctx, "Could not bind API!\\n");""")
+    replace(egl_helper, """    if (!eglChooseConfig(display, attributes, NULL, 0, &num_configs))
+        num_configs = 0;
+
+    EGLConfig *configs = talloc_array(NULL, EGLConfig, num_configs);
+    if (!eglChooseConfig(display, attributes, configs, num_configs, &num_configs))
+        num_configs = 0;
+
+    if (!num_configs) {
+        talloc_free(configs);
+        MP_MSG(ctx, msgl, "Could not choose EGLConfig for %s!\\n", name);
+        return false;
+    }""", """    if (!eglChooseConfig(display, attributes, NULL, 0, &num_configs)) {
+        if (cb.report_error)
+            cb.report_error(cb.user_data, "config-count", eglGetError());
+        return false;
+    }
+    if (!num_configs) {
+        if (cb.report_error)
+            cb.report_error(cb.user_data, "config-match", EGL_SUCCESS);
+        MP_MSG(ctx, msgl, "Could not choose EGLConfig for %s!\\n", name);
+        return false;
+    }
+
+    EGLConfig *configs = talloc_array(NULL, EGLConfig, num_configs);
+    if (!eglChooseConfig(display, attributes, configs, num_configs, &num_configs)) {
+        if (cb.report_error)
+            cb.report_error(cb.user_data, "config-list", eglGetError());
+        talloc_free(configs);
+        return false;
+    }
+    if (!num_configs) {
+        if (cb.report_error)
+            cb.report_error(cb.user_data, "config-match", EGL_SUCCESS);
+        talloc_free(configs);
+        return false;
+    }""")
+    replace(egl_helper, """    if (chosen < 0 || chosen == num_configs) {
+        talloc_free(configs);""", """    if (chosen < 0 || chosen == num_configs) {
+        if (cb.report_error)
+            cb.report_error(cb.user_data, "config-refine", EGL_SUCCESS);
+        talloc_free(configs);""")
+    replace(egl_helper, """            es ? EGL_CONTEXT_CLIENT_VERSION : EGL_NONE, 2,""",
+            """            es ? EGL_CONTEXT_CLIENT_VERSION : EGL_NONE, cb.gles_version >= 3 ? 3 : 2,""")
+    replace(egl_helper, """        MP_MSG(ctx, msgl, "Could not create EGL context for %s (error=%d)!\\n",
+               name, eglGetError());""", """        EGLint error = eglGetError();
+        if (cb.report_error)
+            cb.report_error(cb.user_data, "context-create", error);
+        MP_MSG(ctx, msgl, "Could not create EGL context for %s (error=%d)!\\n",
+               name, error);""")
     # EGL's component type defaults to FIXED. Include floating-point configs
     # in automatic enumeration so Android's refiner can select real FP16 when
     # no ten-bit config is available. Explicit output formats retain their
@@ -327,13 +449,22 @@ def build(work, jobs):
     pass_fix_frames(pass);""")
     # Strict hardware initialization/reinitialization failure is not a natural
     # EOF, even when the decoder already presented frames earlier in the file.
+    strict_video = mpv_source / "player/video.c"
+    old_strict_error = """            MP_ERR(mpctx, "Hardware decoding failed with software fallback disabled.\\n");
+            mpctx->error_playing = MPV_ERROR_GENERIC;"""
+    if old_strict_error in strict_video.read_text():
+        # Upgrade only this known managed patch while retaining the cache.
+        replace(strict_video, old_strict_error, """            MP_ERR(mpctx, "Hardware decoding failed with software fallback disabled.\\n");
+            if (mpctx->error_playing >= 0)
+                mpctx->error_playing = MPV_ERROR_GENERIC;""")
     replace(mpv_source / "player/video.c", """        if (check_for_forced_eof(mpctx)) {
             uninit_video_chain(mpctx);
             handle_force_window(mpctx, true);
             return;
         }""", """        if (check_for_forced_eof(mpctx)) {
             MP_ERR(mpctx, "Hardware decoding failed with software fallback disabled.\\n");
-            mpctx->error_playing = MPV_ERROR_GENERIC;
+            if (mpctx->error_playing >= 0)
+                mpctx->error_playing = MPV_ERROR_GENERIC;
             mpctx->stop_play = PT_ERROR;
             uninit_video_chain(mpctx);
             handle_force_window(mpctx, true);
@@ -350,17 +481,14 @@ def build(work, jobs):
         jni.write_text(data[:data.index("// OhMyCine: return native status")] + CHECKED_JNI)
     event = upstream / "app/src/main/jni/event.cpp"
     event_text = event.read_text()
-    if "        case MPV_EVENT_HOOK: {" in event_text:
-        first = event_text.index("        case MPV_EVENT_HOOK: {")
+    managed_cases = ["        case MPV_EVENT_START_FILE: {", "        case MPV_EVENT_HOOK: {",
+                     "        case MPV_EVENT_END_FILE: {"]
+    if any(case in event_text for case in managed_cases):
+        first = min(event_text.index(case) for case in managed_cases if case in event_text)
         last = event_text.index("        case MPV_EVENT_PROPERTY_CHANGE:", first)
         event.write_text(event_text[:first] + event_text[last:])
-    replace(event, "        case MPV_EVENT_PROPERTY_CHANGE:", LOAD_HOOK_EVENT + "        case MPV_EVENT_PROPERTY_CHANGE:")
-    event_text = event.read_text()
-    if "        case MPV_EVENT_END_FILE: {" in event_text:
-        first = event_text.index("        case MPV_EVENT_END_FILE: {")
-        last = event_text.index("        case MPV_EVENT_PROPERTY_CHANGE:", first)
-        event.write_text(event_text[:first] + event_text[last:])
-    replace(event, "        case MPV_EVENT_PROPERTY_CHANGE:", END_FILE_EVENT + "        case MPV_EVENT_PROPERTY_CHANGE:")
+    replace(event, "        case MPV_EVENT_PROPERTY_CHANGE:",
+            START_FILE_EVENT + LOAD_HOOK_EVENT + END_FILE_EVENT + "        case MPV_EVENT_PROPERTY_CHANGE:")
     replace(event, "        }\n    }\n\n    g_vm->DetachCurrentThread();", '''        }
         // Never carry a pending Java exception into the next native callback.
         if (env->ExceptionCheck()) {
@@ -403,6 +531,7 @@ def build(work, jobs):
     if not mpv.exists() or b"androidvk\x00" not in mpv.read_bytes():
         raise RuntimeError("Built libmpv has no androidvk context")
     for marker in [b"OHMYCINE_ANDROID_HDR_EGL_V1",
+                   b"OHMYCINE_EGL_FAILURE_V2", b"OHMYCINE_EGL_BOOTSTRAP_V2", b"GLES 3.x +",
                    b"Android HDR requires high precision intermediate textures.",
                    b"Hardware decoding failed with software fallback disabled."]:
         if marker not in mpv.read_bytes():
@@ -428,9 +557,14 @@ def build(work, jobs):
     if not re.search(r"\bUND\s+vkGetInstanceProcAddr(?:@\S+)?(?:\s|$)", mpv_symbols):
         raise RuntimeError("Built libmpv does not import Android's Vulkan loader")
     symbols = subprocess.check_output([str(readelf), "--dyn-syms", "--wide", str(libs / "libplayer.so")], text=True)
-    for symbol in ["attachSurface", "setPropertyStringChecked", "commandChecked", "addLoadHook", "continueHook", "stopAsync"]:
+    for symbol in ["attachSurface", "setPropertyStringChecked", "commandChecked", "loadFileChecked", "addLoadHook", "continueHook", "stopAsync"]:
         if "Java_is_xyz_mpv_MPVLib_" + symbol not in symbols:
             raise RuntimeError("JNI symbol missing: " + symbol)
+    if not re.search(r"\bUND\s+mpv_command_ret(?:@\S+)?(?:\s|$)", symbols):
+        raise RuntimeError("JNI does not consume the authoritative loadfile result")
+    for marker in [b"OHMYCINE_MPV_ENTRY_ID_V1", b"eventStartFile\0", b"eventEndFile\0", b"(IIJJI)V\0"]:
+        if marker not in (libs / "libplayer.so").read_bytes():
+            raise RuntimeError("JNI playlist identity callback missing: " + marker.decode())
     dependencies = {}
     supplied = {path.name for path in libs.glob("*.so")}
     platform = {"libandroid.so", "liblog.so", "libm.so", "libc.so", "libdl.so", "libz.so", "libEGL.so", "libGLESv2.so", "libOpenSLES.so", "libvulkan.so", "libmediandk.so"}
@@ -454,6 +588,7 @@ def build(work, jobs):
     artifact["jniBridgePatchSha256"] = hashlib.sha256(CHECKED_JNI.encode()).hexdigest()
     artifact["loadHookPatchSha256"] = hashlib.sha256(LOAD_HOOK_EVENT.encode()).hexdigest()
     artifact["endFilePatchSha256"] = hashlib.sha256(END_FILE_EVENT.encode()).hexdigest()
+    artifact["startFilePatchSha256"] = hashlib.sha256(START_FILE_EVENT.encode()).hexdigest()
     artifact["files"] = {str(path.relative_to(output)): hashlib.sha256(path.read_bytes()).hexdigest()
                          for path in sorted(output.rglob("*"))
                          if path.is_file() and path != output / "runtime-manifest.json"}

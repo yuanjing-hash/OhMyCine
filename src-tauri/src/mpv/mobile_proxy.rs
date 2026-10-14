@@ -1,8 +1,11 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use std::{
-    collections::HashMap,
-    sync::Arc,
+    collections::{HashMap, VecDeque},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -40,11 +43,118 @@ const MAX_SESSION_TARGETS: usize = 8;
 const MAX_DERIVED_TARGETS: usize = 16_384;
 const MAX_HLS_DEPTH: u8 = 8;
 const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
+const MAX_TRANSPORT_FAILURES: usize = 12;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TransportFailureStage {
+    Request,
+    Response,
+    PrefixRead,
+    BodyRead,
+    HlsRefetch,
+    HlsRead,
+    HlsRewrite,
+    HlsControl,
+}
+
+impl TransportFailureStage {
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    fn label(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Response => "response",
+            Self::PrefixRead => "prefix-read",
+            Self::BodyRead => "body-read",
+            Self::HlsRefetch => "hls-refetch",
+            Self::HlsRead => "hls-read",
+            Self::HlsRewrite => "hls-rewrite",
+            Self::HlsControl => "hls-control",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TransportFailureOrigin {
+    Bridge,
+    Upstream,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct TransportFailure {
+    origin: TransportFailureOrigin,
+    stage: TransportFailureStage,
+    reason: &'static str,
+    head: bool,
+    status: u16,
+    upstream_status: Option<u16>,
+}
+
+impl TransportFailure {
+    fn bridge(
+        stage: TransportFailureStage,
+        reason: &'static str,
+        method: &Method,
+        status: StatusCode,
+        upstream_status: Option<StatusCode>,
+    ) -> Self {
+        Self {
+            origin: TransportFailureOrigin::Bridge,
+            stage,
+            reason: diagnostic_reason(reason),
+            head: method == Method::HEAD,
+            status: status.as_u16(),
+            upstream_status: upstream_status.map(|value| value.as_u16()),
+        }
+    }
+
+    fn upstream(
+        stage: TransportFailureStage,
+        reason: &'static str,
+        method: &Method,
+        status: StatusCode,
+    ) -> Self {
+        Self {
+            origin: TransportFailureOrigin::Upstream,
+            stage,
+            reason: diagnostic_reason(reason),
+            head: method == Method::HEAD,
+            status: status.as_u16(),
+            upstream_status: None,
+        }
+    }
+
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    fn line(&self) -> String {
+        let origin = match self.origin {
+            TransportFailureOrigin::Bridge => "bridge-generated",
+            TransportFailureOrigin::Upstream => "upstream",
+        };
+        let upstream = self
+            .upstream_status
+            .map(|value| format!(" upstream-status={value}"))
+            .unwrap_or_default();
+        format!(
+            "transport: origin={origin} stage={} reason={} method={} status={}{upstream}",
+            self.stage.label(),
+            self.reason,
+            if self.head { "HEAD" } else { "GET" },
+            self.status
+        )
+    }
+}
+
+#[derive(Default)]
+struct TransportDiagnostics {
+    epoch: u64,
+    failures: VecDeque<TransportFailure>,
+}
 
 struct ProxySession {
     origin: Url,
     cancelled: watch::Sender<bool>,
     created: Instant,
+    epoch: u64,
+    diagnostics: Arc<Mutex<TransportDiagnostics>>,
 }
 
 impl ProxySession {
@@ -56,11 +166,31 @@ impl ProxySession {
 #[derive(Default)]
 pub struct AndroidStreamProxyState {
     runtime: tokio::sync::Mutex<Option<ProxyRuntime>>,
+    submission: tokio::sync::Mutex<()>,
+    epoch: AtomicU64,
+}
+
+// Desktop reuses the HTTP bridge, while only Android submits native IPC here.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub struct CurrentLoadSubmission<'a> {
+    proxy: &'a AndroidStreamProxyState,
+    epoch: u64,
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+}
+
+impl CurrentLoadSubmission<'_> {
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub async fn clear_after_stop(self) {
+        // Keep the submission lock through native stop and cleanup. A new load
+        // cannot register its targets in the gap, and this does not relock it.
+        self.proxy.cancel_locked(Some(self.epoch), true).await;
+    }
 }
 
 struct ProxyRuntime {
     port: u16,
     targets: Arc<RwLock<HashMap<String, ProxyTarget>>>,
+    diagnostics: Arc<Mutex<TransportDiagnostics>>,
 }
 
 #[derive(Clone)]
@@ -86,10 +216,27 @@ impl AndroidStreamProxyState {
         url: String,
         headers: Vec<MpvHttpHeader>,
     ) -> Result<String, String> {
+        self.prepare_for_epoch(url, headers, self.diagnostic_epoch())
+            .await
+    }
+
+    pub async fn prepare_for_epoch(
+        &self,
+        url: String,
+        headers: Vec<MpvHttpHeader>,
+        epoch: u64,
+    ) -> Result<String, String> {
         let origin = validated_url(&url).map_err(|_| "播放地址无效。".to_string())?;
         let mut runtime = self.runtime.lock().await;
+        if self.diagnostic_epoch() != epoch {
+            return Err("播放会话已被替换。".to_string());
+        }
         if runtime.is_none() {
-            *runtime = Some(start_proxy().await?);
+            let value = start_proxy().await?;
+            if let Ok(mut diagnostics) = value.diagnostics.lock() {
+                diagnostics.epoch = epoch;
+            }
+            *runtime = Some(value);
         }
         let runtime = runtime.as_ref().expect("proxy runtime initialized");
         let token = random_token();
@@ -110,6 +257,8 @@ impl AndroidStreamProxyState {
                     origin,
                     cancelled,
                     created: Instant::now(),
+                    epoch,
+                    diagnostics: runtime.diagnostics.clone(),
                 }),
             },
         );
@@ -117,12 +266,107 @@ impl AndroidStreamProxyState {
     }
 
     pub async fn clear(&self) {
-        if let Some(runtime) = self.runtime.lock().await.as_ref() {
+        self.begin_load().await;
+    }
+
+    pub async fn begin_load(&self) -> u64 {
+        self.cancel(None, true).await
+    }
+
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub async fn cancel_preserving_diagnostics(&self, epoch: u64) {
+        self.cancel(Some(epoch), false).await;
+    }
+
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub async fn current_load_guard(
+        &self,
+        epoch: u64,
+    ) -> Result<CurrentLoadSubmission<'_>, String> {
+        let guard = self.submission.lock().await;
+        if self.diagnostic_epoch() != epoch {
+            return Err("播放会话已被替换。".to_string());
+        }
+        // Native load submission and begin/clear share this guard. A replacement
+        // cannot happen between the epoch check and sending the prepared URL.
+        Ok(CurrentLoadSubmission {
+            proxy: self,
+            epoch,
+            _guard: guard,
+        })
+    }
+
+    async fn cancel(&self, expected_epoch: Option<u64>, reset_diagnostics: bool) -> u64 {
+        let _submission = self.submission.lock().await;
+        self.cancel_locked(expected_epoch, reset_diagnostics).await
+    }
+
+    async fn cancel_locked(&self, expected_epoch: Option<u64>, reset_diagnostics: bool) -> u64 {
+        let runtime = self.runtime.lock().await;
+        let current_epoch = self.diagnostic_epoch();
+        if expected_epoch.is_some_and(|expected| expected != current_epoch) {
+            return current_epoch;
+        }
+        let epoch = if reset_diagnostics {
+            self.epoch.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
+        } else {
+            current_epoch
+        };
+        if let Some(runtime) = runtime.as_ref() {
             let mut targets = runtime.targets.write().await;
             for target in targets.values() {
                 target.session.cancelled.send_replace(true);
             }
             targets.clear();
+            if reset_diagnostics {
+                if let Ok(mut diagnostics) = runtime.diagnostics.lock() {
+                    diagnostics.epoch = epoch;
+                    diagnostics.failures.clear();
+                }
+            }
+        }
+        epoch
+    }
+
+    pub fn diagnostic_epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub async fn diagnostic_logs(&self, epoch: u64) -> Vec<String> {
+        if self.diagnostic_epoch() != epoch {
+            return Vec::new();
+        }
+        self.runtime
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|runtime| {
+                runtime.diagnostics.lock().ok().map(|value| {
+                    if value.epoch == epoch {
+                        value.failures.iter().map(TransportFailure::line).collect()
+                    } else {
+                        Vec::new()
+                    }
+                })
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn record_failure(target: &ProxyTarget, failure: TransportFailure) {
+    if let Ok(mut diagnostics) = target.session.diagnostics.lock() {
+        // clear/new-load advances this epoch under the same lock. A request that
+        // finishes after cancellation cannot populate a later playback's log.
+        if target.session.active()
+            && target.session.epoch == diagnostics.epoch
+            && !diagnostics.failures.contains(&failure)
+        {
+            // Keep the first failure as well as the most recent distinct failures.
+            if diagnostics.failures.len() == MAX_TRANSPORT_FAILURES {
+                diagnostics.failures.remove(1);
+            }
+            diagnostics.failures.push_back(failure);
         }
     }
 }
@@ -136,6 +380,7 @@ async fn start_proxy() -> Result<ProxyRuntime, String> {
         .map_err(|_| "Android 本地流桥接端口不可用。".to_string())?
         .port();
     let targets = Arc::new(RwLock::new(HashMap::new()));
+    let diagnostics = Arc::new(Mutex::new(TransportDiagnostics::default()));
     let client = reqwest::Client::builder()
         .no_proxy()
         .connect_timeout(Duration::from_secs(15))
@@ -158,7 +403,11 @@ async fn start_proxy() -> Result<ProxyRuntime, String> {
         }
     });
 
-    Ok(ProxyRuntime { port, targets })
+    Ok(ProxyRuntime {
+        port,
+        targets,
+        diagnostics,
+    })
 }
 
 async fn proxy_media(
@@ -196,6 +445,16 @@ async fn proxy_media(
         return plain_response(StatusCode::GONE, "media session expired");
     }
     let Ok(slot) = state.slots.clone().try_acquire_owned() else {
+        record_failure(
+            &target,
+            TransportFailure::bridge(
+                TransportFailureStage::Request,
+                "bridge-busy",
+                request.method(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                None,
+            ),
+        );
         return plain_response(StatusCode::SERVICE_UNAVAILABLE, "media bridge busy");
     };
     let mut cancelled = target.session.cancelled.subscribe();
@@ -246,9 +505,31 @@ async fn forward_media(
         Ok(response) => response,
         Err(reason) => {
             log::warn!("Android secure media bridge upstream request failed: {reason}");
+            record_failure(
+                target,
+                TransportFailure::bridge(
+                    TransportFailureStage::Request,
+                    reason,
+                    request.method(),
+                    StatusCode::BAD_GATEWAY,
+                    None,
+                ),
+            );
             return plain_response(StatusCode::BAD_GATEWAY, "upstream media connection failed");
         }
     };
+
+    if response.status().is_client_error() || response.status().is_server_error() {
+        record_failure(
+            target,
+            TransportFailure::upstream(
+                TransportFailureStage::Response,
+                "http-status",
+                request.method(),
+                response.status(),
+            ),
+        );
+    }
 
     let mime_hls = response
         .headers()
@@ -266,8 +547,18 @@ async fn forward_media(
             match response.chunk().await {
                 Ok(Some(chunk)) => prefix.extend_from_slice(&chunk),
                 Ok(None) => break,
-                Err(_) => {
-                    return plain_response(StatusCode::BAD_GATEWAY, "upstream media read failed")
+                Err(error) => {
+                    record_failure(
+                        target,
+                        TransportFailure::bridge(
+                            TransportFailureStage::PrefixRead,
+                            safe_error(&error),
+                            request.method(),
+                            StatusCode::BAD_GATEWAY,
+                            Some(response.status()),
+                        ),
+                    );
+                    return plain_response(StatusCode::BAD_GATEWAY, "upstream media read failed");
                 }
             }
         }
@@ -306,14 +597,40 @@ async fn forward_media(
     let body = if request.method() == Method::HEAD {
         Body::empty()
     } else {
+        let diagnostic_target = target.clone();
+        let method = request.method().clone();
+        let stream = response.bytes_stream().map(move |chunk| {
+            if let Err(error) = &chunk {
+                record_failure(
+                    &diagnostic_target,
+                    TransportFailure::upstream(
+                        TransportFailureStage::BodyRead,
+                        safe_error(error),
+                        &method,
+                        status,
+                    ),
+                );
+            }
+            chunk
+        });
         let prefix = futures_util::stream::once(async move {
             Ok::<_, reqwest::Error>(axum::body::Bytes::from(prefix))
         });
-        Body::from_stream(prefix.chain(response.bytes_stream()))
+        Body::from_stream(prefix.chain(stream))
     };
-    builder
-        .body(body)
-        .unwrap_or_else(|_| plain_response(StatusCode::BAD_GATEWAY, "invalid upstream response"))
+    builder.body(body).unwrap_or_else(|_| {
+        record_failure(
+            target,
+            TransportFailure::bridge(
+                TransportFailureStage::Response,
+                "response-build",
+                request.method(),
+                StatusCode::BAD_GATEWAY,
+                Some(status),
+            ),
+        );
+        plain_response(StatusCode::BAD_GATEWAY, "invalid upstream response")
+    })
 }
 
 async fn send_upstream(
@@ -465,7 +782,19 @@ async fn hls_response(
         ),
     )
     .await
-    .unwrap_or_else(|_| plain_response(StatusCode::BAD_GATEWAY, "HLS control timeout"))
+    .unwrap_or_else(|_| {
+        record_failure(
+            target,
+            TransportFailure::bridge(
+                TransportFailureStage::HlsControl,
+                "timeout",
+                method,
+                StatusCode::BAD_GATEWAY,
+                None,
+            ),
+        );
+        plain_response(StatusCode::BAD_GATEWAY, "HLS control timeout")
+    })
 }
 
 async fn hls_response_inner(
@@ -480,7 +809,8 @@ async fn hls_response_inner(
     // A native Range may cover only the start/middle of the original manifest.
     // Rewriting requires the complete control entity, then ranges are applied to
     // the transformed bytes (whose tokens and length differ from the upstream).
-    if response.status() == StatusCode::PARTIAL_CONTENT || method == Method::HEAD {
+    let refetch = response.status() == StatusCode::PARTIAL_CONTENT || method == Method::HEAD;
+    if refetch {
         match send_upstream(
             &state.client,
             &Method::GET,
@@ -496,44 +826,87 @@ async fn hls_response_inner(
                 effective_headers = headers;
                 bytes.clear();
             }
-            _ => {
-                return plain_response(StatusCode::BAD_GATEWAY, "complete HLS control unavailable")
+            Ok((full, _)) => {
+                record_failure(
+                    target,
+                    TransportFailure::bridge(
+                        TransportFailureStage::HlsRefetch,
+                        "http-status",
+                        &Method::GET,
+                        StatusCode::BAD_GATEWAY,
+                        Some(full.status()),
+                    ),
+                );
+                return plain_response(StatusCode::BAD_GATEWAY, "complete HLS control unavailable");
+            }
+            Err(reason) => {
+                record_failure(
+                    target,
+                    TransportFailure::bridge(
+                        TransportFailureStage::HlsRefetch,
+                        reason,
+                        &Method::GET,
+                        StatusCode::BAD_GATEWAY,
+                        None,
+                    ),
+                );
+                return plain_response(StatusCode::BAD_GATEWAY, "complete HLS control unavailable");
             }
         }
     }
     let base = response.url().clone();
+    let upstream_status = response.status();
+    let read_method = if refetch { &Method::GET } else { method };
     let read = async {
         if response
             .content_length()
             .is_some_and(|size| size > hls_proxy::MAX_MANIFEST_BYTES as u64)
             || bytes.len() > hls_proxy::MAX_MANIFEST_BYTES
         {
-            return Err(());
+            return Err("hls-body-too-large");
         }
-        while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
+        while let Some(chunk) = response.chunk().await.map_err(|error| safe_error(&error))? {
             if bytes.len() + chunk.len() > hls_proxy::MAX_MANIFEST_BYTES {
-                return Err(());
+                return Err("hls-body-too-large");
             }
             bytes.extend_from_slice(&chunk);
         }
         Ok(())
     }
     .await;
-    if read.is_err() {
+    if let Err(reason) = read {
+        record_failure(
+            target,
+            TransportFailure::bridge(
+                TransportFailureStage::HlsRead,
+                reason,
+                read_method,
+                StatusCode::BAD_GATEWAY,
+                Some(upstream_status),
+            ),
+        );
         return plain_response(StatusCode::BAD_GATEWAY, "invalid HLS control");
     }
     let rewritten = match register_hls(state, target, &base, &effective_headers, &bytes).await {
         Ok(value) => value,
         Err(reason) => {
             log::warn!("Native secure media bridge HLS rejected: {reason}");
-            return plain_response(
-                if reason == "session-expired" {
-                    StatusCode::GONE
-                } else {
-                    StatusCode::BAD_GATEWAY
-                },
-                "HLS control unavailable",
+            let status = if reason == "session-expired" {
+                StatusCode::GONE
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            record_failure(
+                target,
+                TransportFailure::bridge(
+                    TransportFailureStage::HlsRewrite,
+                    reason,
+                    read_method,
+                    status,
+                    Some(upstream_status),
+                ),
             );
+            return plain_response(status, "HLS control unavailable");
         }
     };
     control_response(method, request_headers, rewritten)
@@ -766,6 +1139,39 @@ fn safe_error(error: &reqwest::Error) -> &'static str {
         "redirect"
     } else {
         "request"
+    }
+}
+
+fn diagnostic_reason(reason: &'static str) -> &'static str {
+    match reason {
+        "connect"
+        | "timeout"
+        | "redirect"
+        | "request"
+        | "http-status"
+        | "response-build"
+        | "bridge-busy"
+        | "invalid-url"
+        | "server-asset-authority-denied"
+        | "redirect-limit"
+        | "redirect-location"
+        | "redirect-downgrade"
+        | "public-media-requires-https"
+        | "public-dns"
+        | "public-address-denied"
+        | "public-client"
+        | "hls-body-too-large"
+        | "session-expired"
+        | "hls-depth-limit"
+        | "hls-uri-invalid"
+        | "hls-server-asset-denied"
+        | "hls-cycle"
+        | "hls-downgrade"
+        | "hls-target-limit"
+        | "hls-manifest-invalid"
+        | "hls-manifest-encoding"
+        | "hls-manifest-limit" => reason,
+        _ => "unclassified",
     }
 }
 
