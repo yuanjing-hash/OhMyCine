@@ -3,18 +3,19 @@ import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Trac
 import type { DanmakuSettings } from '@/services/danmaku/types'
 import type { StreamVariant } from '@/services/datasource/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
-import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
+import type { PlayerFsrSettings, PlayerHardwareDecoder } from '@/services/playerInteractionSettings'
 import { computed, ref, watch } from 'vue'
 import CachedImage from '@/components/media/CachedImage.vue'
 import { artworkCacheKey, artworkURLCacheKey } from '@/services/imageCache'
-import { PLAYBACK_SPEED_OPTIONS } from '@/services/playerInteractionSettings'
+import { PLAYBACK_SPEED_OPTIONS, PLAYER_HARDWARE_DECODER_OPTIONS } from '@/services/playerInteractionSettings'
 import { streamVariantDescription, streamVariantLabel, usableStreamVariants } from '@/services/streamVariants'
 import DanmakuSettingsContent from './DanmakuSettingsContent.vue'
 import DanmakuToggleIcon from './DanmakuToggleIcon.vue'
+import DecoderSettingsContent from './DecoderSettingsContent.vue'
 import FsrSettingsContent from './FsrSettingsContent.vue'
 import ProgressBar from './ProgressBar.vue'
 
-type MobilePanel = 'more' | 'quality' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'fsr' | 'orientation'
+type MobilePanel = 'more' | 'quality' | 'speed' | 'subtitle' | 'danmaku' | 'audio' | 'queue' | 'picture' | 'fsr' | 'orientation' | 'decoder'
 
 const props = defineProps<{
   title: string
@@ -48,6 +49,9 @@ const props = defineProps<{
   pictureSettingsError: string | null
   fsrSettings: PlayerFsrSettings
   fsrError: string | null
+  hardwareDecoder: PlayerHardwareDecoder
+  decoderSettingsPending: boolean
+  decoderSettingsError: string | null
   orientationSupported: boolean
   orientationMode: MpvOrientationMode
   danmakuSettings: DanmakuSettings
@@ -77,6 +81,7 @@ const emit = defineEmits<{
   setVideoFit: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
   updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
+  setHardwareDecoder: [mode: PlayerHardwareDecoder]
   setOrientationMode: [mode: MpvOrientationMode]
   interactionChange: [active: boolean]
   toggleDanmaku: []
@@ -98,6 +103,7 @@ const selectableStreamVariants = computed(() => usableStreamVariants(props.strea
 const showQualityControl = computed(() => selectableStreamVariants.value.length >= 2)
 const qualityLabel = computed(() => streamVariantLabel(selectableStreamVariants.value.find(item => item.id === props.currentStreamVariantId)))
 const showQueueControl = computed(() => props.queueItemCount > 1)
+const decoderLabel = computed(() => PLAYER_HARDWARE_DECODER_OPTIONS.find(option => option.value === props.hardwareDecoder)?.label)
 const panelTitle = computed(() => {
   switch (activePanel.value) {
     case 'speed': return '播放速度'
@@ -109,6 +115,7 @@ const panelTitle = computed(() => {
     case 'picture': return '画面'
     case 'fsr': return 'FSR 超分'
     case 'orientation': return '屏幕方向'
+    case 'decoder': return '视频解码'
     default: return '播放工具'
   }
 })
@@ -354,6 +361,9 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
               <button type="button" class="mobile-sheet-action" @click="openPlaybackDetail">
                 <span>播放详情</span><b>›</b>
               </button>
+              <button type="button" class="mobile-sheet-action" @click="openPanel('decoder')">
+                <span>视频解码 · {{ decoderLabel }}</span><b>›</b>
+              </button>
               <label class="mobile-range-row">
                 <span>音量</span>
                 <strong>{{ Math.round(volume) }}%</strong>
@@ -396,6 +406,8 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
                 <span>打开设置</span><b>›</b>
               </button>
             </template>
+
+            <DecoderSettingsContent v-else-if="activePanel === 'decoder'" :hardware-decoder="hardwareDecoder" :pending="decoderSettingsPending" :error="decoderSettingsError" @select="emit('setHardwareDecoder', $event)" />
 
             <div v-else-if="activePanel === 'speed'" class="mobile-option-grid">
               <button v-for="speed in PLAYBACK_SPEED_OPTIONS" :key="speed" type="button" class="mobile-choice" :class="{ 'is-selected': Math.abs(playbackSpeed - speed) < 0.001 }" @click="chooseSpeed(speed)">

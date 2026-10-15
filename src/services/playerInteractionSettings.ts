@@ -26,6 +26,11 @@ export type PlayerFsrSettings = Pick<PlayerInteractionSettings, 'fsrMode' | 'fsr
 export type MobileEpisodeLayout = 'vertical' | 'horizontal'
 
 export const PLAYBACK_SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const
+export const PLAYER_HARDWARE_DECODER_OPTIONS = [
+  { value: 'auto-safe', label: '自动安全（推荐）', description: '使用推荐的硬件解码策略' },
+  { value: 'auto', label: '硬件优先', description: '优先使用可用的硬件解码器' },
+  { value: 'software', label: '纯软件解码', description: '使用 CPU 解码视频' },
+] as const satisfies ReadonlyArray<{ value: PlayerHardwareDecoder, label: string, description: string }>
 
 const STORAGE_KEY = 'ohmycine-player-interaction-settings-v1'
 const DEFAULT_SETTINGS: PlayerInteractionSettings = {

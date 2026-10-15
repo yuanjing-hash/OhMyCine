@@ -3,7 +3,7 @@ import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Trac
 import type { DanmakuSettings } from '@/services/danmaku/types'
 import type { StreamVariant } from '@/services/datasource/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
-import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
+import type { PlayerFsrSettings, PlayerHardwareDecoder } from '@/services/playerInteractionSettings'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import CachedImage from '@/components/media/CachedImage.vue'
@@ -47,6 +47,9 @@ const props = defineProps<{
   pictureSettingsError: string | null
   fsrSettings: PlayerFsrSettings
   fsrError: string | null
+  hardwareDecoder: PlayerHardwareDecoder
+  decoderSettingsPending: boolean
+  decoderSettingsError: string | null
   mobileLayout: boolean
   orientationSupported: boolean
   orientationMode: MpvOrientationMode
@@ -75,6 +78,7 @@ const emit = defineEmits<{
   setVideoFit: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
   updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
+  setHardwareDecoder: [mode: PlayerHardwareDecoder]
   setOrientationMode: [mode: MpvOrientationMode]
   fullscreenChanged: [fullscreen: boolean]
   fullscreenTransitioning: [transitioning: boolean]
@@ -816,7 +820,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
       </button>
     </div>
 
-    <PlayerSettingsPanel :open="settingsPanelOpen" :aspect-mode="videoAspectMode" :fit-mode="videoFitMode" :video-brightness="videoBrightness" :error-message="pictureSettingsError" :fsr-settings="fsrSettings" :fsr-error="fsrError" @close="closeSettingsPanel" @interaction-change="setSettingsPanelInteracting" @set-aspect-mode="(mode) => emit('setVideoAspect', mode)" @set-fit-mode="(mode) => emit('setVideoFit', mode)" @set-video-brightness="(level) => emit('setVideoBrightness', level)" @update-fsr-settings="emit('updateFsrSettings', $event)" />
+    <PlayerSettingsPanel :open="settingsPanelOpen" :aspect-mode="videoAspectMode" :fit-mode="videoFitMode" :video-brightness="videoBrightness" :error-message="pictureSettingsError" :fsr-settings="fsrSettings" :fsr-error="fsrError" :hardware-decoder="hardwareDecoder" :decoder-settings-pending="decoderSettingsPending" :decoder-settings-error="decoderSettingsError" @close="closeSettingsPanel" @interaction-change="setSettingsPanelInteracting" @set-aspect-mode="(mode) => emit('setVideoAspect', mode)" @set-fit-mode="(mode) => emit('setVideoFit', mode)" @set-video-brightness="(level) => emit('setVideoBrightness', level)" @update-fsr-settings="emit('updateFsrSettings', $event)" @set-hardware-decoder="emit('setHardwareDecoder', $event)" />
   </div>
 </template>
 

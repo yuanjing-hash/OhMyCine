@@ -5,7 +5,7 @@ import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRe
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
 import type { PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
-import type { PlayerFsrSettings, PlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import type { PlayerFsrSettings, PlayerHardwareDecoder, PlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
@@ -167,6 +167,9 @@ const subtitleSearchDefaultLanguage = ref<SubtitleLanguage>(loadSubtitleSearchSe
 const contextMenuPosition = ref<ContextMenuPosition>({ x: CONTEXT_MENU_MARGIN, y: CONTEXT_MENU_MARGIN })
 const pictureSettingsError = ref<string | null>(null)
 const initialInteractionSettings = loadPlayerInteractionSettings()
+const hardwareDecoder = ref<PlayerHardwareDecoder>(initialInteractionSettings.hardwareDecoder)
+const decoderSettingsPending = ref(false)
+const decoderSettingsError = ref<string | null>(null)
 const fsrSettings = ref<PlayerFsrSettings>(pickFsrSettings(initialInteractionSettings))
 const fsrSettingsError = ref<string | null>(null)
 const providerSyncError = ref<string | null>(null)
@@ -2775,6 +2778,37 @@ async function handleUpdateFsrSettings(patch: Partial<PlayerFsrSettings>) {
   }
 }
 
+async function handleSetHardwareDecoder(mode: PlayerHardwareDecoder) {
+  if (decoderSettingsPending.value || (mode === hardwareDecoder.value && !decoderSettingsError.value))
+    return
+
+  decoderSettingsPending.value = true
+  decoderSettingsError.value = null
+  const next = normalizePlayerInteractionSettings({
+    ...loadPlayerInteractionSettings(),
+    hardwareDecoder: mode,
+  })
+  hardwareDecoder.value = next.hardwareDecoder
+  let saved = false
+
+  try {
+    await savePlayerInteractionSettings(next)
+    saved = true
+    if (playerViewDisposed || playbackCleanupStarted)
+      return
+    await applyEngineSettings()
+    if (!playerViewDisposed)
+      await refreshPlaybackDiagnostics()
+  }
+  catch (error) {
+    const message = toSafeErrorMessage(error, '请稍后重试。')
+    decoderSettingsError.value = saved ? `无法应用解码设置：${message}` : `无法保存解码设置：${message}`
+  }
+  finally {
+    decoderSettingsPending.value = false
+  }
+}
+
 async function handleSetOrientationMode(mode: MpvOrientationMode) {
   await setOrientationMode(mode)
   const label = mode === 'landscape' ? '锁定横屏' : mode === 'portrait' ? '锁定竖屏' : '自动横屏'
@@ -3276,6 +3310,9 @@ watch(
         :picture-settings-error="pictureSettingsError"
         :fsr-settings="fsrSettings"
         :fsr-error="fsrSettingsError"
+        :hardware-decoder="hardwareDecoder"
+        :decoder-settings-pending="decoderSettingsPending"
+        :decoder-settings-error="decoderSettingsError"
         :mobile-layout="false"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
@@ -3298,6 +3335,7 @@ watch(
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
         @update-fsr-settings="handleUpdateFsrSettings"
+        @set-hardware-decoder="handleSetHardwareDecoder"
         @set-orientation-mode="handleSetOrientationMode"
         @fullscreen-changed="handleFullscreenChanged"
         @fullscreen-transitioning="playerChromeStore.setFullscreenTransitioning"
@@ -3348,6 +3386,9 @@ watch(
         :picture-settings-error="pictureSettingsError"
         :fsr-settings="fsrSettings"
         :fsr-error="fsrSettingsError"
+        :hardware-decoder="hardwareDecoder"
+        :decoder-settings-pending="decoderSettingsPending"
+        :decoder-settings-error="decoderSettingsError"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
         :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length"
@@ -3371,6 +3412,7 @@ watch(
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
         @update-fsr-settings="handleUpdateFsrSettings"
+        @set-hardware-decoder="handleSetHardwareDecoder"
         @set-orientation-mode="handleSetOrientationMode"
         @interaction-change="handleControlsInteraction"
         @toggle-danmaku="toggleDanmaku"

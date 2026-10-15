@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
-import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
+import type { PlayerFsrSettings, PlayerHardwareDecoder } from '@/services/playerInteractionSettings'
 import { computed, nextTick, ref, watch } from 'vue'
+import DecoderSettingsContent from './DecoderSettingsContent.vue'
 import FsrSettingsContent from './FsrSettingsContent.vue'
 
 interface PictureOption<T extends string> {
@@ -19,6 +20,9 @@ const props = defineProps<{
   errorMessage: string | null
   fsrSettings: PlayerFsrSettings
   fsrError: string | null
+  hardwareDecoder: PlayerHardwareDecoder
+  decoderSettingsPending: boolean
+  decoderSettingsError: string | null
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +32,7 @@ const emit = defineEmits<{
   setFitMode: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
   updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
+  setHardwareDecoder: [mode: PlayerHardwareDecoder]
 }>()
 
 const panelRef = ref<HTMLElement | null>(null)
@@ -141,7 +146,7 @@ watch(
             设置
           </h2>
           <p class="mt-1 text-sm leading-5 text-white/52">
-            当前：{{ activeAspectLabel }} · {{ activeFitLabel }}。调整画面与 FSR 超分设置。
+            当前：{{ activeAspectLabel }} · {{ activeFitLabel }}。调整解码、画面与 FSR 超分设置。
           </p>
         </div>
         <button
@@ -162,6 +167,13 @@ watch(
       </p>
 
       <div class="mt-4 space-y-3">
+        <article class="settings-section rounded-3xl p-3">
+          <h3 class="mb-3 text-sm font-semibold text-white/88">
+            视频解码
+          </h3>
+          <DecoderSettingsContent :hardware-decoder="hardwareDecoder" :pending="decoderSettingsPending" :error="decoderSettingsError" @select="emit('setHardwareDecoder', $event)" />
+        </article>
+
         <article class="settings-section rounded-3xl p-3">
           <div class="mb-3 flex items-start justify-between gap-3">
             <div>
