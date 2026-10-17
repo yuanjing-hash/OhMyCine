@@ -65,3 +65,13 @@ pub(super) fn transfer_mode(gamma: Option<&str>) -> MpvColorOutputMode {
         _ => MpvColorOutputMode::Unknown,
     }
 }
+
+#[cfg(not(mobile))]
+pub(super) fn target_transfer_mode(gamma: Option<&str>) -> MpvColorOutputMode {
+    // scRGB is an observed HDR carrier, not a rule for ordinary linear source video/FSR.
+    if gamma.is_some_and(|value| value.eq_ignore_ascii_case("scrgb")) {
+        MpvColorOutputMode::Hdr
+    } else {
+        transfer_mode(gamma)
+    }
+}

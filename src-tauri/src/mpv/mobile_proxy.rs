@@ -179,6 +179,11 @@ pub struct CurrentLoadSubmission<'a> {
 }
 
 impl CurrentLoadSubmission<'_> {
+    #[cfg(not(mobile))]
+    pub async fn cancel_preserving_diagnostics(self) {
+        self.proxy.cancel_locked(Some(self.epoch), false).await;
+    }
+
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub async fn clear_after_stop(self) {
         // Keep the submission lock through native stop and cleanup. A new load
@@ -211,6 +216,7 @@ struct ProxyAppState {
 }
 
 impl AndroidStreamProxyState {
+    #[cfg(test)]
     pub async fn prepare(
         &self,
         url: String,
@@ -265,6 +271,7 @@ impl AndroidStreamProxyState {
         Ok(format!("http://127.0.0.1:{}/media/{token}", runtime.port))
     }
 
+    #[cfg(test)]
     pub async fn clear(&self) {
         self.begin_load().await;
     }

@@ -79,7 +79,9 @@ export function describeVideoSourceColor(color: VideoSourceColorMetadata | null 
 export function describeVideoTargetColor(color: MpvColorDiagnostics | null | undefined): VideoDynamicRangeState {
   const transfer = videoTransfer(color?.targetGamma)
   let label = '未知'
-  if (color?.outputMode === 'hdr' && (transfer === 'pq' || transfer === 'hlg'))
+  if (color?.outputMode === 'hdr' && color.targetGamma?.toLowerCase() === 'scrgb')
+    label = 'scRGB HDR 目标'
+  else if (color?.outputMode === 'hdr' && (transfer === 'pq' || transfer === 'hlg'))
     label = transfer === 'pq' ? 'PQ HDR 目标' : 'HLG HDR 目标'
   else if (color?.outputMode === 'sdr' && (transfer === 'sdr' || color.targetGamma?.toLowerCase() === 'linear'))
     label = 'SDR 目标'

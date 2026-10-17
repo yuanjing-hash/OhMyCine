@@ -1,5 +1,7 @@
 pub mod color;
 #[cfg(not(mobile))]
+mod diagnostics;
+#[cfg(not(mobile))]
 pub mod events;
 mod hls_proxy;
 #[cfg(target_os = "android")]

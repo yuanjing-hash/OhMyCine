@@ -1149,8 +1149,14 @@ function markTitleLogoFailed(url: string) {
                 @keydown.enter.self.prevent="handleEpisodeCardClick(episode, renderedEpisodeIndex(visibleIndex))"
               >
                 <div class="episode-artwork theme-immersive-dark relative block overflow-hidden text-left">
-                  <CachedImage v-if="episode.episodeStillUrl || episode.backdropUrl || episode.posterUrl" :cache-key="artworkURLCacheKey(episode.sourceId, episode.episodeStillUrl ?? episode.backdropUrl ?? episode.posterUrl ?? '', 'thumbnail')" :src="episode.episodeStillUrl ?? episode.backdropUrl ?? episode.posterUrl" :alt="episode.name" class="aspect-video w-full object-cover transition-transform duration-700 group-hover/card:scale-105" loading="lazy" decoding="async" />
-                  <div v-else class="episode-artwork-fallback flex aspect-video w-full items-center justify-center p-5 text-center text-sm text-white/42">
+                  <CachedImage v-if="episode.episodeStillUrl || episode.backdropUrl || episode.posterUrl" :cache-key="artworkURLCacheKey(episode.sourceId, episode.episodeStillUrl ?? episode.backdropUrl ?? episode.posterUrl ?? '', 'thumbnail')" :src="episode.episodeStillUrl ?? episode.backdropUrl ?? episode.posterUrl" :alt="episode.name" class="h-full w-full object-cover transition-transform duration-700 group-hover/card:scale-105" loading="lazy" decoding="async">
+                    <template #fallback>
+                      <div class="episode-artwork-fallback flex h-full w-full items-center justify-center p-5 text-center text-sm text-white/42">
+                        {{ episodeTitle(episode) }}
+                      </div>
+                    </template>
+                  </CachedImage>
+                  <div v-else class="episode-artwork-fallback flex h-full w-full items-center justify-center p-5 text-center text-sm text-white/42">
                     {{ episodeTitle(episode) }}
                   </div>
                   <div class="absolute inset-0 bg-gradient-to-t from-black/88 via-black/8 to-transparent" />
@@ -1892,6 +1898,11 @@ function markTitleLogoFailed(url: string) {
   box-shadow: var(--glass-shadow-elevated);
 }
 
+.episode-artwork {
+  flex-shrink: 0;
+  aspect-ratio: 16 / 9;
+}
+
 .episode-artwork-fallback {
   background: #171720;
 }
@@ -1994,12 +2005,18 @@ function markTitleLogoFailed(url: string) {
   contain-intrinsic-size: 10rem;
 }
 
-.is-mobile-episode-surface.is-vertical .episode-card > div:first-child {
+.is-mobile-episode-surface.is-vertical .episode-artwork {
   min-height: 10rem;
+  aspect-ratio: auto;
 }
 
-.is-mobile-episode-surface.is-vertical .episode-card > div:first-child > img,
-.is-mobile-episode-surface.is-vertical .episode-card > div:first-child > div:first-child {
+.is-mobile-episode-surface.is-vertical .episode-artwork > .cached-image-host {
+  position: absolute;
+  inset: 0;
+}
+
+.is-mobile-episode-surface.is-vertical .episode-artwork :deep(.cached-image-host > img),
+.is-mobile-episode-surface.is-vertical .episode-artwork .episode-artwork-fallback {
   width: 100%;
   height: 100%;
   aspect-ratio: auto;
