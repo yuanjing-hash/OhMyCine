@@ -26,19 +26,6 @@ const DNS_TIMED_OUT: &str = "The public CDN DNS resolver timed out.";
 const DNS_NO_ANSWER: &str = "The public CDN DNS resolver returned no usable addresses.";
 const DNS_SYSTEM: &str = "The online CDN could not be resolved.";
 
-pub(crate) fn diagnostic_reason(error: &str) -> &'static str {
-    match error {
-        DNS_SYSTEM => "public-dns-system",
-        DNS_DENIED => "public-dns-admission-denied",
-        DNS_TIMED_OUT => "public-dns-repair-timeout",
-        DNS_UNAVAILABLE => "public-dns-repair-unavailable",
-        DNS_INVALID => "public-dns-repair-invalid",
-        DNS_NO_ANSWER => "public-dns-repair-no-answer",
-        DNS_BUSY => "public-dns-repair-busy",
-        _ => "public-dns",
-    }
-}
-
 #[derive(Clone)]
 struct Observation {
     addresses: Vec<IpAddr>,

@@ -35,9 +35,6 @@ use tokio::{
 
 use super::hls_proxy;
 use crate::commands::player_shared::MpvHttpHeader;
-use crate::commands::public_dns::{
-    diagnostic_reason as dns_diagnostic_reason, public_ip, resolve_cdn,
-};
 
 const LOOPBACK_PATH: &str = "/media/:token";
 const MAX_UPSTREAM_REDIRECTS: usize = 10;
@@ -391,7 +388,6 @@ async fn start_proxy() -> Result<ProxyRuntime, String> {
     let targets = Arc::new(RwLock::new(HashMap::new()));
     let diagnostics = Arc::new(Mutex::new(TransportDiagnostics::default()));
     let client = reqwest::Client::builder()
-        .no_proxy()
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
@@ -661,13 +657,8 @@ async fn send_upstream(
         {
             return Err("server-asset-authority-denied");
         }
-        let public_client;
-        let client = if same_origin(&current_url, owning_origin) {
-            client
-        } else {
-            public_client = public_client_for(&current_url).await?;
-            &public_client
-        };
+        // Playback follows the user's normal DNS/proxy/TUN routing on every
+        // hop. Keep credential ownership separate from network reachability.
         let mut upstream = client.request(method.clone(), current_url.clone());
         if forward_target_headers {
             for header in target_headers {
@@ -725,50 +716,6 @@ fn validated_url(value: &str) -> Result<Url, &'static str> {
         return Err("invalid-url");
     }
     Ok(url)
-}
-
-async fn public_client_for(url: &Url) -> Result<reqwest::Client, &'static str> {
-    let host = url.host_str().ok_or("invalid-url")?;
-    let port = url.port_or_known_default().ok_or("invalid-url")?;
-    #[cfg(not(test))]
-    if url.scheme() != "https" {
-        return Err("public-media-requires-https");
-    }
-    let addresses = {
-        #[cfg(test)]
-        if matches!(host, "127.0.0.1" | "localhost") {
-            tokio::net::lookup_host((host, port))
-                .await
-                .map_err(|_| "public-dns-system")?
-                .collect::<Vec<_>>()
-        } else {
-            resolve_cdn(host, port)
-                .await
-                .map_err(|error| dns_diagnostic_reason(&error))?
-        }
-        #[cfg(not(test))]
-        {
-            resolve_cdn(host, port)
-                .await
-                .map_err(|error| dns_diagnostic_reason(&error))?
-        }
-    };
-    if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
-        #[cfg(not(test))]
-        return Err("public-address-denied");
-        #[cfg(test)]
-        if addresses.is_empty() || addresses.iter().any(|address| !address.ip().is_loopback()) {
-            return Err("public-address-denied");
-        }
-    }
-    reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .read_timeout(Duration::from_secs(30))
-        .resolve_to_addrs(host, &addresses)
-        .build()
-        .map_err(|_| "public-client")
 }
 
 async fn hls_response(
@@ -1169,17 +1116,6 @@ fn diagnostic_reason(reason: &'static str) -> &'static str {
         | "redirect-limit"
         | "redirect-location"
         | "redirect-downgrade"
-        | "public-media-requires-https"
-        | "public-dns"
-        | "public-dns-system"
-        | "public-dns-admission-denied"
-        | "public-dns-repair-timeout"
-        | "public-dns-repair-unavailable"
-        | "public-dns-repair-invalid"
-        | "public-dns-repair-no-answer"
-        | "public-dns-repair-busy"
-        | "public-address-denied"
-        | "public-client"
         | "hls-body-too-large"
         | "session-expired"
         | "hls-depth-limit"
