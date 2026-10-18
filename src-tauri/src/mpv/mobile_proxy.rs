@@ -35,7 +35,9 @@ use tokio::{
 
 use super::hls_proxy;
 use crate::commands::player_shared::MpvHttpHeader;
-use crate::commands::public_dns::{public_ip, resolve_cdn};
+use crate::commands::public_dns::{
+    diagnostic_reason as dns_diagnostic_reason, public_ip, resolve_cdn,
+};
 
 const LOOPBACK_PATH: &str = "/media/:token";
 const MAX_UPSTREAM_REDIRECTS: usize = 10;
@@ -737,14 +739,18 @@ async fn public_client_for(url: &Url) -> Result<reqwest::Client, &'static str> {
         if matches!(host, "127.0.0.1" | "localhost") {
             tokio::net::lookup_host((host, port))
                 .await
-                .map_err(|_| "public-dns")?
+                .map_err(|_| "public-dns-system")?
                 .collect::<Vec<_>>()
         } else {
-            resolve_cdn(host, port).await.map_err(|_| "public-dns")?
+            resolve_cdn(host, port)
+                .await
+                .map_err(|error| dns_diagnostic_reason(&error))?
         }
         #[cfg(not(test))]
         {
-            resolve_cdn(host, port).await.map_err(|_| "public-dns")?
+            resolve_cdn(host, port)
+                .await
+                .map_err(|error| dns_diagnostic_reason(&error))?
         }
     };
     if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
@@ -1165,6 +1171,13 @@ fn diagnostic_reason(reason: &'static str) -> &'static str {
         | "redirect-downgrade"
         | "public-media-requires-https"
         | "public-dns"
+        | "public-dns-system"
+        | "public-dns-admission-denied"
+        | "public-dns-repair-timeout"
+        | "public-dns-repair-unavailable"
+        | "public-dns-repair-invalid"
+        | "public-dns-repair-no-answer"
+        | "public-dns-repair-busy"
         | "public-address-denied"
         | "public-client"
         | "hls-body-too-large"

@@ -2,6 +2,7 @@
 //! Contains hostnames and short-lived public addresses, never media transport or credentials.
 use reqwest::{Client, Url};
 use std::collections::{HashMap, HashSet};
+use std::error::Error;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 const DNS_TIMEOUT: Duration = Duration::from_secs(3);
+const DNS_FAMILY_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_BODY: usize = 16 * 1024;
 const MAX_RECORDS: usize = 64;
 const MAX_CNAME: usize = 8;
@@ -20,6 +22,22 @@ const DNS_INVALID: &str = "The public CDN DNS response is invalid.";
 const DNS_DENIED: &str = "The online CDN resolved to a private or reserved address.";
 const DNS_UNAVAILABLE: &str = "The public CDN DNS resolver could not be reached.";
 const DNS_BUSY: &str = "The public CDN DNS resolver is busy; please retry.";
+const DNS_TIMED_OUT: &str = "The public CDN DNS resolver timed out.";
+const DNS_NO_ANSWER: &str = "The public CDN DNS resolver returned no usable addresses.";
+const DNS_SYSTEM: &str = "The online CDN could not be resolved.";
+
+pub(crate) fn diagnostic_reason(error: &str) -> &'static str {
+    match error {
+        DNS_SYSTEM => "public-dns-system",
+        DNS_DENIED => "public-dns-admission-denied",
+        DNS_TIMED_OUT => "public-dns-repair-timeout",
+        DNS_UNAVAILABLE => "public-dns-repair-unavailable",
+        DNS_INVALID => "public-dns-repair-invalid",
+        DNS_NO_ANSWER => "public-dns-repair-no-answer",
+        DNS_BUSY => "public-dns-repair-busy",
+        _ => "public-dns",
+    }
+}
 
 #[derive(Clone)]
 struct Observation {
@@ -138,7 +156,7 @@ impl PublicResolver {
                 }
                 tokio::time::timeout(DNS_TIMEOUT, notified)
                     .await
-                    .map_err(|_| DNS_UNAVAILABLE.to_string())?;
+                    .map_err(|_| DNS_TIMED_OUT.to_string())?;
                 let result = flight
                     .result
                     .lock()
@@ -172,7 +190,7 @@ impl PublicResolver {
                         observation.observed = Instant::now();
                         Ok(observation)
                     }),
-                    Err(_) => Err(DNS_UNAVAILABLE.to_string()),
+                    Err(_) => Err(DNS_TIMED_OUT.to_string()),
                 };
                 if let Ok(observation) = &result {
                     if !observation.ttl.is_zero() {
@@ -243,7 +261,7 @@ pub(crate) async fn resolve_cdn(hostname: &str, port: u16) -> Result<Vec<SocketA
     // redirects and repeated units. A new unknown private answer fails closed.
     let system = tokio::net::lookup_host((hostname, port))
         .await
-        .map_err(|_| "The online CDN could not be resolved.".to_string())?
+        .map_err(|_| DNS_SYSTEM.to_string())?
         .collect::<Vec<_>>();
     if system
         .iter()
@@ -283,11 +301,58 @@ fn doh_client() -> Result<Client, String> {
 async fn query_public_dns(name: String) -> Result<Observation, String> {
     let client = doh_client()?;
     let (a, aaaa) = tokio::join!(
-        query_family(&client, &name, 1),
-        query_family(&client, &name, 28)
+        bounded_family(query_family(&client, &name, 1)),
+        bounded_family(query_family(&client, &name, 28))
     );
-    let (a, aaaa) = (a?, aaaa?);
-    merge_families(a, aaaa)
+    merge_family_results(a, aaaa)
+}
+
+async fn bounded_family<F>(query: F) -> Result<Observation, String>
+where
+    F: Future<Output = Result<Observation, String>>,
+{
+    tokio::time::timeout(DNS_FAMILY_TIMEOUT, query)
+        .await
+        .map_err(|_| DNS_TIMED_OUT.to_string())?
+}
+
+fn transient_family_error(error: &str) -> bool {
+    matches!(error, DNS_TIMED_OUT | DNS_UNAVAILABLE)
+}
+
+fn merge_family_results(
+    a: Result<Observation, String>,
+    aaaa: Result<Observation, String>,
+) -> Result<Observation, String> {
+    match (a, aaaa) {
+        (Ok(a), Ok(aaaa)) => merge_families(a, aaaa),
+        (Ok(answer), Err(error)) | (Err(error), Ok(answer)) => {
+            // A transport outage in one family must not discard an already
+            // validated public answer. Invalid/unsafe responses stay fatal.
+            if !transient_family_error(&error) || answer.addresses.is_empty() {
+                return Err(error);
+            }
+            merge_families(
+                answer,
+                Observation {
+                    addresses: Vec::new(),
+                    ttl: Duration::ZERO,
+                    observed: Instant::now(),
+                },
+            )
+        }
+        (Err(a), Err(aaaa)) => {
+            if !transient_family_error(&a) {
+                Err(a)
+            } else if !transient_family_error(&aaaa) {
+                Err(aaaa)
+            } else if a == DNS_TIMED_OUT || aaaa == DNS_TIMED_OUT {
+                Err(DNS_TIMED_OUT.to_string())
+            } else {
+                Err(DNS_UNAVAILABLE.to_string())
+            }
+        }
+    }
 }
 
 fn merge_families(a: Observation, aaaa: Observation) -> Result<Observation, String> {
@@ -297,7 +362,7 @@ fn merge_families(a: Observation, aaaa: Observation) -> Result<Observation, Stri
         (false, false) => a_remaining.min(aaaa_remaining),
         (false, true) => a_remaining,
         (true, false) => aaaa_remaining,
-        (true, true) => return Err(DNS_INVALID.to_string()),
+        (true, true) => return Err(DNS_NO_ANSWER.to_string()),
     };
     let mut addresses = a.addresses;
     addresses.extend(aaaa.addresses);
@@ -319,7 +384,7 @@ async fn query_family(client: &Client, name: &str, kind: u16) -> Result<Observat
         .body(wire)
         .send()
         .await
-        .map_err(|_| DNS_UNAVAILABLE.to_string())?;
+        .map_err(dns_request_error)?;
     let observed = Instant::now();
     if response.status() != reqwest::StatusCode::OK
         || response
@@ -356,11 +421,7 @@ async fn query_family(client: &Client, name: &str, kind: u16) -> Result<Observat
     )?;
     let mut body = Vec::new();
     let mut response = response;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| DNS_UNAVAILABLE.to_string())?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(dns_request_error)? {
         if body.len() + chunk.len() > MAX_BODY {
             return Err(DNS_INVALID.to_string());
         }
@@ -375,6 +436,35 @@ async fn query_family(client: &Client, name: &str, kind: u16) -> Result<Observat
         .min(cache_limit.saturating_sub(age))
         .min(MAX_TTL);
     Ok(observation)
+}
+
+fn dns_request_error(error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        return DNS_TIMED_OUT.to_string();
+    }
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::AddrNotAvailable
+                    | std::io::ErrorKind::NetworkUnreachable
+                    | std::io::ErrorKind::HostUnreachable
+                    | std::io::ErrorKind::NetworkDown
+            ) {
+                return DNS_UNAVAILABLE.to_string();
+            }
+        }
+        source = cause.source();
+    }
+    // TLS, malformed HTTP/body framing and other unclassified failures are not
+    // proof of a transient outage and must not be ignored by family merging.
+    DNS_INVALID.to_string()
 }
 
 fn cache_control_limit(header: Option<&str>) -> Result<Duration, String> {
