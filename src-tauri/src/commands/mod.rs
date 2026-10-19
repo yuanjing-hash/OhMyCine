@@ -30,3 +30,4 @@ pub mod server;
 pub mod settings;
 pub mod subtitle;
 pub mod updater;
+mod updater_transfer;

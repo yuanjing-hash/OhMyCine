@@ -325,7 +325,7 @@ onMounted(() => {
   store.loadConfigs()
   void refreshOpenSubtitlesCredentialState()
   void refreshStorageInfo()
-  void updaterStore.initialize().then(syncUpdaterForm)
+  void updaterStore.initialize().then(() => updaterStore.refreshState()).then(syncUpdaterForm).catch(() => undefined)
   syncModeFromRoute()
 })
 
@@ -604,6 +604,7 @@ function goUpdaterSettings() {
   feedback.value = null
   updateFeedback.value = null
   syncUpdaterForm()
+  void updaterStore.refreshState().catch(() => undefined)
   void router.push({ name: 'settings', query: { section: 'updates' } })
 }
 
@@ -652,6 +653,13 @@ async function checkForUpdatesNow() {
   catch (error) {
     updateFeedback.value = { type: 'error', message: toSafeErrorMessage(error, '更新检查失败。') }
   }
+}
+
+async function runUpdateAction() {
+  if (updaterStore.canInstall)
+    await updaterStore.installAvailableUpdate().catch(() => undefined)
+  else
+    await updaterStore.downloadAvailableUpdate().catch(() => undefined)
 }
 
 async function refreshOpenSubtitlesCredentialState() {
@@ -1204,7 +1212,7 @@ function selectSourceType(type: EditableDataSourceType) {
                 软件更新
               </h2>
               <p class="mt-2 max-w-3xl text-sm leading-6 text-white/48">
-                选择更新渠道，保存后可立即检测。发现新版本后会先征求确认。
+                选择更新渠道，保存后可立即检测。下载可在后台继续，完成后再确认安装。
               </p>
             </div>
             <span class="rounded-full bg-primary/16 px-3 py-1.5 text-xs font-semibold text-primary">
@@ -1234,6 +1242,7 @@ function selectSourceType(type: EditableDataSourceType) {
                   type="button"
                   class="rounded-2xl border px-4 py-3 text-left transition-colors"
                   :class="updateForm.channel === 'beta' ? 'border-primary/45 bg-primary/16 text-white' : 'border-white/10 bg-white/5 text-white/58 hover:bg-white/8'"
+                  :disabled="!updaterStore.canCheckForUpdates || isSavingUpdaterSettings"
                   @click="updateForm.channel = 'beta'"
                 >
                   <span class="block text-sm font-semibold">Beta</span>
@@ -1243,6 +1252,7 @@ function selectSourceType(type: EditableDataSourceType) {
                   type="button"
                   class="rounded-2xl border px-4 py-3 text-left transition-colors"
                   :class="updateForm.channel === 'stable' ? 'border-primary/45 bg-primary/16 text-white' : 'border-white/10 bg-white/5 text-white/58 hover:bg-white/8'"
+                  :disabled="!updaterStore.canCheckForUpdates || isSavingUpdaterSettings"
                   @click="updateForm.channel = 'stable'"
                 >
                   <span class="block text-sm font-semibold">正式版</span>
@@ -1262,6 +1272,26 @@ function selectSourceType(type: EditableDataSourceType) {
             </div>
           </div>
 
+          <div v-if="updaterStore.availableUpdate" class="mt-5 rounded-2xl border border-primary/20 bg-primary/10 p-4">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="text-sm font-semibold text-white/82">
+                OhMyCine {{ updaterStore.availableUpdate.version }} · {{ updaterStore.statusLabel }}
+              </p>
+              <span v-if="updaterStore.progressPercent != null" class="text-sm text-white/60">
+                {{ Math.round(updaterStore.progressPercent) }}%
+              </span>
+            </div>
+            <div v-if="updaterStore.isBusy || updaterStore.downloadedBytes > 0" class="mt-3 h-2 overflow-hidden rounded-full bg-white/10" role="progressbar" aria-label="更新下载进度" :aria-valuenow="updaterStore.progressPercent ?? undefined" :aria-valuemin="0" :aria-valuemax="100">
+              <div class="h-full rounded-full bg-primary transition-[width] duration-200" :class="updaterStore.progressPercent == null ? 'w-1/3 animate-pulse' : ''" :style="updaterStore.progressPercent == null ? undefined : { width: `${updaterStore.progressPercent}%` }" />
+            </div>
+            <p v-if="updaterStore.progressText" class="mt-2 text-xs text-white/48">
+              {{ updaterStore.progressText }}
+            </p>
+            <p v-if="updaterStore.error" class="mt-3 text-sm leading-6 text-red-100">
+              {{ updaterStore.error }}
+            </p>
+          </div>
+
           <div class="mt-5 flex flex-wrap gap-3">
             <button
               type="button"
@@ -1274,10 +1304,19 @@ function selectSourceType(type: EditableDataSourceType) {
             <button
               type="button"
               class="rounded-2xl bg-white/10 px-4 py-2 text-sm font-semibold text-white/78 transition-colors hover:bg-white/16 disabled:cursor-wait disabled:opacity-55"
-              :disabled="isSavingUpdaterSettings || updaterStore.status === 'checking' || updaterStore.status === 'downloading' || updaterStore.status === 'installing'"
+              :disabled="isSavingUpdaterSettings || !updaterStore.canCheckForUpdates"
               @click="checkForUpdatesNow"
             >
               {{ updaterStore.status === 'checking' ? '检测中…' : '立即检测更新' }}
+            </button>
+            <button
+              v-if="updaterStore.availableUpdate"
+              type="button"
+              class="rounded-2xl bg-primary/80 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-wait disabled:opacity-55"
+              :disabled="!updaterStore.canDownload && !updaterStore.canInstall"
+              @click="runUpdateAction"
+            >
+              {{ updaterStore.primaryActionLabel }}
             </button>
             <button
               v-if="updaterStore.availableUpdate && !updaterStore.promptOpen"
@@ -1285,7 +1324,7 @@ function selectSourceType(type: EditableDataSourceType) {
               class="rounded-2xl bg-white/8 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:bg-white/14"
               @click="updaterStore.reopenPrompt()"
             >
-              查看 {{ updaterStore.availableUpdate.version }}
+              查看更新详情
             </button>
           </div>
         </div>

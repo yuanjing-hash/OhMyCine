@@ -50,5 +50,9 @@
           android:name=".downloads.DownloadService"
           android:exported="false"
           android:foregroundServiceType="dataSync" />
+        <service
+          android:name=".updater.UpdaterService"
+          android:exported="false"
+          android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

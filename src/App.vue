@@ -41,7 +41,9 @@ let disposePlaybackHistorySync: (() => void) | undefined
 onMounted(() => {
   store.loadConfigs()
   document.addEventListener('contextmenu', suppressNativeContextMenu)
-  void updater.initialize().then(() => updater.scheduleStartupCheck())
+  void updater.initialize().then(() => updater.scheduleStartupCheck()).catch(() => undefined)
+  document.addEventListener('visibilitychange', refreshUpdaterOnForeground)
+  window.addEventListener('focus', refreshUpdaterOnForeground)
   void downloads.initialize()
   void initializeServerDeepLinks(router, store).then((dispose) => {
     disposeServerDeepLinks = dispose
@@ -52,7 +54,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('contextmenu', suppressNativeContextMenu)
   store.stopMediaChangeWatchers()
-  updater.cancelStartupCheck()
+  document.removeEventListener('visibilitychange', refreshUpdaterOnForeground)
+  window.removeEventListener('focus', refreshUpdaterOnForeground)
+  updater.dispose()
   downloads.dispose()
   disposeServerDeepLinks?.()
   disposePlaybackHistorySync?.()
@@ -60,6 +64,11 @@ onBeforeUnmount(() => {
 
 function suppressNativeContextMenu(event: MouseEvent) {
   event.preventDefault()
+}
+
+function refreshUpdaterOnForeground() {
+  if (document.visibilityState === 'visible')
+    void updater.initialize().then(() => updater.refreshState()).catch(() => undefined)
 }
 </script>
 

@@ -67,7 +67,10 @@ use commands::subtitle::{
     subtitle_login_opensubtitles, subtitle_search_hash_provider, subtitle_search_opensubtitles,
     OpenSubtitlesSessionState, SubtitleDownloadState,
 };
-use commands::updater::{player_check_for_updates, player_install_update, PendingUpdate};
+use commands::updater::{
+    player_check_for_updates, player_download_update, player_install_update, player_update_state,
+    PendingUpdate,
+};
 use mpv::mobile_proxy::AndroidStreamProxyState;
 #[cfg(not(mobile))]
 use mpv::surface::OwnerWindowEvent;
@@ -189,6 +192,8 @@ pub fn run() {
             subtitle_download_hash_provider,
             subtitle_import_local,
             player_check_for_updates,
+            player_update_state,
+            player_download_update,
             player_install_update,
             local_file_list,
             local_file_pick_video,
