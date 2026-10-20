@@ -17,10 +17,73 @@ const MAX_RESPONSE_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SSE_EVENT_BYTES: usize = 512 * 1024;
 const MAX_SSE_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(75);
+const SSE_TOTAL_TIMEOUT: Duration = Duration::from_secs(390);
+const MAX_EARLY_STREAM_CANCELLATIONS: usize = 64;
+
+#[derive(Clone, Copy)]
+struct SseTiming {
+    idle: Duration,
+    total: Duration,
+}
+
+impl Default for SseTiming {
+    fn default() -> Self {
+        Self {
+            idle: SSE_IDLE_TIMEOUT,
+            total: SSE_TOTAL_TIMEOUT,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct ServerStreamState {
-    cancellations: Mutex<HashMap<String, watch::Sender<bool>>>,
+    streams: Mutex<ServerStreams>,
+}
+
+#[derive(Default)]
+struct ServerStreams {
+    active: HashMap<String, watch::Sender<bool>>,
+    cancelled_before_start: HashMap<String, std::time::Instant>,
+}
+
+impl ServerStreams {
+    fn register(&mut self, request_id: &str, sender: watch::Sender<bool>) -> Result<bool, String> {
+        self.prune();
+        if self.cancelled_before_start.remove(request_id).is_some() {
+            return Ok(false);
+        }
+        if self.active.contains_key(request_id) {
+            return Err("Server 搜索请求标识已存在。".to_string());
+        }
+        self.active.insert(request_id.to_string(), sender);
+        Ok(true)
+    }
+
+    fn cancel(&mut self, request_id: &str) {
+        if let Some(sender) = self.active.get(request_id) {
+            let _ = sender.send(true);
+            return;
+        }
+        // Synchronous cancel IPC can overtake the first poll of an async stream IPC.
+        self.prune();
+        self.cancelled_before_start
+            .insert(request_id.to_string(), std::time::Instant::now());
+        while self.cancelled_before_start.len() > MAX_EARLY_STREAM_CANCELLATIONS {
+            let oldest = self
+                .cancelled_before_start
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(id, _)| id.clone());
+            if let Some(id) = oldest {
+                self.cancelled_before_start.remove(&id);
+            }
+        }
+    }
+
+    fn prune(&mut self) {
+        self.cancelled_before_start
+            .retain(|_, at| at.elapsed() <= SSE_TOTAL_TIMEOUT);
+    }
 }
 
 #[derive(Deserialize)]
@@ -216,19 +279,18 @@ pub async fn server_stream_sse(
     validate_stream_request(&request, &request_id)?;
     let (cancel_tx, cancel_rx) = watch::channel(false);
     {
-        let mut cancellations = state
-            .cancellations
+        let mut streams = state
+            .streams
             .lock()
             .map_err(|_| "Server 搜索取消状态暂不可用。".to_string())?;
-        if cancellations.contains_key(&request_id) {
-            return Err("Server 搜索请求标识已存在。".to_string());
+        if !streams.register(&request_id, cancel_tx)? {
+            return Ok(());
         }
-        cancellations.insert(request_id.clone(), cancel_tx);
     }
 
     let result = run_sse_stream(request, cancel_rx, &on_event).await;
-    if let Ok(mut cancellations) = state.cancellations.lock() {
-        cancellations.remove(&request_id);
+    if let Ok(mut streams) = state.streams.lock() {
+        streams.active.remove(&request_id);
     }
     result
 }
@@ -241,21 +303,42 @@ pub fn server_cancel_sse(
     if !valid_request_id(&request_id) {
         return Err("Server 搜索请求标识无效。".to_string());
     }
-    let cancellations = state
-        .cancellations
+    let mut streams = state
+        .streams
         .lock()
         .map_err(|_| "Server 搜索取消状态暂不可用。".to_string())?;
-    if let Some(sender) = cancellations.get(&request_id) {
-        let _ = sender.send(true);
-    }
+    streams.cancel(&request_id);
     Ok(())
 }
 
 async fn run_sse_stream(
     request: ServerJsonRequest,
-    mut cancel_rx: watch::Receiver<bool>,
+    cancel_rx: watch::Receiver<bool>,
     on_event: &Channel<ServerSseEvent>,
 ) -> Result<(), String> {
+    receive_sse_stream(
+        request,
+        cancel_rx,
+        |event| {
+            on_event
+                .send(event)
+                .map_err(|_| "无法向 Player 传递 Server 搜索进度。".to_string())
+        },
+        SseTiming::default(),
+    )
+    .await
+}
+
+async fn receive_sse_stream<F>(
+    request: ServerJsonRequest,
+    mut cancel_rx: watch::Receiver<bool>,
+    mut on_event: F,
+    timing: SseTiming,
+) -> Result<(), String>
+where
+    F: FnMut(ServerSseEvent) -> Result<(), String>,
+{
+    let deadline = tokio::time::Instant::now() + timing.total;
     let url = server_url(&request.base_url, &request.path)?;
     let token = request.access_token.as_deref().unwrap_or_default().trim();
     let client = reqwest::Client::builder()
@@ -263,21 +346,27 @@ async fn run_sse_stream(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "Failed to initialize Server HTTP client.".to_string())?;
-    let mut response = client
+    let send = client
         .get(url)
         .header(ACCEPT, "text/event-stream")
         .header(AUTHORIZATION, format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|error| {
-            if error.is_timeout() {
-                "连接 OhMyCine Server 搜索流超时。".to_string()
-            } else if error.is_connect() {
-                "无法连接 OhMyCine Server。".to_string()
-            } else {
-                "OhMyCine Server 搜索流请求失败。".to_string()
-            }
-        })?;
+        .send();
+    let mut response = tokio::select! {
+        biased;
+        () = stream_cancelled(&mut cancel_rx) => return Ok(()),
+        result = tokio::time::timeout_at(deadline, send) => {
+            result.map_err(|_| "OhMyCine Server 搜索等待时间已用尽。".to_string())?
+                .map_err(|error| {
+                    if error.is_timeout() {
+                        "连接 OhMyCine Server 搜索流超时。".to_string()
+                    } else if error.is_connect() {
+                        "无法连接 OhMyCine Server。".to_string()
+                    } else {
+                        "OhMyCine Server 搜索流请求失败。".to_string()
+                    }
+                })?
+        }
+    };
     if response.status().is_redirection() {
         return Err("OhMyCine Server 搜索流返回了不受信任的跳转。".to_string());
     }
@@ -293,22 +382,17 @@ async fn run_sse_stream(
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if !content_type.starts_with("text/event-stream") {
+    if content_type.split(';').next().unwrap_or_default().trim() != "text/event-stream" {
         return Err("OhMyCine Server 返回了无效搜索流。".to_string());
     }
 
-    let mut buffer = Vec::new();
-    let mut total = 0usize;
+    let mut decoder = SseDecoder::default();
     loop {
-        let next = tokio::time::timeout(SSE_IDLE_TIMEOUT, response.chunk());
         let chunk = tokio::select! {
-            changed = cancel_rx.changed() => {
-                if changed.is_ok() && *cancel_rx.borrow() {
-                    return Ok(());
-                }
-                continue;
-            }
-            result = next => {
+            biased;
+            () = stream_cancelled(&mut cancel_rx) => return Ok(()),
+            () = tokio::time::sleep_until(deadline) => return Err("OhMyCine Server 搜索等待时间已用尽。".to_string()),
+            result = tokio::time::timeout(timing.idle, response.chunk()) => {
                 match result {
                     Ok(Ok(value)) => value,
                     Ok(Err(_)) => return Err("读取 OhMyCine Server 搜索流失败。".to_string()),
@@ -317,30 +401,70 @@ async fn run_sse_stream(
             }
         };
         let Some(chunk) = chunk else {
-            if !buffer.is_empty() {
-                dispatch_sse_block(&buffer, on_event)?;
-            }
-            return Ok(());
+            return decoder.finish(&mut on_event);
         };
-        total = total.saturating_add(chunk.len());
-        if total > MAX_SSE_TOTAL_BYTES {
-            return Err("OhMyCine Server 搜索流响应过大。".to_string());
-        }
-        buffer.extend_from_slice(&chunk);
-        if buffer.len() > MAX_SSE_EVENT_BYTES && find_sse_boundary(&buffer).is_none() {
-            return Err("OhMyCine Server 搜索流事件过大。".to_string());
-        }
-        while let Some((position, delimiter_length)) = find_sse_boundary(&buffer) {
-            let block = buffer[..position].to_vec();
-            buffer.drain(..position + delimiter_length);
-            if !block.is_empty() {
-                dispatch_sse_block(&block, on_event)?;
-            }
+        decoder.push(&chunk, &mut on_event)?;
+        if decoder.finished {
+            return Ok(());
         }
     }
 }
 
-fn dispatch_sse_block(block: &[u8], on_event: &Channel<ServerSseEvent>) -> Result<(), String> {
+async fn stream_cancelled(cancel_rx: &mut watch::Receiver<bool>) {
+    loop {
+        if *cancel_rx.borrow() || cancel_rx.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+#[derive(Default)]
+struct SseDecoder {
+    buffer: Vec<u8>,
+    total: usize,
+    finished: bool,
+}
+
+impl SseDecoder {
+    fn push<F>(&mut self, chunk: &[u8], on_event: &mut F) -> Result<(), String>
+    where
+        F: FnMut(ServerSseEvent) -> Result<(), String>,
+    {
+        self.total = self.total.saturating_add(chunk.len());
+        if self.total > MAX_SSE_TOTAL_BYTES {
+            return Err("OhMyCine Server 搜索流响应过大。".to_string());
+        }
+        self.buffer.extend_from_slice(chunk);
+        let mut consumed = 0;
+        while let Some((position, delimiter_length)) = find_sse_boundary(&self.buffer[consumed..]) {
+            if let Some(event) = parse_sse_block(&self.buffer[consumed..consumed + position])? {
+                self.finished = matches!(event.event.as_str(), "done" | "error");
+                on_event(event)?;
+            }
+            consumed += position + delimiter_length;
+            if self.finished {
+                break;
+            }
+        }
+        self.buffer.drain(..consumed);
+        if self.buffer.len() > MAX_SSE_EVENT_BYTES {
+            return Err("OhMyCine Server 搜索流事件过大。".to_string());
+        }
+        Ok(())
+    }
+
+    fn finish<F>(&self, on_event: &mut F) -> Result<(), String>
+    where
+        F: FnMut(ServerSseEvent) -> Result<(), String>,
+    {
+        if let Some(event) = parse_sse_block(&self.buffer)? {
+            on_event(event)?;
+        }
+        Ok(())
+    }
+}
+
+fn parse_sse_block(block: &[u8]) -> Result<Option<ServerSseEvent>, String> {
     if block.len() > MAX_SSE_EVENT_BYTES {
         return Err("OhMyCine Server 搜索流事件过大。".to_string());
     }
@@ -359,28 +483,28 @@ fn dispatch_sse_block(block: &[u8], on_event: &Channel<ServerSseEvent>) -> Resul
         event.as_str(),
         "media" | "progress" | "site" | "done" | "error"
     ) {
-        return Ok(());
+        return Ok(None);
     }
     let payload = serde_json::from_str::<Value>(&data.join("\n"))
         .map_err(|_| "OhMyCine Server 搜索流 JSON 无效。".to_string())?;
-    on_event
-        .send(ServerSseEvent {
-            event,
-            data: payload,
-        })
-        .map_err(|_| "无法向 Player 传递 Server 搜索进度。".to_string())
+    Ok(Some(ServerSseEvent {
+        event,
+        data: payload,
+    }))
 }
 
 fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     buffer
         .windows(2)
-        .position(|window| window == b"\n\n")
-        .map(|position| (position, 2))
-        .or_else(|| {
-            buffer
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|position| (position, 4))
+        .enumerate()
+        .find_map(|(position, window)| {
+            if window == b"\n\n" {
+                Some((position, 2))
+            } else if window == b"\r\n" && buffer[position..].starts_with(b"\r\n\r\n") {
+                Some((position, 4))
+            } else {
+                None
+            }
         })
 }
 
@@ -413,8 +537,15 @@ fn valid_request_id(value: &str) -> bool {
 fn allowed_discovery_stream_path(path: &str) -> bool {
     let route = path.split_once('?').map_or(path, |(value, _)| value);
     route == "/api/v1/player/discovery/torrent-search/stream"
-        || (route.starts_with("/api/v1/player/discovery/media/")
-            && route.ends_with("/torrent-search/stream"))
+        || route
+            .strip_prefix("/api/v1/player/discovery/media/")
+            .and_then(|tail| tail.strip_suffix("/torrent-search/stream"))
+            .and_then(|identity| identity.split_once('/'))
+            .is_some_and(|(media_type, id)| {
+                matches!(media_type, "movie" | "tv")
+                    && id.parse::<u64>().is_ok_and(|value| value > 0)
+                    && id.bytes().all(|value| value.is_ascii_digit())
+            })
 }
 
 fn server_url(base_url: &str, path: &str) -> Result<Url, String> {
@@ -527,6 +658,14 @@ mod tests {
         assert!(!allowed_discovery_stream_path(
             "/api/v1/users/torrent-search/stream"
         ));
+        for path in [
+            "/api/v1/player/discovery/media/movie/0/torrent-search/stream",
+            "/api/v1/player/discovery/media/movie/id/torrent-search/stream",
+            "/api/v1/player/discovery/media/person/346/torrent-search/stream",
+            "/api/v1/player/discovery/media/movie/346/extra/torrent-search/stream",
+        ] {
+            assert!(!allowed_discovery_stream_path(path));
+        }
     }
 
     #[test]
@@ -539,5 +678,322 @@ mod tests {
             find_sse_boundary(b"event: done\r\ndata: {}\r\n\r\nrest"),
             Some((21, 4))
         );
+        assert_eq!(
+            find_sse_boundary(b": heartbeat\r\n\r\nevent: done\ndata: {}\n\n"),
+            Some((11, 4))
+        );
+    }
+
+    fn stream_request(base_url: String) -> ServerJsonRequest {
+        ServerJsonRequest {
+            base_url,
+            method: "GET".to_string(),
+            path: "/api/v1/player/discovery/torrent-search/stream?progress_version=2&site_ids=1"
+                .to_string(),
+            access_token: Some(format!("omc_player_{}", "a".repeat(43))),
+            body: None,
+        }
+    }
+
+    #[test]
+    fn stream_request_rejects_unsafe_method_body_and_credentials() {
+        let mut request = stream_request("http://127.0.0.1:3000".to_string());
+        assert!(validate_stream_request(&request, "request-1").is_ok());
+        request.method = "POST".to_string();
+        assert!(validate_stream_request(&request, "request-1").is_err());
+        request.method = "GET".to_string();
+        request.body = Some(serde_json::json!({}));
+        assert!(validate_stream_request(&request, "request-1").is_err());
+        request.body = None;
+        request.access_token = Some("invalid".to_string());
+        assert!(validate_stream_request(&request, "request-1").is_err());
+        assert_eq!(SSE_TOTAL_TIMEOUT, Duration::from_secs(390));
+        assert_eq!(
+            json_request_timeout("/api/v1/player/discovery/torrent-search"),
+            Duration::from_secs(20)
+        );
+    }
+
+    #[test]
+    fn native_cancellation_can_overtake_async_stream_registration_without_leaking_ids() {
+        let mut streams = ServerStreams::default();
+        streams.cancel("early");
+        let (sender, _) = watch::channel(false);
+        assert!(!streams.register("early", sender).unwrap());
+        assert!(streams.active.is_empty());
+        let (sender, receiver) = watch::channel(false);
+        assert!(streams.register("running", sender).unwrap());
+        streams.cancel("running");
+        assert!(*receiver.borrow());
+        for index in 0..MAX_EARLY_STREAM_CANCELLATIONS + 5 {
+            streams.cancel(&format!("cancelled-{index}"));
+        }
+        assert!(streams.cancelled_before_start.len() <= MAX_EARLY_STREAM_CANCELLATIONS);
+        streams.cancelled_before_start.insert(
+            "expired".to_string(),
+            std::time::Instant::now() - SSE_TOTAL_TIMEOUT - Duration::from_secs(1),
+        );
+        let (sender, _) = watch::channel(false);
+        assert!(streams.register("expired", sender).unwrap());
+    }
+
+    #[test]
+    fn sse_decoder_ignores_heartbeats_and_unknown_events_but_rejects_invalid_json() {
+        let mut decoder = SseDecoder::default();
+        let mut events = Vec::new();
+        let mut emit = |event| {
+            events.push(event);
+            Ok(())
+        };
+        decoder
+            .push(
+                b": heartbeat\r\n\r\nevent: site\ndata: {\"items\":[]}",
+                &mut emit,
+            )
+            .unwrap();
+        decoder
+            .push(
+                b"\n\nevent: private\ndata: not-json\n\nevent: done\r\ndata: {}\r\n\r\n",
+                &mut emit,
+            )
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event, "site");
+        assert_eq!(events[1].event, "done");
+        assert!(SseDecoder::default()
+            .push(b"event: site\ndata: {bad}\n\n", &mut |_| Ok(()))
+            .unwrap_err()
+            .contains("JSON"));
+        assert!(parse_sse_block(&[0xff]).is_err());
+    }
+
+    #[test]
+    fn sse_decoder_keeps_event_and_whole_stream_limits() {
+        let mut decoder = SseDecoder::default();
+        assert!(decoder
+            .push(&vec![b'x'; MAX_SSE_EVENT_BYTES + 1], &mut |_| Ok(()))
+            .unwrap_err()
+            .contains("事件过大"));
+        let mut decoder = SseDecoder::default();
+        let chunk = b": heartbeat\n\n".repeat(4096);
+        let mut accepted = 0;
+        while accepted + chunk.len() <= MAX_SSE_TOTAL_BYTES {
+            decoder.push(&chunk, &mut |_| Ok(())).unwrap();
+            accepted += chunk.len();
+        }
+        assert!(decoder
+            .push(&chunk, &mut |_| Ok(()))
+            .unwrap_err()
+            .contains("响应过大"));
+    }
+
+    async fn local_stream(
+        headers: Option<&'static str>,
+        chunks: Vec<(Duration, &'static str)>,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).await.unwrap();
+                if count == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buffer[..count]);
+                assert!(request.len() < 8192);
+            }
+            assert!(String::from_utf8_lossy(&request).contains("progress_version=2"));
+            let _ = accepted_tx.send(());
+            if let Some(headers) = headers {
+                if stream.write_all(headers.as_bytes()).await.is_err() {
+                    return;
+                }
+                for (delay, chunk) in chunks {
+                    tokio::time::sleep(delay).await;
+                    if stream.write_all(chunk.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            // Leave the socket open so cancellation/idle/total limits can be observed.
+            std::future::pending::<()>().await;
+        });
+        (format!("http://{address}"), accepted_rx, task)
+    }
+
+    const SSE_HEADERS: &str =
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+
+    #[tokio::test]
+    async fn cancellation_interrupts_header_wait_and_body_read() {
+        for headers in [None, Some(SSE_HEADERS)] {
+            let (url, accepted, server) = local_stream(headers, vec![]).await;
+            let (cancel_tx, cancel_rx) = watch::channel(false);
+            let request = stream_request(url);
+            let reader = tokio::spawn(receive_sse_stream(
+                request,
+                cancel_rx,
+                |_| Ok(()),
+                SseTiming::default(),
+            ));
+            tokio::time::timeout(Duration::from_secs(2), accepted)
+                .await
+                .unwrap()
+                .unwrap();
+            cancel_tx.send(true).unwrap();
+            assert!(tokio::time::timeout(Duration::from_secs(1), reader)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_ok());
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn body_idle_failure_preserves_delivered_snapshot() {
+        let (url, _, server) = local_stream(
+            Some(SSE_HEADERS),
+            vec![(
+                Duration::ZERO,
+                "event: site\ndata: {\"items\":[{\"token\":\"a\"}]}\n\n",
+            )],
+        )
+        .await;
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+        let mut events = Vec::new();
+        let result = receive_sse_stream(
+            stream_request(url),
+            cancel_rx,
+            |event| {
+                events.push(event);
+                Ok(())
+            },
+            SseTiming {
+                idle: Duration::from_millis(80),
+                total: Duration::from_secs(2),
+            },
+        )
+        .await;
+        assert!(result.unwrap_err().contains("长时间没有响应"));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["items"][0]["token"], "a");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cumulative_batches_arrive_before_done_and_body_can_be_cancelled() {
+        let chunks = vec![
+            (
+                Duration::ZERO,
+                ": heartbeat\r\n\r\nevent: site\ndata: {\"items\":[{\"token\":\"a\"}]}\n\n",
+            ),
+            (
+                Duration::from_millis(10),
+                "event: site\ndata: {\"items\":[{\"token\":\"a\"},{\"token\":\"b\"}]}\n\n",
+            ),
+            (
+                Duration::from_millis(10),
+                "event: done\ndata: {\"completed\":1}\n\n",
+            ),
+        ];
+        let (url, _, server) = local_stream(Some(SSE_HEADERS), chunks).await;
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+        let mut events = Vec::new();
+        receive_sse_stream(
+            stream_request(url),
+            cancel_rx,
+            |event| {
+                events.push(event);
+                Ok(())
+            },
+            SseTiming {
+                idle: Duration::from_secs(1),
+                total: Duration::from_secs(2),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event.as_str())
+                .collect::<Vec<_>>(),
+            vec!["site", "site", "done"]
+        );
+        assert_eq!(events[0].data["items"].as_array().unwrap().len(), 1);
+        assert_eq!(events[1].data["items"].as_array().unwrap().len(), 2);
+        server.abort();
+
+        let (url, _, server) = local_stream(
+            Some(SSE_HEADERS),
+            vec![(Duration::ZERO, "event: site\ndata: {\"items\":[]}\n\n")],
+        )
+        .await;
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let mut delivered = false;
+        receive_sse_stream(
+            stream_request(url),
+            cancel_rx,
+            |_| {
+                delivered = true;
+                cancel_tx.send(true).unwrap();
+                Ok(())
+            },
+            SseTiming::default(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            delivered,
+            "Cancel was issued only after the body delivered an event"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn total_deadline_applies_to_headers_and_heartbeat_streams() {
+        for headers in [None, Some(SSE_HEADERS)] {
+            let chunks = (0..30)
+                .map(|_| (Duration::from_millis(10), ": heartbeat\n\n"))
+                .collect();
+            let (url, _, server) = local_stream(headers, chunks).await;
+            let (_cancel_tx, cancel_rx) = watch::channel(false);
+            let result = receive_sse_stream(
+                stream_request(url),
+                cancel_rx,
+                |_| Ok(()),
+                SseTiming {
+                    idle: Duration::from_secs(1),
+                    total: Duration::from_millis(90),
+                },
+            )
+            .await;
+            assert!(result.unwrap_err().contains("等待时间已用尽"));
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_rejects_redirect_and_non_sse_response() {
+        for headers in [
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/private\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+        ] {
+            let (url, _, server) = local_stream(Some(headers), vec![]).await;
+            let (_cancel_tx, cancel_rx) = watch::channel(false);
+            let result = receive_sse_stream(stream_request(url), cancel_rx, |_| Ok(()), SseTiming::default()).await;
+            assert!(result.is_err());
+            server.abort();
+        }
     }
 }

@@ -284,6 +284,8 @@ export class ServerDataSource implements DataSource {
   private readonly bridge: ServerBridge
   private readonly readCredential: (ref: string) => Promise<ServerCredentialValue | null>
   private mediaChangeWatchGeneration = 0
+  private discoveryStreamGeneration = 0
+  private readonly discoveryStreamCancellations = new Map<string, () => Promise<void>>()
 
   constructor(options: { bridge?: ServerBridge, readCredential?: (ref: string) => Promise<ServerCredentialValue | null> } = {}) {
     this.bridge = options.bridge ?? defaultServerBridge
@@ -343,6 +345,7 @@ export class ServerDataSource implements DataSource {
   }
 
   async init(config: DataSourceConfig): Promise<void> {
+    this.cancelDiscoveryStreams()
     this.historyAccountId = null
     this.historyAccountRequest = null
     this.onlineDownloadLibraries.clear()
@@ -436,24 +439,56 @@ export class ServerDataSource implements DataSource {
       throw new Error('Server 流式资源搜索路径无效。')
     if (!this.bridge.stream || !this.bridge.cancelStream)
       throw new Error('当前 Player 环境不支持 Server 流式搜索。')
-    const credential = await this.ensureCredential()
+    const generation = this.discoveryStreamGeneration
+    const baseUrl = this.baseUrl
+    // Do not let a credential read that outlives destroy()/init() resurrect an old stream.
+    const credential = this.credential ?? (this.credentialRef ? await this.readCredential(this.credentialRef) : null)
+    if (generation !== this.discoveryStreamGeneration)
+      throw new Error('Server 来源已切换，搜索已取消。')
+    if (!credential)
+      throw new Error('OhMyCine Server 登录凭据不存在，请重新连接。')
     const requestId = crypto.randomUUID()
-    const request: ServerNativeRequest = { baseUrl: this.baseUrl, method: 'GET', path, accessToken: credential.accessToken }
-    const done = this.bridge.stream(request, requestId, onEvent).catch((error) => {
-      throw new Error(redactSensitiveText(error))
-    })
-    return {
-      requestId,
-      done,
-      cancel: async () => {
+    const request: ServerNativeRequest = { baseUrl, method: 'GET', path, accessToken: credential.accessToken }
+    let cancelled = false
+    let started = false
+    const cancel = async () => {
+      if (cancelled)
+        return
+      cancelled = true
+      this.discoveryStreamCancellations.delete(requestId)
+      if (started) {
         try {
           await this.bridge.cancelStream?.(requestId)
         }
         catch {
           // Cancellation is best effort; search generations still reject late events.
         }
-      },
+      }
     }
+    this.discoveryStreamCancellations.set(requestId, cancel)
+    const done = Promise.resolve().then(async () => {
+      if (cancelled || generation !== this.discoveryStreamGeneration)
+        return
+      started = true
+      await this.bridge.stream?.(request, requestId, (event) => {
+        if (!cancelled && generation === this.discoveryStreamGeneration)
+          onEvent(event)
+      })
+    }).catch((error) => {
+      if (!cancelled && generation === this.discoveryStreamGeneration)
+        throw new Error(redactSensitiveText(error))
+    }).finally(() => {
+      this.discoveryStreamCancellations.delete(requestId)
+    })
+    void done.catch(() => {})
+    return { requestId, done, cancel }
+  }
+
+  private cancelDiscoveryStreams(): void {
+    this.discoveryStreamGeneration++
+    for (const cancel of this.discoveryStreamCancellations.values())
+      void cancel()
+    this.discoveryStreamCancellations.clear()
   }
 
   async getDiscoveryDownloadOptions(): Promise<{ downloaders: unknown, libraries: unknown, profiles: unknown }> {
@@ -493,6 +528,7 @@ export class ServerDataSource implements DataSource {
   }
 
   destroy(): void {
+    this.cancelDiscoveryStreams()
     unregisterServerArtworkSource(this.id, this.credential?.accessToken)
     this.mediaChangeWatchGeneration += 1
     this.credential = null

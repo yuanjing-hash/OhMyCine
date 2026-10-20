@@ -53,6 +53,13 @@ export interface ServerResourceGroup {
   hasNext: boolean
   skipped: number
   items: ServerResourceItem[]
+  complete?: boolean
+  revision?: number
+  partial?: boolean
+  incompleteReason?: string
+  queriesCompleted?: number
+  queriesFailed?: number
+  queriesTotal?: number
 }
 export interface ServerDownloadOption { id: string, name: string, type?: string }
 export interface ServerLibraryOption { id: number, name: string }
@@ -133,6 +140,23 @@ export interface ServerSearchProgress {
   siteName?: string
   siteStatus?: string
   errorCode?: string
+  siteDetail?: ServerSearchSiteDetail
+  phase?: ServerSearchPhase
+  eventSequence?: number
+}
+export type ServerSearchPhase = 'preparing_media' | 'queued' | 'preparing_site' | 'restoring_session' | 'checking_session' | 'waiting_rate_limit' | 'querying' | 'processing_results' | 'finished' | 'unknown'
+export interface ServerSearchSiteDetail {
+  siteId: number
+  siteName: string
+  phase: ServerSearchPhase
+  queryName?: string
+  queryIndex?: number
+  queriesCompleted?: number
+  queriesFailed?: number
+  queriesTotal?: number
+  resultCount?: number
+  elapsedMs?: number
+  revision?: number
 }
 export type ServerResourceStreamEvent
   = | { type: 'progress', progress: ServerSearchProgress }
@@ -336,6 +360,8 @@ export async function streamServerResources(source: ServerDataSource, input: Ser
 
 function resourceSearchPath(input: ServerResourceSearchInput, stream: boolean): string {
   const params = new URLSearchParams({ page: String(input.page ?? 1) })
+  if (stream)
+    params.set('progress_version', '2')
   for (const id of input.siteIds)
     params.append('site_ids', String(id))
   let path: string
@@ -397,9 +423,11 @@ function parseGroup(value: unknown): ServerResourceGroup | null {
   const item = record(value)
   const siteId = number(item.site_id)
   const siteName = text(item.site_name)
-  if (!siteId || !siteName)
+  const invalidSnapshot = ['complete', 'partial'].some(key => item[key] !== undefined && typeof item[key] !== 'boolean')
+    || ['revision', 'queries_completed', 'queries_failed', 'queries_total'].some(key => item[key] !== undefined && nonnegativeInteger(item[key]) == null)
+  if (!siteId || !Number.isSafeInteger(siteId) || siteId < 1 || !siteName || invalidSnapshot)
     return null
-  return { siteId, siteName, siteType: text(item.site_type) ?? '', status: text(item.status) ?? 'error', errorCode: text(item.error_code), page: number(item.page) ?? 1, hasNext: item.has_next === true, skipped: number(item.skipped) ?? 0, items: array(item.items).flatMap((raw): ServerResourceItem[] => {
+  return { siteId, siteName, siteType: text(item.site_type) ?? '', status: text(item.status) ?? 'error', errorCode: text(item.error_code), page: number(item.page) ?? 1, hasNext: item.has_next === true, skipped: number(item.skipped) ?? 0, complete: optionalBoolean(item.complete), revision: nonnegativeInteger(item.revision), partial: optionalBoolean(item.partial), incompleteReason: text(item.incomplete_reason), queriesCompleted: nonnegativeInteger(item.queries_completed), queriesFailed: nonnegativeInteger(item.queries_failed), queriesTotal: nonnegativeInteger(item.queries_total), items: array(item.items).flatMap((raw): ServerResourceItem[] => {
     const result = record(raw)
     const token = text(result.token)
     const title = text(result.title)
@@ -445,7 +473,44 @@ function parseProgress(value: Record<string, unknown>): ServerSearchProgress {
     siteName: text(value.site_name),
     siteStatus: text(value.site_status),
     errorCode: text(value.error_code),
+    siteDetail: parseSiteDetail(value.site_detail),
+    phase: text(value.phase) ? parseSearchPhase(value.phase) : undefined,
+    eventSequence: nonnegativeInteger(value.event_sequence),
   }
+}
+
+function parseSiteDetail(value: unknown): ServerSearchSiteDetail | undefined {
+  const item = record(value)
+  const siteId = nonnegativeInteger(item.site_id)
+  const siteName = text(item.site_name)?.slice(0, 256)
+  if (!siteId || !siteName)
+    return undefined
+  return {
+    siteId,
+    siteName,
+    phase: parseSearchPhase(item.phase),
+    queryName: text(item.query_name)?.slice(0, 512),
+    queryIndex: nonnegativeInteger(item.query_index),
+    queriesCompleted: nonnegativeInteger(item.queries_completed),
+    queriesFailed: nonnegativeInteger(item.queries_failed),
+    queriesTotal: nonnegativeInteger(item.queries_total),
+    resultCount: nonnegativeInteger(item.result_count),
+    elapsedMs: nonnegativeInteger(item.elapsed_ms),
+    revision: nonnegativeInteger(item.revision),
+  }
+}
+
+function parseSearchPhase(value: unknown): ServerSearchPhase {
+  const phases: ServerSearchPhase[] = ['preparing_media', 'queued', 'preparing_site', 'restoring_session', 'checking_session', 'waiting_rate_limit', 'querying', 'processing_results', 'finished']
+  return typeof value === 'string' && phases.includes(value as ServerSearchPhase) ? value as ServerSearchPhase : 'unknown'
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function nonnegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
 function record(value: unknown): Record<string, unknown> {
