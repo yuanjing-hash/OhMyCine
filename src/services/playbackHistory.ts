@@ -1,8 +1,11 @@
 import type { DataSourceConfig, MediaItem } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
 import { redactSensitiveText } from '@/services/datasource/errors'
+import { createServerWorkItemId, parseServerHistoryIdentity, parseServerWorkItemIdentity } from '@/services/datasource/serverIdentity'
+import { createOnlineWorkID, parseOnlineItemID } from '@/services/datasource/serverOnline'
 
 export type PlaybackProgressSource = 'local' | 'server'
+export type PlaybackHistoryStatus = 'all' | 'inProgress' | 'watched'
 export const PLAYED_STATE_CHANGED_EVENT = 'ohmycine:played-state-changed'
 
 export interface PlaybackProgressIdentity {
@@ -14,6 +17,7 @@ export interface PlaybackProgressIdentity {
 export interface PlaybackProgressUpsert extends PlaybackProgressIdentity {
   libraryId?: string
   itemId?: string
+  seriesId?: string
   title: string
   streamIdentity?: string
   mediaType?: MediaItem['type']
@@ -30,6 +34,7 @@ export interface PlaybackProgressUpsert extends PlaybackProgressIdentity {
 export interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
   libraryId?: string | null
   itemId?: string | null
+  seriesId?: string | null
   title: string
   streamIdentity?: string | null
   mediaType?: MediaItem['type'] | null
@@ -55,9 +60,15 @@ export interface PlaybackHistoryPage {
   hasMore: boolean
 }
 
+export interface PlaybackHistorySnapshot {
+  entries: PlaybackHistoryEntry[]
+  revision: number | null
+}
+
 const RESUME_MIN_POSITION = 30
 const COMPLETED_REMAINING_SECONDS = 90
 const COMPLETED_PROGRESS_RATIO = 0.92
+const COMPLETED_TAIL_MIN_RATIO = 0.90
 const SENSITIVE_URL_PATTERN = /[?&](?:api_key|apikey|access_key|accesskeyid|access_token|token|x-emby-token|expires|x-amz-expires|signature|sig|sign|password|passwd|pwd|security-token|x-amz-signature|x-amz-credential|x-amz-security-token|ossaccesskeyid|awsaccesskeyid)=/i
 let resolveOwnerScope: ((sourceId: string) => Promise<string | null>) | undefined
 let mutationEpoch = 0
@@ -130,14 +141,35 @@ export async function listLocalContinueWatching(limit = 20, excludedSourceIds: r
   }
 }
 
-export async function listPlaybackHistoryPage(page = 1, pageSize = 24, excludedSourceIds: readonly string[] = []): Promise<PlaybackHistoryPage> {
+export async function listPlaybackHistoryPage(page = 1, pageSize = 24, excludedSourceIds: readonly string[] = [], status: PlaybackHistoryStatus = 'all'): Promise<PlaybackHistoryPage> {
   const safePage = Number.isInteger(page) ? Math.max(1, Math.min(100_000, page)) : 1
   const safePageSize = Number.isInteger(pageSize) ? Math.max(1, Math.min(100, pageSize)) : 24
   try {
-    return await invoke<PlaybackHistoryPage>('player_list_playback_history', { page: safePage, pageSize: safePageSize, excludedSourceIds })
+    return await invoke<PlaybackHistoryPage>('player_list_playback_history', { page: safePage, pageSize: safePageSize, excludedSourceIds, status })
   }
   catch {
     return { list: [], total: 0, page: safePage, pageSize: safePageSize, hasMore: false }
+  }
+}
+
+/** One SQLite snapshot, including terminal facts needed to suppress stale provider resume rows. */
+export async function listPlaybackHistorySnapshot(excludedSourceIds: readonly string[] = []): Promise<PlaybackHistorySnapshot> {
+  try {
+    return await invoke<PlaybackHistorySnapshot>('player_list_playback_history_snapshot', { excludedSourceIds })
+  }
+  catch {
+    return { entries: [], revision: null }
+  }
+}
+
+export async function isPlaybackHistorySnapshotCurrent(snapshot: PlaybackHistorySnapshot): Promise<boolean> {
+  if (snapshot.revision === null)
+    return true
+  try {
+    return snapshot.revision === await invoke<number>('player_get_playback_history_revision')
+  }
+  catch {
+    return false
   }
 }
 
@@ -267,7 +299,26 @@ export function isCompletedPosition(position: number, duration: number | undefin
   if (!Number.isFinite(position) || position < 0 || !duration || !Number.isFinite(duration) || duration <= RESUME_MIN_POSITION)
     return false
 
-  return position >= duration * COMPLETED_PROGRESS_RATIO || duration - position <= COMPLETED_REMAINING_SECONDS
+  return position >= duration * COMPLETED_PROGRESS_RATIO
+    || (position >= duration * COMPLETED_TAIL_MIN_RATIO && duration - position <= COMPLETED_REMAINING_SECONDS)
+}
+
+export function playbackSeriesId(item: Pick<MediaItem, 'type' | 'seriesId' | 'historyIdentity' | 'id'>): string | undefined {
+  if (item.type !== 'episode')
+    return undefined
+  if (item.seriesId)
+    return item.seriesId
+  for (const value of [item.historyIdentity, item.id]) {
+    if (!value)
+      continue
+    const online = parseOnlineItemID(value)
+    if (online?.kind === 'version')
+      return createOnlineWorkID(online.libraryId, online.workId)
+    const physical = parseServerHistoryIdentity(value) ?? parseServerWorkItemIdentity(value)
+    if (physical)
+      return createServerWorkItemId(physical)
+  }
+  return undefined
 }
 
 export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaItem {
@@ -281,6 +332,7 @@ export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaI
     backdropUrl: safeArtworkUrl(entry.backdropUrl),
     titleLogoUrl: safeArtworkUrl(entry.titleLogoUrl),
     historyIdentity: entry.mediaIdentity,
+    seriesId: playbackSeriesId({ type: entry.mediaType ?? 'file', id: entry.itemId ?? entry.mediaIdentity, historyIdentity: entry.mediaIdentity, seriesId: entry.seriesId ?? undefined }),
     displaySubtitle: nonEmpty(entry.displaySubtitle),
     episodeStillUrl: safeArtworkUrl(entry.episodeStillUrl),
     cardLayout: entry.mediaType === 'episode' ? 'poster' : undefined,
@@ -291,6 +343,7 @@ export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaI
     played: entry.completed,
     progressSource: entry.progressSource === 'local' ? 'local' : undefined,
     modified: new Date(entry.updatedAt).toISOString(),
+    lastPlayedAt: new Date(entry.updatedAt).toISOString(),
   }
 }
 
@@ -316,6 +369,7 @@ function sanitizeProgressInput(input: PlaybackProgressUpsert): PlaybackProgressU
     sourceId: input.sourceId.trim(),
     libraryId: nonEmpty(input.libraryId),
     itemId: nonEmpty(input.itemId),
+    seriesId: nonEmpty(input.seriesId),
     mediaIdentity: sanitizeMediaIdentity(input.mediaIdentity),
     ownerScope: input.ownerScope == null ? input.ownerScope : /^[a-f0-9]{64}$/.test(input.ownerScope) ? input.ownerScope : undefined,
     title: nonEmpty(input.title) ?? '未命名影片',

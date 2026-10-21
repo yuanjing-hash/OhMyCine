@@ -23,6 +23,9 @@ const mediaSourceId = 'integration-media-source'
 const playSessionId = 'integration-play-session'
 const credentialRef = 'datasource:integration-emby:emby-credential'
 const requests: RecordedRequest[] = []
+let markedPlayed = false
+let watchedFailuresRemaining = 0
+let includePlaySession = true
 
 const server = createServer(async (request, response) => {
   const chunks: Buffer[] = []
@@ -52,6 +55,7 @@ const server = createServer(async (request, response) => {
       Name: 'Integration Movie',
       Type: 'Movie',
       RunTimeTicks: 3_600 * 10_000_000,
+      UserData: { Played: markedPlayed },
       MediaSources: [{
         Id: mediaSourceId,
         Protocol: 'Http',
@@ -63,7 +67,7 @@ const server = createServer(async (request, response) => {
   }
   if (request.method === 'POST' && url.pathname === `/Items/${itemId}/PlaybackInfo`) {
     response.end(JSON.stringify({
-      PlaySessionId: playSessionId,
+      PlaySessionId: includePlaySession ? playSessionId : undefined,
       MediaSources: [{
         Id: mediaSourceId,
         Protocol: 'Http',
@@ -88,6 +92,18 @@ const server = createServer(async (request, response) => {
     '/Sessions/Playing/Progress',
     '/Sessions/Playing/Stopped',
   ].includes(url.pathname)) {
+    response.statusCode = 204
+    response.end()
+    return
+  }
+  if (request.method === 'POST' && url.pathname === `/Users/${userId}/PlayedItems/${itemId}`) {
+    if (watchedFailuresRemaining > 0) {
+      watchedFailuresRemaining--
+      response.statusCode = 500
+      response.end(JSON.stringify({ error: 'watched update unavailable' }))
+      return
+    }
+    markedPlayed = true
     response.statusCode = 204
     response.end()
     return
@@ -186,6 +202,46 @@ try {
   assert.equal(streamRequest?.range, 'bytes=0-0')
   assert.equal(source.getPlaybackSyncDiagnostics().some(item => item.event === 'stopped' && item.ok), true)
 
+  const watchedEndpoint = `/Users/${userId}/PlayedItems/${itemId}`
+  const watchedProgress = (position: number): ProviderPlaybackProgressInput => ({
+    itemId, mediaSourceId, mediaType: 'movie', duration: 3_600, startPosition: 123,
+    completed: true, event: 'progress', isPaused: false, playbackRate: 1.25, position,
+  })
+  await sync({ event: 'started', position: 123, isPaused: false })
+  assert.equal((await source.getDetail(itemId)).played, false)
+  const beforeWatched = requests.length
+  await Promise.all([source.syncPlaybackProgress(watchedProgress(3_340)), source.syncPlaybackProgress(watchedProgress(3_350))])
+  const watchedRequests = requests.slice(beforeWatched)
+  assert.equal(watchedRequests.filter(request => request.path === watchedEndpoint).length, 1)
+  assert.equal(watchedRequests.some(request => request.path.endsWith('/Stopped')), false)
+  for (const request of watchedRequests.filter(request => request.path === '/Sessions/Playing/Progress')) {
+    assert.equal(request.body?.PlaySessionId, playSessionId)
+    assert.equal(request.body?.EventName, 'TimeUpdate')
+    assert.equal(request.body?.IsPaused, false)
+  }
+  assert.equal((await source.getDetail(itemId)).played, true, 'successful watched mutation must invalidate cached detail')
+  await source.syncPlaybackProgress(watchedProgress(3_360))
+  assert.equal(requests.slice(beforeWatched).filter(request => request.path === watchedEndpoint).length, 1)
+  await source.syncPlaybackProgress({ ...watchedProgress(3_600), event: 'completed', isPaused: true })
+  assert.equal(requests.slice(beforeWatched).filter(request => request.path.endsWith('/Stopped')).length, 1)
+
+  await sync({ event: 'started', position: 123, isPaused: false })
+  watchedFailuresRemaining = 1
+  await assert.rejects(source.syncPlaybackProgress(watchedProgress(3_340)))
+  const beforeRetry = requests.filter(request => request.path === watchedEndpoint).length
+  await source.syncPlaybackProgress(watchedProgress(3_350))
+  assert.equal(requests.filter(request => request.path === watchedEndpoint).length, beforeRetry + 1)
+  await source.syncPlaybackProgress({ ...watchedProgress(3_600), event: 'completed', isPaused: true })
+
+  includePlaySession = false
+  const missingSessionSource = new EmbyDataSource()
+  await missingSessionSource.init(config)
+  const beforeMissingSession = requests.length
+  await missingSessionSource.syncPlaybackProgress(watchedProgress(3_340))
+  assert.equal(requests.slice(beforeMissingSession).some(request => request.path.startsWith('/Sessions/Playing')), false)
+  assert.equal(requests.slice(beforeMissingSession).filter(request => request.path === watchedEndpoint).length, 1)
+  missingSessionSource.destroy()
+
   console.log(JSON.stringify({
     systemProbe: true,
     playbackInfoNegotiated: true,
@@ -196,6 +252,11 @@ try {
     pauseResumeReported: true,
     periodicProgressReported: true,
     stoppedReported: true,
+    watchedProgressRetainsSession: true,
+    watchedMutationDeduplicated: true,
+    watchedMutationInvalidatesDetail: true,
+    watchedMutationRetriesAfterFailure: true,
+    missingSessionStillMarksWatched: true,
     secondsConvertedToTicks: true,
     clientVersion: playerPackage.version,
   }, null, 2))

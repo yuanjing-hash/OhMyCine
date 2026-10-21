@@ -13,10 +13,11 @@ import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { describeMediaSource, hasMeaningfulMediaSource } from '@/services/datasource/mediaSourceDisplay'
 import { toOfflineMediaDetail } from '@/services/datasource/offline'
 import { getOfflineDetail } from '@/services/downloads'
+import { listSeriesEpisodes, resolveEpisodePlaybackQueue } from '@/services/episodePlayback'
 import { artworkURLCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, getMediaActionController, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
-import { areAllKnownPlayableChildrenCompleted, getPlaybackProgress, playbackCompletionKey, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
+import { areAllKnownPlayableChildrenCompleted, getPlaybackProgress, isCompletedPosition, playbackCompletionKey, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
@@ -796,11 +797,11 @@ function hasResumeProgress(item: MediaItem, entry = localResumeEntry(item)): boo
   if (shouldResumePlayback(entry))
     return true
 
-  return isResumePosition(item.resumePosition, item.duration)
+  return isResumePosition(item.resumePosition, item.duration, item.played)
 }
 
 function resumePositionForItem(item: MediaItem): number | undefined {
-  if (isResumePosition(item.resumePosition, item.duration))
+  if (isResumePosition(item.resumePosition, item.duration, item.played))
     return item.resumePosition
 
   const entry = localResumeEntry(item)
@@ -810,12 +811,10 @@ function resumePositionForItem(item: MediaItem): number | undefined {
   return undefined
 }
 
-function isResumePosition(position: number | undefined, duration: number | undefined): position is number {
+function isResumePosition(position: number | undefined, duration: number | undefined, played?: boolean): position is number {
   if (typeof position !== 'number' || !Number.isFinite(position) || position < 30)
     return false
-  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0)
-    return true
-  return position < duration * 0.92 && duration - position > 90
+  return played === false || (played !== true && !isCompletedPosition(position, duration))
 }
 
 function episodeActionLabel(item: MediaItem): string {
@@ -824,7 +823,7 @@ function episodeActionLabel(item: MediaItem): string {
 
 function episodeProgressStyle(item: MediaItem): Record<string, string> {
   const entry = localResumeEntry(item)
-  const progress = isResumePosition(item.resumePosition, item.duration)
+  const progress = isResumePosition(item.resumePosition, item.duration, item.played)
     ? item.progress
     : shouldResumePlayback(entry)
       ? entry.progress
@@ -856,15 +855,20 @@ async function playItem(item?: MediaItem) {
       : selectedRoute?.providerMediaSourceId ?? (selectedRoute?.id.startsWith('alternate-') ? undefined : selectedRoute?.id)
     store.loadConfigs()
     await store.syncManager()
-    if (!store.getSource(playbackSourceId))
+    const source = store.getSource(playbackSourceId)
+    if (!source)
       throw new Error('所选播放线路不可用，请检查对应数据源。')
     const isCurrentDetail = target.id === detail.value?.id
-    const queue = (item ? createPlaybackQueue(episodes.value, item.id) : undefined) ?? recoverRoutePlaybackQueue(target.id)
+    const seriesId = target.seriesId ?? (isSeriesDetail.value ? detail.value?.id : undefined)
+    const currentItem = { ...target, seriesId }
+    const queue = seriesId && target.type === 'episode'
+      ? createPlaybackQueue(await listSeriesEpisodes(source, seriesId, currentItem).catch(() => []), target.id)
+      : (await resolveEpisodePlaybackQueue(source, currentItem)) ?? recoverRoutePlaybackQueue(target.id)
     const playbackContextId = savePlaybackMediaContext({
       sourceId: playbackSourceId,
       itemId: playbackItemId,
       title: target.name,
-      currentItem: { ...target, id: playbackItemId, sourceId: playbackSourceId, resumePosition: resumePositionForItem(target) },
+      currentItem: { ...currentItem, id: playbackItemId, sourceId: playbackSourceId, resumePosition: resumePositionForItem(target) },
       mediaSourceId: playbackMediaSourceId,
       locator: {
         kind: 'dataSource',

@@ -9,6 +9,7 @@ import { getServerAcquisition, getServerDiscoveryDetail } from '@/services/serve
 import { createCredentialRef, readServerCredential, saveServerCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
 import { playbackTargetsForItem } from './identityMerge'
+import { parseServerHistoryIdentity } from './serverIdentity'
 import {
   createOnlineVersionID,
   onlineContributionErrorToHomeSection,
@@ -1061,10 +1062,11 @@ export class ServerDataSource implements DataSource {
         segmentId: context.segmentId,
         versionId: context.versionId,
         event: progress.event,
+        completed: progress.completed === true,
         positionSeconds: Math.max(0, progress.position),
         ...(progress.duration != null ? { durationSeconds: Math.max(0, progress.duration) } : {}),
         idempotencyKey: crypto.randomUUID(),
-        occurredAt: new Date().toISOString(),
+        occurredAt: progress.occurredAt ?? new Date().toISOString(),
       },
     )
   }
@@ -1322,6 +1324,7 @@ export class ServerDataSource implements DataSource {
       seasonNumber: version.season,
       episodeNumber: version.episode,
       seriesName: item.kind === 'series' ? version.series_title ?? item.title : undefined,
+      seriesId: isEpisode ? item.item_token : undefined,
       historyIdentity: version.history_identity,
       workIdentity: mapIdentity(item.work_identity),
       exactIdentity: version.exact_identity,
@@ -2062,7 +2065,7 @@ function optionalIDString(value: unknown): string | undefined {
 
 function optionalHistoryIdentity(value: unknown): string | undefined {
   const candidate = optionalString(value)
-  return candidate && (/^server:v1:(?:movie|episode):\S{1,1024}$/.test(candidate) || parseOnlineItemID(candidate)?.kind === 'version') ? candidate : undefined
+  return candidate && (parseServerHistoryIdentity(candidate) || parseOnlineItemID(candidate)?.kind === 'version') ? candidate : undefined
 }
 
 function boundedNumber(value: unknown, minimum: number, maximum: number): number | undefined {
@@ -2217,6 +2220,7 @@ export function mapServerHistoryItem(sourceId: string, value: unknown, baseUrl: 
     episodeNumber,
     cardLayout: type === 'episode' ? 'poster' : undefined,
     modified: new Date(updatedAt).toISOString(),
+    lastPlayedAt: new Date(updatedAt).toISOString(),
   }]
 }
 

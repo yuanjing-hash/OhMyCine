@@ -19,6 +19,8 @@ export interface MediaItem {
   duration?: number
   size?: number
   modified?: string
+  /** Actual playback/history occurrence time; never catalog creation or modification time. */
+  lastPlayedAt?: string
   /** Owning catalog's first admission time; independent from source modification or release year. */
   addedAt?: string
   path: string
@@ -346,6 +348,8 @@ export interface ProviderPlaybackProgressInput {
   isPaused: boolean
   completed: boolean
   event: ProviderPlaybackProgressEvent
+  /** Snapshot occurrence time retained across asynchronous local history persistence. */
+  occurredAt?: string
   playbackRate?: number
 }
 

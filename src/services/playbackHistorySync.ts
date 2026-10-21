@@ -1,5 +1,5 @@
 import type { ServerPlaybackHistoryChange, ServerPlaybackHistorySyncResponse } from '@/services/datasource/server'
-import type { DataSourceConfig } from '@/services/datasource/types'
+import type { DataSourceConfig, MediaItem } from '@/services/datasource/types'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { useDataSourceStore } from '@/stores/datasource'
 import { invoke } from '@tauri-apps/api/core'
@@ -8,8 +8,9 @@ import { setAppSetting } from '@/services/appSettings'
 import { readServerCredential } from '@/services/datasource/credentialStore'
 import { redactSensitiveText } from '@/services/datasource/errors'
 import { mapServerHistoryItem, ServerDataSource, ServerRequestError } from '@/services/datasource/server'
+import { createServerWorkItemId, parseServerHistoryIdentity } from '@/services/datasource/serverIdentity'
 import { parseOnlineItemID } from '@/services/datasource/serverOnline'
-import { configurePlaybackHistoryScopeResolver, invalidatePendingPlaybackHistoryMutations, listPlaybackHistorySyncPage, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
+import { configurePlaybackHistoryScopeResolver, invalidatePendingPlaybackHistoryMutations, listPlaybackHistorySyncPage, playbackSeriesId, PLAYED_STATE_CHANGED_EVENT } from '@/services/playbackHistory'
 
 type DataSourceStore = ReturnType<typeof useDataSourceStore>
 interface HistorySyncState { cursor: number, generation: number }
@@ -415,6 +416,7 @@ export function mapServerHistoryChangeToLocalEntry(change: ServerPlaybackHistory
     return []
   }
   const presentation = config.type === 'server' ? mapServerHistoryItem(config.id, change, config.url)[0] : undefined
+  const mediaType = presentation?.type ?? (['movie', 'series', 'season', 'episode', 'folder', 'file'].includes(change.media_type ?? '') ? change.media_type as MediaItem['type'] : 'file')
   return [{
     sourceId: config.id,
     ownerScope: config.type === 'server' ? scope : providerScopes?.get(config.id),
@@ -423,7 +425,8 @@ export function mapServerHistoryChangeToLocalEntry(change: ServerPlaybackHistory
     mediaIdentity: config.type === 'server' ? change.history_identity! : change.media_identity,
     title: presentation?.name ?? change.display_title ?? change.series_title ?? change.title,
     streamIdentity: change.stream_identity,
-    mediaType: presentation?.type ?? change.media_type,
+    mediaType,
+    seriesId: playbackSeriesId({ type: mediaType, id: presentation?.id ?? change.item_token ?? change.item_id ?? change.media_identity, historyIdentity: change.history_identity, seriesId: presentation?.seriesId }),
     posterUrl: presentation?.posterUrl ?? change.poster_url,
     backdropUrl: presentation?.backdropUrl ?? change.backdrop_url,
     titleLogoUrl: presentation?.titleLogoUrl ?? change.title_logo_url,
@@ -467,12 +470,12 @@ async function saveSyncDiagnostic(sourceId: string, value: { ok: boolean, cursor
 }
 
 function isServerHistoryIdentity(value: string): boolean {
-  return parseOnlineItemID(value)?.kind === 'version' || /^server:v1:(?:movie|episode):\S{1,1024}$/.test(value)
+  return parseOnlineItemID(value)?.kind === 'version' || parseServerHistoryIdentity(value) !== null
 }
 
 function canonicalMovieWorkToken(identity: string): string | undefined {
-  const match = /^server:v1:movie:([1-9]\d*):([\w-]{1,512})$/.exec(identity)
-  return match ? `work|${match[1]}|${match[2]}` : undefined
+  const parsed = parseServerHistoryIdentity(identity)
+  return parsed?.kind === 'movie' ? createServerWorkItemId(parsed) : undefined
 }
 
 function safeEndpoint(value: string): string | undefined {

@@ -1,6 +1,7 @@
 import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleCacheOwner, SubtitleProvider } from './types'
 import type { SubtitleSearchResult } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
+import { subtitleKeywordUsesMediaIdentity } from './mediaContext'
 import { readOpenSubtitlesCredentials } from './settings'
 
 interface OpenSubtitlesSearchResponse {
@@ -34,16 +35,17 @@ export class OpenSubtitlesProvider implements SubtitleProvider {
 
   async search(input: LocalSubtitleSearchInput): Promise<SubtitleSearchResult[]> {
     const credential = await requiredCredential()
+    const useMediaIdentity = subtitleKeywordUsesMediaIdentity(input.keywordMode)
     const payload = await invoke<OpenSubtitlesSearchResponse>('subtitle_search_opensubtitles', {
       request: {
         ...credential,
         language: toOpenSubtitlesLanguage(input.language),
         query: input.title,
-        imdbId: input.imdbId,
-        tmdbId: input.tmdbId,
-        year: input.year,
-        seasonNumber: input.seasonNumber,
-        episodeNumber: input.episodeNumber,
+        imdbId: useMediaIdentity ? input.imdbId : undefined,
+        tmdbId: useMediaIdentity ? input.tmdbId : undefined,
+        year: useMediaIdentity ? input.year : undefined,
+        seasonNumber: useMediaIdentity ? input.seasonNumber : undefined,
+        episodeNumber: useMediaIdentity ? input.episodeNumber : undefined,
         mediaType: input.mediaType,
       },
     })

@@ -1,3 +1,4 @@
+import type { LocalSubtitleDownloadResult } from '@/services/subtitle/types'
 import type { MpvColorDiagnostics, VideoDynamicRangeState } from '@/services/videoColor'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -268,6 +269,14 @@ function mergeSubtitleTracks(embeddedTracks: readonly SubtitleTrackOption[], kno
   return [...embeddedTracks, ...uniqueKnown]
 }
 
+function downloadedSubtitleKey(path: string): string {
+  // Windows may return a canonical long path while the saved preference still uses
+  // the same normal absolute path. Other platforms keep case-sensitive identity.
+  if (/^(?:[a-z]:[\\/]|\\\\)/i.test(path))
+    return path.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '').replace(/\//g, '\\').toLowerCase()
+  return path
+}
+
 export function useMpv() {
   const isPlaying = ref(false)
   const currentTime = ref(0)
@@ -284,7 +293,13 @@ export function useMpv() {
   const subtitleDelay = ref(DEFAULT_SUBTITLE_DELAY)
   const embeddedSubtitleTracks = ref<SubtitleTrackOption[]>([])
   const knownSubtitleTracks = ref<SubtitleTrackOption[]>([])
-  const subtitleTracks = computed(() => mergeSubtitleTracks(embeddedSubtitleTracks.value, knownSubtitleTracks.value))
+  const downloadedSubtitleTracks = ref<SubtitleTrackOption[]>([])
+  const sessionExternalSubtitleTracks = ref<SubtitleTrackOption[]>([])
+  const subtitleTracks = computed(() => mergeSubtitleTracks(embeddedSubtitleTracks.value, [
+    ...downloadedSubtitleTracks.value,
+    ...knownSubtitleTracks.value,
+    ...sessionExternalSubtitleTracks.value,
+  ]))
   const audioTracks = ref<Track[]>([])
   const currentSubtitle = ref<SubtitleSelectionId | null>(null)
   const selectedKnownSubtitle = ref<SubtitleSelectionId | null>(null)
@@ -419,9 +434,10 @@ export function useMpv() {
   }
 
   async function readPlaybackDiagnostics(generation: number, colorGeneration: number) {
+    const loadWasPending = mediaLoadPending
     try {
       const diagnostics = await invoke<MpvPlaybackDiagnostics>('mpv_playback_diagnostics')
-      if (disposed || generation !== playbackGeneration)
+      if (disposed || generation !== playbackGeneration || loadWasPending)
         return
 
       const currentColor = playbackActive && !mediaLoadPending && colorGeneration === videoColorGeneration
@@ -693,10 +709,32 @@ export function useMpv() {
 
   function setKnownSubtitleTracks(tracks: readonly KnownSubtitleTrackInput[]) {
     knownSubtitleTracks.value = tracks.map(toKnownSubtitleTrack)
-    if (selectedKnownSubtitle.value && !knownSubtitleTracks.value.some(track => track.id === selectedKnownSubtitle.value)) {
+    if (selectedKnownSubtitle.value && !subtitleTracks.value.some(track => track.id === selectedKnownSubtitle.value)) {
       selectedKnownSubtitle.value = null
       currentSubtitle.value = null
     }
+  }
+
+  function setDownloadedSubtitleTracks(subtitles: readonly Pick<LocalSubtitleDownloadResult, 'path' | 'title' | 'language'>[]) {
+    const tracks = new Map(downloadedSubtitleTracks.value
+      .flatMap(track => track.url ? [[downloadedSubtitleKey(track.url), track] as const] : []))
+    for (const subtitle of subtitles) {
+      if (!subtitle.path.trim())
+        continue
+      const key = downloadedSubtitleKey(subtitle.path)
+      const previous = tracks.get(key)
+      tracks.set(key, toKnownSubtitleTrack({
+        id: previous?.id.slice('external:'.length) ?? `loaded:${++loadedExternalSubtitleSequence}`,
+        source: 'downloaded',
+        title: subtitle.title || previous?.title || '已下载字幕',
+        language: subtitle.language || previous?.language || null,
+        url: subtitle.path,
+        selectable: true,
+      }))
+    }
+    // A cache-list read may have started before the latest download. Merge those
+    // choices, and leave selecting/loading any one of them to explicit intent.
+    downloadedSubtitleTracks.value = [...tracks.values()]
   }
 
   async function load(path: string, options: MpvLoadOptions = {}) {
@@ -709,6 +747,8 @@ export function useMpv() {
     stopBufferingPolling()
     subtitleDelayGeneration += 1
     selectedKnownSubtitle.value = null
+    downloadedSubtitleTracks.value = []
+    sessionExternalSubtitleTracks.value = []
     currentTime.value = 0
     duration.value = 0
     lastConfirmedTime.value = 0
@@ -716,6 +756,10 @@ export function useMpv() {
     playbackEndReason.value = null
     trackRefreshScheduledForCurrentMedia = false
     trackStateReady.value = false
+    embeddedSubtitleTracks.value = []
+    audioTracks.value = []
+    currentSubtitle.value = null
+    currentAudio.value = null
     isPlaying.value = false
     videoReady.value = false
     fileLoaded.value = false
@@ -732,6 +776,10 @@ export function useMpv() {
         if (!isCurrentPlaybackGeneration(generation))
           return
         await applyEngineSettings()
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        // sid is sticky in mpv; each incoming file starts in Auto before its own intent restores.
+        await invoke<void>('mpv_set_property', { prop: 'sid', value: 'auto' })
         if (!isCurrentPlaybackGeneration(generation))
           return
         await invoke<void>('mpv_load', {
@@ -849,23 +897,49 @@ export function useMpv() {
     await subtitleDelayCommand
   }
 
-  async function setSubtitle(trackId: SubtitleSelectionId | null) {
-    if (trackId === null) {
+  async function setSubtitleAutomatic() {
+    const generation = playbackGeneration
+    await queuePlaybackTransition(async () => {
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      await invoke<void>('mpv_set_property', { prop: 'sid', value: 'auto' })
+      if (!isCurrentPlaybackGeneration(generation))
+        return
       selectedKnownSubtitle.value = null
+      currentSubtitle.value = embeddedSubtitleTracks.value.find(track => track.selected)?.id ?? null
+      trackError.value = null
+    })
+  }
+
+  async function setSubtitle(trackId: SubtitleSelectionId | null) {
+    const generation = playbackGeneration
+    await queuePlaybackTransition(async () => {
+      if (isCurrentPlaybackGeneration(generation))
+        await applySubtitleSelection(trackId, generation)
+    })
+  }
+
+  async function applySubtitleSelection(trackId: SubtitleSelectionId | null, generation: number) {
+    if (trackId === null) {
       await invoke<void>('mpv_set_property', { prop: 'sid', value: 'no' })
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      selectedKnownSubtitle.value = null
       currentSubtitle.value = null
       return
     }
 
     const embeddedId = parseEmbeddedSubtitleId(trackId)
     if (embeddedId !== null) {
-      selectedKnownSubtitle.value = null
       await invoke<void>('mpv_set_property', { prop: 'sid', value: embeddedId.toString() })
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      selectedKnownSubtitle.value = null
       currentSubtitle.value = trackId
       return
     }
 
-    const track = knownSubtitleTracks.value.find(item => item.id === trackId)
+    const track = subtitleTracks.value.find(item => item.id === trackId)
     if (!track || !track.selectable || !track.url) {
       const message = track?.unavailableReason ?? '该字幕暂不可加载。'
       trackError.value = message
@@ -879,6 +953,8 @@ export function useMpv() {
         language: track.language ?? null,
         headers: toMpvHeaderPayload(track.headers),
       })
+      if (!isCurrentPlaybackGeneration(generation))
+        return
       selectedKnownSubtitle.value = trackId
       currentSubtitle.value = trackId
       trackError.value = null
@@ -889,27 +965,50 @@ export function useMpv() {
     }
   }
 
-  async function addExternalSubtitle(url: string, title: string, language?: string, source: 'downloaded' | 'provider' = 'downloaded') {
+  async function addExternalSubtitle(url: string, title: string, language?: string, source: 'downloaded' | 'provider' = 'downloaded', headers?: Readonly<Record<string, string>>) {
+    const generation = playbackGeneration
+    await queuePlaybackTransition(async () => {
+      if (isCurrentPlaybackGeneration(generation))
+        await applyExternalSubtitle(url, title, language, source, generation, headers)
+    })
+  }
+
+  async function applyExternalSubtitle(url: string, title: string, language: string | undefined, source: 'downloaded' | 'provider', generation: number, headers?: Readonly<Record<string, string>>) {
     trackError.value = null
     try {
       await invoke<void>('mpv_add_subtitle', {
         url,
         title: title || language || '外部字幕',
         language: language || null,
-        headers: [],
+        headers: toMpvHeaderPayload(headers),
       })
-      const loadedTrack = toKnownSubtitleTrack({
-        id: `loaded:${++loadedExternalSubtitleSequence}`,
-        source,
-        language: language || null,
-        title: title || language || '外部字幕',
-        url,
-        selectable: true,
-      })
-      knownSubtitleTracks.value = [
-        ...knownSubtitleTracks.value.filter(track => !String(track.id).startsWith('external:loaded:')),
-        loadedTrack,
-      ]
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      let loadedTrack: SubtitleTrackOption
+      if (source === 'downloaded') {
+        setDownloadedSubtitleTracks([{ path: url, title, language: language || '' }])
+        const downloaded = downloadedSubtitleTracks.value.find(track => track.url
+          && downloadedSubtitleKey(track.url) === downloadedSubtitleKey(url))
+        if (!downloaded)
+          throw new Error('字幕缓存路径无效。')
+        loadedTrack = downloaded
+      }
+      else {
+        const previous = sessionExternalSubtitleTracks.value.find(track => track.url === url)
+        loadedTrack = toKnownSubtitleTrack({
+          id: previous?.id.slice('external:'.length) ?? `loaded:${++loadedExternalSubtitleSequence}`,
+          source,
+          language: language || null,
+          title: title || language || '外部字幕',
+          url,
+          headers,
+          selectable: true,
+        })
+        sessionExternalSubtitleTracks.value = [
+          ...sessionExternalSubtitleTracks.value.filter(track => track.id !== loadedTrack.id),
+          loadedTrack,
+        ]
+      }
       selectedKnownSubtitle.value = loadedTrack.id
       currentSubtitle.value = loadedTrack.id
     }
@@ -920,8 +1019,14 @@ export function useMpv() {
   }
 
   async function setAudio(trackId: number) {
-    await invoke<void>('mpv_set_property', { prop: 'aid', value: trackId.toString() })
-    currentAudio.value = trackId
+    const generation = playbackGeneration
+    await queuePlaybackTransition(async () => {
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      await invoke<void>('mpv_set_property', { prop: 'aid', value: trackId.toString() })
+      if (isCurrentPlaybackGeneration(generation))
+        currentAudio.value = trackId
+    })
   }
 
   async function setVideoAspect(mode: VideoAspectMode) {
@@ -953,6 +1058,8 @@ export function useMpv() {
     playbackEndReason.value = null
     embeddedSubtitleTracks.value = []
     knownSubtitleTracks.value = []
+    downloadedSubtitleTracks.value = []
+    sessionExternalSubtitleTracks.value = []
     audioTracks.value = []
     currentSubtitle.value = null
     selectedKnownSubtitle.value = null
@@ -1023,6 +1130,7 @@ export function useMpv() {
     refreshDisplayBrightness,
     setDisplayBrightness,
     setKnownSubtitleTracks,
+    setDownloadedSubtitleTracks,
     load,
     togglePause,
     seek,
@@ -1034,6 +1142,7 @@ export function useMpv() {
     applySubtitleDelay,
     setSubtitleDelay,
     setSubtitle,
+    setSubtitleAutomatic,
     addExternalSubtitle,
     setAudio,
     setVideoAspect,

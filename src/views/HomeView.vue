@@ -2,19 +2,19 @@
 import type { HomeSection, MediaItem, SiteActionDescriptor } from '@/services/datasource/types'
 import type { HomeContributionPlacement, HomeContributionPreferences } from '@/services/homeContributionPreferences'
 import type { LocalMediaCollection } from '@/services/mediaCollections'
-import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import CachedImage from '@/components/media/CachedImage.vue'
 import HeroCarousel from '@/components/media/HeroCarousel.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
+import { mergeContinueWatchingSections } from '@/services/datasource/homeAggregation'
 import { listSeriesEpisodes, resolveEpisodePlaybackQueue } from '@/services/episodePlayback'
 import { contributionPreferenceKey, loadHomeContributionPreferences, saveHomeContributionPreferences } from '@/services/homeContributionPreferences'
 import { artworkCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, handleMediaActionKeyboard, moveMediaActionLongPress, openMediaActionContextMenu, requestMediaActionConfirmation, suppressMediaActionClick } from '@/services/mediaActions'
 import { annotateMissingCollectionSources, listLocalMediaCollections, removeLocalCollectionMember } from '@/services/mediaCollections'
 import { createPlaybackQueue, savePlaybackMediaContext } from '@/services/playbackContext'
-import { getPlaybackCompletionBatch, getPlaybackProgress, playbackCompletionKey, playbackCompletionKeyForMediaItem, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
+import { getPlaybackCompletionBatch, getPlaybackProgress, playbackCompletionKey, playbackCompletionKeyForMediaItem, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT, toContinueWatchingMediaItem } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -47,7 +47,11 @@ const hasHomeContent = computed(() => store.homeSections.some(section =>
 ))
 const isFirstRunHome = computed(() => hasLoadedInitialHomeState.value && !hasConfiguredSources.value && !hasHomeContent.value)
 const heroSection = computed(() => store.homeSections.find(s => s.type === 'hero' && !s.providerIdentity && s.items.length > 0))
-const continueWatchingSection = computed(() => store.homeSections.find(s => s.type === 'continueWatching' && s.items.length > 0))
+const continueWatchingSection = computed(() => {
+  const section = store.homeSections.find(s => s.type === 'continueWatching')
+  const items = section?.items.filter(item => !isHomeItemPlayed(item)) ?? []
+  return section && items.length > 0 ? { ...section, items } : undefined
+})
 const recentlyAddedSection = computed(() => store.homeSections.find(s => s.type === 'recentlyAdded' && s.items.length > 0))
 const contributionSections = computed(() => store.homeSections.filter(section => section.providerIdentity && section.items.length > 0))
 const contributionErrors = computed(() => store.homeSections.filter(section => section.providerIdentity && section.errorCode))
@@ -149,10 +153,9 @@ function handleHomeCardClick(item: MediaItem, event: MouseEvent, action: 'play' 
     handleDetail(item)
 }
 
-function handlePlayedStateChanged(event: Event) {
+function handlePlayedStateChanged() {
   void refreshHomePlayedStates()
-  if ((event as CustomEvent<{ source?: string }>).detail?.source === 'server-history-sync')
-    void store.loadHomeSections({ force: true, background: true })
+  void store.loadHomeSections({ force: true, background: true })
 }
 
 onMounted(async () => {
@@ -393,41 +396,28 @@ async function resolveSeriesPlaybackTarget(item: MediaItem): Promise<SeriesPlayb
     if (episodes.length === 0)
       return null
 
-    const providerResumeIndex = episodes.findIndex(episode => isResumePosition(episode.resumePosition, episode.duration))
     const progressEntries = await Promise.all(episodes.map(episode => getPlaybackProgress(playbackProgressIdentityForMediaItem(episode))))
-    const localResume = providerResumeIndex >= 0 ? null : newestLocalResume(progressEntries)
-    const index = providerResumeIndex >= 0 ? providerResumeIndex : (localResume?.index ?? 0)
-    const episode = episodes[index]
-    const providerResumePosition = isResumePosition(episode.resumePosition, episode.duration) ? episode.resumePosition : undefined
+    const resumeItem = mergeContinueWatchingSections(
+      [{ id: 'series-resume', type: 'continueWatching', title: '继续观看', items: episodes }],
+      progressEntries.flatMap(entry => entry ? [toContinueWatchingMediaItem(entry)] : []),
+      [],
+      1,
+    ).items[0]
+    const episode = resumeItem ?? episodes[0]
+    const selectedEpisodes = resumeItem ? await listSeriesEpisodes(source, item.id, resumeItem) : episodes
+    if (store.getSource(item.sourceId) !== source)
+      return null
 
     return {
       item: episode,
-      episodes,
-      resumePosition: providerResumePosition ?? localResume?.entry.position,
-      canResume: providerResumeIndex >= 0 || Boolean(localResume),
+      episodes: selectedEpisodes,
+      resumePosition: resumeItem?.resumePosition,
+      canResume: Boolean(resumeItem),
     }
   }
   catch {
     return null
   }
-}
-
-function newestLocalResume(entries: readonly (PlaybackHistoryEntry | null)[]): { index: number, entry: PlaybackHistoryEntry } | null {
-  return entries.reduce<{ index: number, entry: PlaybackHistoryEntry } | null>((best, entry, index) => {
-    if (!shouldResumePlayback(entry))
-      return best
-    if (!best || entry.updatedAt > best.entry.updatedAt)
-      return { index, entry }
-    return best
-  }, null)
-}
-
-function isResumePosition(position: number | undefined, duration: number | undefined): position is number {
-  if (typeof position !== 'number' || !Number.isFinite(position) || position < 30)
-    return false
-  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0)
-    return true
-  return position < duration * 0.92 && duration - position > 90
 }
 
 function itemKey(item: MediaItem): string {

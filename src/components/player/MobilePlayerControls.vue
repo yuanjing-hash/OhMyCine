@@ -41,6 +41,7 @@ const props = defineProps<{
   canPlayPrevious: boolean
   canPlayNext: boolean
   currentSubtitle: SubtitleSelectionId | null
+  subtitleAutomatic: boolean
   currentAudio: number | null
   videoAspectMode: VideoAspectMode
   videoFitMode: VideoFitMode
@@ -72,7 +73,7 @@ const emit = defineEmits<{
   setVolume: [volume: number]
   setPlaybackSpeed: [speed: number]
   setSubtitleDelay: [delay: number]
-  setSubtitle: [trackId: SubtitleSelectionId | null]
+  setSubtitle: [trackId: SubtitleSelectionId | null | 'auto']
   loadLocalSubtitle: []
   searchSubtitles: []
   setAudio: [trackId: number]
@@ -198,7 +199,7 @@ function chooseSpeed(speed: number) {
   closePanel()
 }
 
-function chooseSubtitle(trackId: SubtitleSelectionId | null) {
+function chooseSubtitle(trackId: SubtitleSelectionId | null | 'auto') {
   emit('setSubtitle', trackId)
   closePanel()
 }
@@ -428,19 +429,22 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
               <p v-if="trackError" class="mobile-sheet-error">
                 {{ trackError }}
               </p>
-              <button type="button" class="mobile-sheet-action" :class="{ 'is-selected': currentSubtitle === null }" @click="chooseSubtitle(null)">
+              <button type="button" class="mobile-sheet-action" :class="{ 'is-selected': subtitleAutomatic }" @click="chooseSubtitle('auto')">
+                自动选择
+              </button>
+              <button type="button" class="mobile-sheet-action" :class="{ 'is-selected': !subtitleAutomatic && currentSubtitle === null }" @click="chooseSubtitle(null)">
                 <span>关闭字幕</span>
               </button>
               <p v-if="downloadedSubtitleTracks.length" class="mobile-section-label">
                 本地下载
               </p>
-              <button v-for="track in downloadedSubtitleTracks" :key="track.id" type="button" class="mobile-track-row" :class="{ 'is-selected': currentSubtitle === track.id }" :disabled="!track.selectable" @click="chooseSubtitle(track.id)">
+              <button v-for="track in downloadedSubtitleTracks" :key="track.id" type="button" class="mobile-track-row" :class="{ 'is-selected': !subtitleAutomatic && currentSubtitle === track.id }" :disabled="!track.selectable" @click="chooseSubtitle(track.id)">
                 <span>{{ fullTrackLabel(track) }}</span><small>{{ subtitleSourceLabel(track) }}</small>
               </button>
               <p v-if="mediaSubtitleTracks.length" class="mobile-section-label">
                 视频与媒体源
               </p>
-              <button v-for="track in mediaSubtitleTracks" :key="track.id" type="button" class="mobile-track-row" :class="{ 'is-selected': currentSubtitle === track.id }" :disabled="!track.selectable" @click="chooseSubtitle(track.id)">
+              <button v-for="track in mediaSubtitleTracks" :key="track.id" type="button" class="mobile-track-row" :class="{ 'is-selected': !subtitleAutomatic && currentSubtitle === track.id }" :disabled="!track.selectable" @click="chooseSubtitle(track.id)">
                 <span>{{ fullTrackLabel(track) }}</span><small>{{ subtitleSourceLabel(track) }}</small>
               </button>
               <p v-if="!subtitleTracks.length && !trackError" class="mobile-sheet-empty">

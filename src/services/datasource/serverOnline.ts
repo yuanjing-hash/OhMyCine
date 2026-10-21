@@ -278,6 +278,7 @@ export function parseOnlineHistoryPage(sourceId: string, value: unknown, baseUrl
       resumePosition: item.positionSeconds,
       progress: item.durationSeconds && item.positionSeconds != null ? Math.min(1, item.positionSeconds / item.durationSeconds) : undefined,
       modified: item.updatedAt ?? target.modified,
+      lastPlayedAt: item.updatedAt,
     }]
   })
   return {
@@ -537,7 +538,8 @@ export function onlineVersionToMediaItem(sourceId: string, libraryId: string, wo
     edition: version.edition,
     displaySubtitle: [version.edition, segment.title].filter(Boolean).join(' · '),
     historyIdentity: id,
-    seriesName: work.kind === 'series' ? work.title : undefined,
+    seriesName: work.kind === 'series' || work.kind === 'episode' ? work.title : undefined,
+    seriesId: work.kind === 'series' || work.kind === 'episode' ? createOnlineWorkID(libraryId, work.id) : undefined,
     exactIdentity: `plugin:${work.identity.scheme}:${work.identity.value}:${segment.id}:${version.id}`,
     playbackTargets: [{ sourceId, itemId: id, mediaSourceId: version.id, label: version.sourceLabel ?? 'Server 在线媒体库' }],
   }

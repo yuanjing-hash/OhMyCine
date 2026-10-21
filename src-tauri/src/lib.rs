@@ -23,12 +23,13 @@ use commands::emby::{emby_post_playback_json, emby_request_json};
 use commands::history::{
     player_apply_playback_history_sync, player_clear_local_playback_history,
     player_delete_playback_history_for_source, player_get_playback_completion_batch,
-    player_get_playback_history_generation, player_get_playback_history_sync_state,
-    player_get_playback_progress, player_invalidate_playback_history_sources,
-    player_list_continue_watching, player_list_playback_history, player_list_playback_history_sync,
-    player_list_playback_history_tombstones, player_remove_continue_watching,
-    player_restore_playback_history_scope, player_set_playback_completed,
-    player_upsert_playback_progress,
+    player_get_playback_history_generation, player_get_playback_history_revision,
+    player_get_playback_history_sync_state, player_get_playback_progress,
+    player_invalidate_playback_history_sources, player_list_continue_watching,
+    player_list_playback_history, player_list_playback_history_snapshot,
+    player_list_playback_history_sync, player_list_playback_history_tombstones,
+    player_remove_continue_watching, player_restore_playback_history_scope,
+    player_set_playback_completed, player_upsert_playback_progress,
 };
 use commands::image_cache::{
     player_cache_image, player_get_cached_image, player_image_cache_stats, player_trim_image_cache,
@@ -64,8 +65,9 @@ use commands::settings::{
 };
 use commands::subtitle::{
     subtitle_download_hash_provider, subtitle_download_opensubtitles, subtitle_import_local,
-    subtitle_login_opensubtitles, subtitle_search_hash_provider, subtitle_search_opensubtitles,
-    OpenSubtitlesSessionState, SubtitleDownloadState,
+    subtitle_list_cached, subtitle_login_opensubtitles, subtitle_record_cached,
+    subtitle_search_hash_provider, subtitle_search_opensubtitles, OpenSubtitlesSessionState,
+    SubtitleDownloadState,
 };
 use commands::updater::{
     player_check_for_updates, player_download_update, player_install_update, player_update_state,
@@ -156,6 +158,8 @@ pub fn run() {
             player_get_playback_completion_batch,
             player_list_continue_watching,
             player_list_playback_history,
+            player_list_playback_history_snapshot,
+            player_get_playback_history_revision,
             player_list_playback_history_sync,
             player_list_playback_history_tombstones,
             player_set_playback_completed,
@@ -191,6 +195,8 @@ pub fn run() {
             subtitle_search_hash_provider,
             subtitle_download_hash_provider,
             subtitle_import_local,
+            subtitle_list_cached,
+            subtitle_record_cached,
             player_check_for_updates,
             player_update_state,
             player_download_update,

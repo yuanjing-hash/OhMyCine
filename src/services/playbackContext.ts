@@ -8,6 +8,7 @@ export interface PlaybackQueueItem {
   name: string
   originalTitle?: string
   seriesName?: string
+  seriesId?: string
   path: string
   type: MediaItem['type']
   posterUrl?: string
@@ -87,6 +88,7 @@ export interface PlaybackQueueItemInput {
   name: string
   originalTitle?: string
   seriesName?: string
+  seriesId?: string
   path: string
   type: MediaItem['type']
   posterUrl?: string
@@ -181,6 +183,7 @@ export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
     name: item.name,
     originalTitle: item.originalTitle,
     seriesName: item.seriesName,
+    seriesId: item.seriesId,
     path: item.path,
     type: item.type,
     posterUrl: item.posterUrl,
@@ -236,6 +239,7 @@ function normalizeQueueItem(item: PlaybackQueueItemInput): PlaybackQueueItem {
     name: item.name,
     originalTitle: item.originalTitle,
     seriesName: item.seriesName,
+    seriesId: item.seriesId,
     path: item.path,
     type: item.type,
     posterUrl: item.posterUrl,

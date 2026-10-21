@@ -1,6 +1,7 @@
 import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleCacheOwner, SubtitleProvider } from './types'
 import type { SubtitleSearchResult } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
+import { rememberCachedSubtitle } from './cache'
 import { HashSubtitleProvider } from './hashProviders'
 import { OpenSubtitlesProvider } from './opensubtitles'
 import { loadSubtitleSearchSettings, readOpenSubtitlesCredentials } from './settings'
@@ -78,17 +79,26 @@ export async function downloadLocalSubtitle(result: SubtitleSearchResult, cacheO
   const provider = Object.values(providers).find(candidate => candidate.id === providerId)
   if (!provider)
     throw new Error('找不到该字幕结果对应的 Player 提供器。')
-  return provider.download(result, cacheOwner)
+  const downloaded = await provider.download(result, cacheOwner)
+  return cacheOwner ? rememberCachedSubtitle(cacheOwner, downloaded) : downloaded
 }
 
 export async function importLocalSubtitle(path: string, cacheOwner?: SubtitleCacheOwner): Promise<LocalSubtitleDownloadResult> {
-  return invoke<LocalSubtitleDownloadResult>('subtitle_import_local', {
+  const imported = await invoke<{ path: string }>('subtitle_import_local', {
     request: {
       path,
       cacheOwner: cacheOwner ?? null,
     },
   })
+  const title = path.split(/[\\/]/).pop() || '本地字幕'
+  const subtitle: LocalSubtitleDownloadResult = {
+    path: imported.path,
+    title,
+    language: 'unknown',
+  }
+  return cacheOwner ? rememberCachedSubtitle(cacheOwner, subtitle) : subtitle
 }
 
+export { listCachedSubtitles } from './cache'
 export * from './settings'
 export * from './types'

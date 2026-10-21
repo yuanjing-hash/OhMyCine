@@ -58,6 +58,7 @@ enum EndFileDisposition {
 
 fn end_file_disposition(
     reason: i32,
+    error_code: i32,
     file_loaded: bool,
     stop_requested: bool,
 ) -> EndFileDisposition {
@@ -68,7 +69,10 @@ fn end_file_disposition(
         EndFileDisposition::Stopped
     } else if reason == mpv_end_file_reason_MPV_END_FILE_REASON_REDIRECT as i32 {
         EndFileDisposition::Redirecting
-    } else if reason == mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32 && file_loaded {
+    } else if reason == mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32
+        && error_code >= 0
+        && file_loaded
+    {
         EndFileDisposition::Ended
     } else {
         EndFileDisposition::Failed
@@ -1410,7 +1414,7 @@ impl MpvPlayer {
                 let disposition = if already_failed {
                     EndFileDisposition::Failed
                 } else {
-                    end_file_disposition(reason, self.file_loaded, self.stop_requested)
+                    end_file_disposition(reason, error_code, self.file_loaded, self.stop_requested)
                 };
                 self.end_reason = Some(match disposition {
                     EndFileDisposition::Stopped
@@ -1746,6 +1750,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_REDIRECT as i32,
+                0,
                 false,
                 false
             ),
@@ -1754,6 +1759,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_STOP as i32,
+                0,
                 false,
                 false
             ),
@@ -1762,6 +1768,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32,
+                -1,
                 false,
                 true
             ),
@@ -1774,6 +1781,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32,
+                -1,
                 true,
                 false
             ),
@@ -1782,6 +1790,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32,
+                0,
                 false,
                 false
             ),
@@ -1790,10 +1799,20 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32,
+                0,
                 true,
                 false
             ),
             EndFileDisposition::Ended,
+        );
+        assert_eq!(
+            end_file_disposition(
+                mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32,
+                -1,
+                true,
+                false
+            ),
+            EndFileDisposition::Failed,
         );
     }
 }
