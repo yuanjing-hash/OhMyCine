@@ -11,9 +11,10 @@ const temporary = resolve(root, '.tmp', 'remux')
 const android = process.argv.includes('--android')
 const commit = 'fc4960b155aa33b9a08cf26c5e0a0530f0545f24'
 const windowsName = 'ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1.zip'
+const windowsRelease = 'v1.1.73'
 const archive = android ? 'android-headers.tar.gz' : 'windows.zip'
 const expected = android ? '10ff00bd0f4e2fff4e8a0c7ca59ed5b5cfe2091d607e324f941aacc8fba8156e' : '0314e211fbd06b92ffb529b96d3358a2c60c61d4ab0071695d940b20ce776fa5'
-const url = android ? `https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/${commit}` : `https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-06-13-06/${windowsName}`
+const url = android ? `https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/${commit}` : `https://github.com/yuanjing-hash/OhMyCine/releases/download/${windowsRelease}/${windowsName}`
 const destination = resolve(root, 'src-tauri', android ? 'native/ffmpeg-headers' : 'resources/remux')
 const marker = join(destination, '.runtime')
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')

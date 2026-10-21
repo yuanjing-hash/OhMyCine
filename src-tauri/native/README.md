@@ -11,7 +11,8 @@ MPEG-TS and Matroska/WebM; nested playlists and external MOV references are disa
 
 - Build: `ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1`
 - Archive SHA-256: `0314e211fbd06b92ffb529b96d3358a2c60c61d4ab0071695d940b20ce776fa5`
-- [Archive and build metadata](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-06-13-06)
+- [Pinned original archive mirror](https://github.com/yuanjing-hash/OhMyCine/releases/download/v1.1.73/ffmpeg-n8.1.3-14-g330caae0c1-win64-lgpl-shared-8.1.zip)
+- [Original BtbN build metadata](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-06-13-06) (upstream autobuild releases may be retired)
 - [Build scripts](https://github.com/BtbN/FFmpeg-Builds)
 - [Corresponding FFmpeg source revision](https://github.com/FFmpeg/FFmpeg/tree/330caae0c1)
 
@@ -19,6 +20,13 @@ The downloaded archive is checksum verified. The executable and adjacent DLLs
 are verified against the tracked `remux-windows.sha256` at setup and each runtime
 invocation. Include the entire generated `resources/remux` directory, including
 `LICENSE.txt`, in installers and portable archives. Do not substitute a PATH binary.
+
+Setup uses the project-controlled build-input asset on the existing `v1.1.73`
+release. It preserves the original BtbN ZIP bytes and license. Retain this asset
+independently of application release promotion or housekeeping, and keep its
+archive SHA-256, per-file manifest and corresponding FFmpeg source together.
+Using an existing application release avoids adding a separate non-version
+release that older Player update clients could select.
 
 ## Android ARM64
 
