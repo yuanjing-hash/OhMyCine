@@ -218,6 +218,47 @@ it('still opens a real downloaded movie on a network failure', async () => {
   expect(offlineRead).toHaveBeenCalledWith('fixture', movieID)
 })
 
+it.each(['removed', 'disabled'])('does not restore old catalog context after the owning Server is %s', async (retirement) => {
+  const { api } = await fixture()
+  api.published = true
+  useRoute().params.itemId = movieID
+  const contextId = savePlaybackMediaContext({ sourceId: 'fixture', itemId: movieID, detail: { id: movieID, sourceId: 'fixture', originType: 'server', name: 'Retired Server cached movie', type: 'movie', path: '', mediaSources: [] } })
+  Object.assign(useRoute().query, { contextId })
+  const wrapper = render()
+  await flushPromises()
+  expect(wrapper.text()).toContain('Current movie')
+  offlineRead.mockResolvedValue({ fixture: true })
+  offlineConvert.mockResolvedValue({ id: movieID, sourceId: 'fixture', name: 'Retired offline shell', type: 'movie', path: '', mediaSources: [] })
+  state.sources.delete('fixture')
+  if (retirement === 'removed')
+    state.configs.splice(0)
+  else
+    state.configs[0]!.enabled = false
+  await flushPromises()
+  expect(wrapper.text()).not.toContain('Retired Server cached movie')
+  expect(wrapper.text()).not.toContain('Retired offline shell')
+  expect(wrapper.text()).toContain('数据源不可用')
+  expect(offlineRead).not.toHaveBeenCalled()
+})
+
+it('retains the independent offline owner and other enabled sources playback context', async () => {
+  const source = markRaw({ id: 'fixture', type: 'offline', getDetail: vi.fn() } as unknown as DataSource)
+  state.sources.set('fixture', source)
+  useRoute().params.itemId = movieID
+  const contextId = savePlaybackMediaContext({ sourceId: 'fixture', itemId: movieID, detail: { id: movieID, sourceId: 'fixture', name: 'Independent owned movie', type: 'movie', path: '', mediaSources: [] } })
+  Object.assign(useRoute().query, { contextId })
+  const wrapper = render()
+  await flushPromises()
+  expect(wrapper.text()).toContain('Independent owned movie')
+  expect(source.getDetail).not.toHaveBeenCalled()
+  const emby = markRaw({ id: 'fixture', type: 'emby', getDetail: vi.fn() } as unknown as DataSource)
+  state.sources.set('fixture', emby)
+  state.configs.push({ id: 'fixture', type: 'emby', enabled: true })
+  await flushPromises()
+  expect(wrapper.text()).toContain('Independent owned movie')
+  expect(emby.getDetail).not.toHaveBeenCalled()
+})
+
 it('preserves the selected season and episode on focus, and falls back only when the season disappears', async () => {
   const { api } = await fixture()
   api.published = true

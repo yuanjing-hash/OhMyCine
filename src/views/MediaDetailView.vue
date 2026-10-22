@@ -332,6 +332,13 @@ async function loadDetail(preserveSelection = false) {
   const requestedSourceId = sourceId.value
   const requestedItemId = itemId.value
   const requestedConfiguration = detailConfigurationKey()
+  const hasContextOwner = () => {
+    const config = store.configs.find(config => config.id === requestedSourceId)
+    if (config)
+      return config.enabled !== false
+    const source = store.getSource(requestedSourceId)
+    return Boolean(source && source.type !== 'server')
+  }
   let requestedSource: DataSource | undefined
   const isCurrentRoute = detailRequestScope.begin(() => detailViewMounted
     && sourceId.value === requestedSourceId && itemId.value === requestedItemId
@@ -362,7 +369,7 @@ async function loadDetail(preserveSelection = false) {
     // playback context cannot revive a revoked work or an old queued shell.
     const serverCatalog = store.configs.find(config => config.id === requestedSourceId)?.type === 'server'
       && /^(?:work|season|entry)\|/.test(requestedItemId)
-    const contextual = requestedItemId.startsWith('server-acquisition|') || serverCatalog ? null : recoverContextualDetail()
+    const contextual = !hasContextOwner() || requestedItemId.startsWith('server-acquisition|') || serverCatalog ? null : recoverContextualDetail()
     if (contextual) {
       detail.value = contextual.detail
       const selectableMediaSources = (contextual.detail.mediaSources ?? []).filter(hasMeaningfulMediaSource)
@@ -413,9 +420,9 @@ async function loadDetail(preserveSelection = false) {
     if (!isCurrent())
       return
     const isServer = requestedSource?.type === 'server' || store.configs.find(config => config.id === requestedSourceId)?.type === 'server'
-    const authoritativeDenial = isServer && (requestedItemId.startsWith('server-acquisition|')
+    const authoritativeDenial = !hasContextOwner() || (isServer && (requestedItemId.startsWith('server-acquisition|')
       || (error instanceof ServerRequestError && (error.status < 500 || /permission|auth/i.test(error.code ?? '')))
-      || (error instanceof Error && (error.name === 'AbortError' || error.message.startsWith('Server 返回'))))
+      || (error instanceof Error && (error.name === 'AbortError' || error.message.startsWith('Server 返回')))))
     const offline = authoritativeDenial
       ? undefined
       : await getOfflineDetail(requestedSourceId, requestedItemId).catch(() => undefined)
