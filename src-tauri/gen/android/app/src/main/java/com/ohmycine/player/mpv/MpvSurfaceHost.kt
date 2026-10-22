@@ -145,6 +145,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     @Volatile
     private var surfaceHeight = 0
     private val diagnosticLogs = ArrayDeque<String>()
+    @Volatile
+    private var httpReadProfileDiagnostic: String? = null
 
     fun install(activity: Activity, webView: WebView) {
         webView.post {
@@ -231,15 +233,17 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         surfaceWidth = 0
         surfaceHeight = 0
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
+        httpReadProfileDiagnostic = null
     }
 
     fun isReady(): Boolean = initialized && surfaceAttached
     fun initializationError(): String? = initializationError
 
     @Synchronized
-    fun load(path: String, audioPath: String?, headers: List<MpvHeader>) {
+    fun load(path: String, audioPath: String?, headers: List<MpvHeader>, httpReadProfile: String? = null) {
         initializationError?.let { error(it) }
-        val request = PendingLoad(path, audioPath, headers)
+        require(httpReadProfile == null || httpReadProfile == "bounded_ranges_v1") { "播放读取配置无效。" }
+        val request = PendingLoad(path, audioPath, headers, httpReadProfile)
         pendingLoad = request
         if (!isReady())
             return
@@ -249,6 +253,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     @Synchronized
     private fun play(request: PendingLoad) {
         pendingLoad = null
+        httpReadProfileDiagnostic = null
         val replacingNativeFile = synchronized(attemptStateLock) {
             val replacing = nativeFileActive
             closingEntryId = nativeEntryId.takeIf { replacing }
@@ -294,8 +299,16 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         val headers = request.headers
         val headerFields = headers.joinToString(",") { "${it.name}: ${it.value}" }
         MPVLib.setPropertyString("http-header-fields", headerFields)
+        val bounded = request.httpReadProfile != null &&
+            safePropertyString("option-info/curl-max-request-size/name") == "curl-max-request-size" &&
+            safePropertyString("option-info/curl-enabled/name") == "curl-enabled"
+        httpReadProfileDiagnostic = request.httpReadProfile?.let {
+            if (bounded) "当前媒体已启用 8 MiB 分段读取。"
+            else "当前引擎未启用分段读取，夸克原画可能缓冲。"
+        }
         val options = mutableListOf<String>()
-        request.audioPath?.let { options.add("audio-file=$it") }
+        if (bounded) options.add("curl-enabled=yes,curl-max-request-size=8388608")
+        request.audioPath?.let { options.add("audio-file=%${it.toByteArray(Charsets.UTF_8).size}%$it") }
         if (position != null && position.isFinite() && position >= 0.0)
             options.add("start=$position")
         options.add("pause=${if (paused) "yes" else "no"}")
@@ -567,7 +580,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     fun playbackDiagnostics(): MpvPlaybackDiagnostics {
         capturePlaybackFacts()
         val logs = if (currentLoad != null && waitingForStartFile && !nativeAttemptStarted) emptyList() else
-            (synchronized(startupDiagnosticLogs) { startupDiagnosticLogs.toList() } +
+            (listOfNotNull(httpReadProfileDiagnostic) + synchronized(startupDiagnosticLogs) { startupDiagnosticLogs.toList() } +
                 synchronized(diagnosticLogs) { diagnosticLogs.toList() }).distinct()
         return MpvPlaybackDiagnostics(
             state = playbackState,
@@ -1697,7 +1710,7 @@ internal data class MpvEngineSettings(
     val fsrDenoise: Boolean,
     val fsrTarget: String,
 )
-internal data class PendingLoad(val path: String, val audioPath: String?, val headers: List<MpvHeader>)
+internal data class PendingLoad(val path: String, val audioPath: String?, val headers: List<MpvHeader>, val httpReadProfile: String? = null)
 internal data class MpvSnapshot(val time: Double, val duration: Double, val paused: Boolean)
 internal data class MpvTrack(
     val id: Long,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { ServerAcquisitionStatus, ServerCoverageSummary, ServerDiscoveryDetail, ServerFollowDefaults, ServerFollowRoutePreview, ServerLibraryOption, ServerResourceItem, ServerResourceSearchInput, ServerRouteRecommendation, ServerSearchSite } from '@/services/serverDiscovery'
+import type { ServerAcquisitionStatus, ServerCoverageSummary, ServerDiscoveryDetail, ServerDiscoveryTypePolicy, ServerFollowDefaults, ServerFollowRoutePreview, ServerLibraryOption, ServerResourceItem, ServerResourceSearchInput, ServerRouteRecommendation, ServerSearchSite } from '@/services/serverDiscovery'
+import type { ServerShareSelection } from '@/services/serverSharePreview'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaDetailHero from '@/components/media/MediaDetailHero.vue'
@@ -9,8 +10,9 @@ import DiscoverySitePickerDialog from '@/components/server/DiscoverySitePickerDi
 import { ServerDataSource } from '@/services/datasource/server'
 import { registerLayoutBackHandler } from '@/services/layoutBackNavigation'
 import { publishFeedback } from '@/services/mediaActions'
-import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerFollowDefaults, getServerFollowRoutePreview, getServerRouteRecommendation, getServerSearchSites, streamServerResources } from '@/services/serverDiscovery'
+import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerFollowDefaults, getServerFollowRoutePreview, getServerResourceLink, getServerRouteRecommendation, getServerSearchSites, streamServerResources } from '@/services/serverDiscovery'
 import { beginResourceSearch, emptyResourceSearch, finishResourceSearch, reduceResourceSearch, resourceGroupRetryPage, ResourceSearchController } from '@/services/serverDiscoverySearch'
+import { previewServerShare } from '@/services/serverSharePreview'
 import { useAcquisitionWorkspaceStore } from '@/stores/acquisitionWorkspace'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
@@ -37,6 +39,11 @@ const submitting = ref(false)
 const busyToken = ref('')
 const error = ref('')
 const capabilities = ref(new Set<string>())
+const discoveryTypePolicy = ref<'default' | ServerDiscoveryTypePolicy>('default')
+const discoveryCloudTypes = ref<string[]>(['115', 'quark', 'magnet'])
+const copyingToken = ref('')
+let activeSearchScope: number[] = []
+let copyGeneration = 0
 const sitePickerOpen = ref(false)
 const resultWorkspaceOpen = ref(false)
 const acquisitionDialogOpen = ref(false)
@@ -55,6 +62,8 @@ const directQuery = ref('')
 const searchController = new ResourceSearchController()
 const backOwner = Symbol('server-discovery-detail')
 let unregisterBack: (() => void) | undefined
+let detailGeneration = 0
+let siteGeneration = 0
 let routeGeneration = 0
 let followRouteGeneration = 0
 let statusGeneration = 0
@@ -70,6 +79,7 @@ const selectedAll = computed(() => searchableSites.value.length > 0 && searchabl
 const canSearch = computed(() => capabilities.value.has('discovery_search'))
 const canAcquire = computed(() => capabilities.value.has('acquisition_create'))
 const canSubscribe = computed(() => capabilities.value.has('subscription_create'))
+const mixedSupported = computed(() => capabilities.value.has('mixed_discovery_v1'))
 const followRoutesAvailable = computed(() => !followRouteLoading.value && !followRouteError.value && followRoutePreview.value?.available === true && followRoutePreview.value.routes.length === followForm.value.siteIds.length)
 const coverageLabel = computed(() => {
   if (!coverage.value)
@@ -86,44 +96,71 @@ const acquisitionProgress = computed(() => {
   return current?.progress == null ? undefined : Math.min(100, Math.max(0, Math.round(current.progress)))
 })
 
-async function resolveSource(): Promise<ServerDataSource> {
+async function resolveSource(id = sourceId.value): Promise<ServerDataSource> {
   store.loadConfigs()
   await store.syncManager()
-  const config = store.orderedConfigs.find(item => item.id === sourceId.value && item.type === 'server' && item.enabled !== false)
-  const source = store.getSource(sourceId.value)
+  const config = store.orderedConfigs.find(item => item.id === id && item.type === 'server' && item.enabled !== false)
+  const source = store.getSource(id)
   if (!config || !(source instanceof ServerDataSource))
     throw new Error('对应 Server 尚未连接，请先在设置中登录。')
   return source
 }
 
 async function load() {
+  const generation = ++detailGeneration
+  const origin = { id: sourceId.value, provider: provider.value, mediaType: mediaType.value, item: providerId.value, route: route.fullPath } as const
+  let source: ServerDataSource | undefined
+  const current = () => generation === detailGeneration && origin.route === route.fullPath && origin.id === sourceId.value && (!source || store.getSource(origin.id) === source)
   stopStatusPolling()
+  siteGeneration++
+  loadingSites.value = false
+  sitePickerOpen.value = false
+  resultWorkspaceOpen.value = false
+  sites.value = []
+  selectedSiteIds.value = []
+  activeSearchScope = []
   loading.value = true
   error.value = ''
+  detail.value = null
+  coverage.value = null
+  acquisition.value = null
+  capabilities.value = new Set()
   searchState.value = emptyResourceSearch()
   submittedSearchInput = undefined
   activeSiteId.value = undefined
   try {
-    const source = await resolveSource()
-    capabilities.value = new Set(await source.refreshCapabilities())
-    detail.value = await getServerDiscoveryDetail(source, provider.value, mediaType.value, providerId.value)
-    directQuery.value = detail.value.work.title
-    if (detail.value.work.tmdbId) {
-      const tmdbId = detail.value.work.tmdbId
+    source = await resolveSource(origin.id)
+    if (!current())
+      return
+    const nextCapabilities = new Set(await source.refreshCapabilities())
+    if (!current())
+      return
+    const nextDetail = await getServerDiscoveryDetail(source, origin.provider, origin.mediaType, origin.item)
+    if (!current())
+      return
+    capabilities.value = nextCapabilities
+    detail.value = nextDetail
+    directQuery.value = nextDetail.work.title
+    if (nextDetail.work.tmdbId) {
+      const tmdbId = nextDetail.work.tmdbId
       const [coverageResult, acquisitionResult] = await Promise.all([
-        getServerCoverage(source, mediaType.value, tmdbId).catch(() => null),
-        getServerAcquisition(source, mediaType.value, tmdbId).catch(() => null),
+        getServerCoverage(source, origin.mediaType, tmdbId).catch(() => null),
+        getServerAcquisition(source, origin.mediaType, tmdbId).catch(() => null),
       ])
+      if (!current())
+        return
       coverage.value = coverageResult
       acquisition.value = acquisitionResult
       scheduleStatusRefresh()
     }
   }
   catch (reason) {
-    error.value = message(reason)
+    if (current())
+      error.value = message(reason)
   }
   finally {
-    loading.value = false
+    if (current())
+      loading.value = false
   }
 }
 
@@ -134,19 +171,34 @@ async function chooseSearch(mode: 'aggregate' | 'direct') {
   }
   pendingSearchMode.value = mode
   sitePickerOpen.value = true
-  if (sites.value.length || loadingSites.value)
+  if (loadingSites.value)
     return
+  const generation = ++siteGeneration
+  const origin = sourceId.value
+  const ownerRoute = route.fullPath
+  let source: ServerDataSource | undefined
+  const current = () => generation === siteGeneration && origin === sourceId.value && ownerRoute === route.fullPath && (!source || store.getSource(origin) === source)
   loadingSites.value = true
   try {
-    const result = await getServerSearchSites(await resolveSource())
+    source = await resolveSource(origin)
+    if (!current())
+      return
+    const result = await getServerSearchSites(source)
+    if (!current())
+      return
+    const first = sites.value.length === 0
     sites.value = result
-    selectedSiteIds.value = result.filter(site => site.searchable).map(site => site.id)
+    const available = result.filter(site => site.searchable).map(site => site.id)
+    selectedSiteIds.value = first ? available : selectedSiteIds.value.filter(id => available.includes(id))
+    searchState.value.groups = searchState.value.groups.map(group => ({ ...group, unavailableReason: result.find(site => site.id === group.siteId)?.searchable ? undefined : result.find(site => site.id === group.siteId)?.reason || '来源已停用或不再可访问，历史结果保留。' }))
   }
   catch (reason) {
-    publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
+    if (current())
+      publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
   }
   finally {
-    loadingSites.value = false
+    if (current())
+      loadingSites.value = false
   }
 }
 
@@ -158,9 +210,13 @@ function toggleSite(id: number) {
   selectedSiteIds.value = selectedSiteIds.value.includes(id) ? selectedSiteIds.value.filter(value => value !== id) : [...selectedSiteIds.value, id]
 }
 
-async function runSearch(siteIds = selectedSiteIds.value, replaceAll = true, page = 1) {
+async function runSearch(siteIds = selectedSiteIds.value, replaceAll = true, page = 1, intent: 'search' | 'page' = 'search') {
   if (!detail.value || siteIds.length === 0)
     return
+  if (replaceAll && discoveryTypePolicy.value === 'manual' && !discoveryCloudTypes.value.length) {
+    publishFeedback({ id: Date.now(), kind: 'error', message: '请至少选择一种盘搜结果类型。' })
+    return
+  }
   const tmdbId = detail.value.work.tmdbId
   const useTMDB = pendingSearchMode.value === 'direct' && directKind.value === 'tmdb'
   const draftInput: ServerResourceSearchInput = {
@@ -170,14 +226,24 @@ async function runSearch(siteIds = selectedSiteIds.value, replaceAll = true, pag
     direct: pendingSearchMode.value === 'direct',
     siteIds: [...siteIds],
     page,
+    typePolicy: discoveryTypePolicy.value === 'default' ? undefined : discoveryTypePolicy.value,
+    cloudTypes: discoveryTypePolicy.value === 'manual' ? [...discoveryCloudTypes.value] : undefined,
   }
-  const input = { ...(!replaceAll && submittedSearchInput ? submittedSearchInput : draftInput), siteIds: [...siteIds], page }
+  const input: ServerResourceSearchInput = {
+    ...(!replaceAll && submittedSearchInput ? submittedSearchInput : draftInput),
+    siteIds: [...siteIds],
+    page,
+    snapshotId: intent === 'page' && siteIds.length === 1 ? searchState.value.groups.find(group => group.siteId === siteIds[0])?.snapshotId : undefined,
+    refresh: intent === 'search' && page === 1,
+  }
   if (!input.direct && !input.tmdbId) {
     publishFeedback({ id: Date.now(), kind: 'error', message: '该作品还没有可验证的 TMDB ID，请使用直接搜索。' })
     return
   }
-  if (replaceAll)
+  if (replaceAll) {
+    activeSearchScope = [...siteIds]
     submittedSearchInput = { ...input, siteIds: [...input.siteIds] }
+  }
   await searchController.run(async (onEvent, isCurrent) => {
     const source = await resolveSource()
     if (!isCurrent())
@@ -223,15 +289,21 @@ async function cancelSearch() {
 }
 
 async function retrySite(siteId: number) {
-  await runSearch([siteId], false, resourceGroupRetryPage(searchState.value, siteId))
+  const group = searchState.value.groups.find(group => group.siteId === siteId)
+  await runSearch([siteId], false, group?.snapshotId ? 1 : resourceGroupRetryPage(searchState.value, siteId))
 }
 
 async function changeSitePage(siteId: number, page: number) {
   activeSiteId.value = siteId
-  await runSearch([siteId], false, page)
+  await runSearch([siteId], false, page, 'page')
 }
 
 async function openAcquisition(item: ServerResourceItem) {
+  const group = searchState.value.groups.find(group => group.items.some(value => value.token === item.token))
+  if (item.acquisitionAvailable === false || group?.unavailableReason) {
+    publishFeedback({ id: Date.now(), kind: 'error', message: group?.unavailableReason || item.acquisitionReason || '当前类型只支持查看链接，尚不支持自动入库。' })
+    return
+  }
   if (!canAcquire.value) {
     publishFeedback({ id: Date.now(), kind: 'error', message: '当前 Server 账号没有下载入库权限。' })
     return
@@ -242,6 +314,33 @@ async function openAcquisition(item: ServerResourceItem) {
   libraries.value = []
   acquisitionDialogOpen.value = true
   await loadRouteRecommendation()
+}
+
+async function copyResourceLink(item: ServerResourceItem) {
+  const generation = ++copyGeneration
+  const origin = sourceId.value
+  copyingToken.value = item.token
+  try {
+    const source = await resolveSource()
+    const url = await getServerResourceLink(source, item)
+    if (generation !== copyGeneration || origin !== sourceId.value || store.getSource(origin) !== source)
+      return
+    await navigator.clipboard.writeText(url)
+    if (generation === copyGeneration && origin === sourceId.value)
+      publishFeedback({ id: Date.now(), kind: 'success', message: '资源链接已复制。' })
+  }
+  catch (reason) {
+    if (generation === copyGeneration && origin === sourceId.value)
+      publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
+  }
+  finally {
+    if (generation === copyGeneration)
+      copyingToken.value = ''
+  }
+}
+
+function refreshResourceTypes() {
+  void runSearch(activeSearchScope.length ? activeSearchScope : selectedSiteIds.value)
 }
 
 async function loadRouteRecommendation(libraryId?: number) {
@@ -274,30 +373,63 @@ async function loadRouteRecommendation(libraryId?: number) {
   }
 }
 
-async function submitAcquisition(options: { downloaderId: string, libraryId: number }) {
+async function loadAcquisitionSharePreview(downloaderId: string) {
+  const resource = selectedResource.value
+  const origin = sourceId.value
+  const generation = routeGeneration
+  if (!resource || !acquisitionDialogOpen.value)
+    throw new Error('入库资源已变化，请重新打开。')
+  const source = await resolveSource()
+  const current = () => origin === sourceId.value && generation === routeGeneration && selectedResource.value?.token === resource.token && acquisitionDialogOpen.value && store.getSource(origin) === source
+  if (!current())
+    throw new Error('入库资源或 Server 已变化，请重新打开。')
+  const preview = await previewServerShare(source, resource.token, downloaderId)
+  if (!current())
+    throw new Error('入库资源或 Server 已变化，请重新打开。')
+  return preview
+}
+
+async function submitAcquisition(options: { downloaderId: string, libraryId: number, shareSelection?: ServerShareSelection }) {
   const resource = selectedResource.value
   const work = detail.value?.work
-  if (!resource || !work?.tmdbId)
+  if (submitting.value || !resource || !work?.tmdbId)
     return
+  const origin = sourceId.value
+  const generation = routeGeneration
+  const submittedMediaType = mediaType.value
+  const current = () => origin === sourceId.value && generation === routeGeneration && selectedResource.value?.token === resource.token && acquisitionDialogOpen.value
+  if ((routeRecommendation.value?.sourceKind === 'quark_share' || routeRecommendation.value?.sourceKind === '115_share') && !options.shareSelection) {
+    publishFeedback({ id: Date.now(), kind: 'error', message: '请先预览分享并选择需要转存的文件。' })
+    return
+  }
   submitting.value = true
   busyToken.value = resource.token
   try {
     const source = await resolveSource()
+    if (!current() || store.getSource(origin) !== source)
+      return
     await source.createDiscoveryDownload({
       result_token: resource.token,
       downloader_id: options.downloaderId,
       media_library_id: options.libraryId,
       priority: 0,
       expected_tmdb_id: work.tmdbId,
-      expected_media_type: mediaType.value,
+      expected_media_type: submittedMediaType,
+      ...(options.shareSelection ? { preview_token: options.shareSelection.previewToken, selected_entry_tokens: options.shareSelection.entryTokens } : {}),
     })
-    acquisition.value = await getServerAcquisition(source, mediaType.value, work.tmdbId)
+    if (!current() || store.getSource(origin) !== source)
+      return
+    const result = await getServerAcquisition(source, submittedMediaType, work.tmdbId)
+    if (!current() || store.getSource(origin) !== source)
+      return
+    acquisition.value = result
     acquisitionDialogOpen.value = false
     scheduleStatusRefresh(true)
     publishFeedback({ id: Date.now(), kind: 'success', message: `《${work.title}》已进入 Server 入库流程，可从右侧“入库任务”持续查看。` })
   }
   catch (reason) {
-    publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
+    if (current())
+      publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
   }
   finally {
     submitting.value = false
@@ -479,10 +611,20 @@ onMounted(() => {
   void load()
 })
 watch(() => route.fullPath, async () => {
+  detailGeneration++
+  siteGeneration++
+  copyGeneration++
+  routeGeneration++
+  acquisitionDialogOpen.value = false
   await cancelSearch()
   await load()
 })
 onBeforeUnmount(() => {
+  detailGeneration++
+  siteGeneration++
+  copyGeneration++
+  routeGeneration++
+  acquisitionDialogOpen.value = false
   unregisterBack?.()
   stopStatusPolling()
   void cancelSearch()
@@ -546,8 +688,8 @@ onBeforeUnmount(() => {
       </section>
 
       <DiscoverySitePickerDialog :open="sitePickerOpen" :sites="sites" :selected-site-ids="selectedSiteIds" :loading="loadingSites" :mode="pendingSearchMode" :direct-kind="directKind" :direct-query="directQuery" :tmdb-id="detail.work.tmdbId" @close="sitePickerOpen = false" @search="runSearch()" @toggle-site="toggleSite" @toggle-all="toggleAllSites" @update-direct-kind="directKind = $event" @update-direct-query="directQuery = $event" />
-      <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :state="searchState" :active-site-id="activeSiteId" :can-acquire="canAcquire" :busy-token="busyToken" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="retrySite" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" />
-      <DiscoveryAcquisitionDialog :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" />
+      <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :state="searchState" :active-site-id="activeSiteId" :can-acquire="canAcquire" :busy-token="busyToken" :mixed-supported="mixedSupported" :type-policy="discoveryTypePolicy" :cloud-types="discoveryCloudTypes" :copying-token="copyingToken" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="retrySite" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" @copy-resource="copyResourceLink" @update-type-policy="discoveryTypePolicy = $event" @update-cloud-types="discoveryCloudTypes = $event" @refresh="refreshResourceTypes" />
+      <DiscoveryAcquisitionDialog :key="sourceId" :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" :load-share-preview="loadAcquisitionSharePreview" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" />
 
       <div v-if="followOpen" class="follow-layer fixed inset-0 z-[1210] grid place-items-center p-4" @click.self="!subscribing && (followOpen = false)">
         <section class="follow-card glass-panel max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-[28px] p-6 cinema-scrollbar">
@@ -594,7 +736,7 @@ onBeforeUnmount(() => {
                 按资源来源自动选择下载器
               </p>
               <p class="mt-1 text-xs leading-5 text-white/48">
-                115 分享走转存，PT 使用排序第一的 qBittorrent，公开 BT 按下载器顺序选择。Server 会针对每条结果和目标媒体库再次验证。
+                115 和夸克分享分别使用对应网盘的转存，PT 使用排序第一的 qBittorrent，公开 BT 按下载器顺序选择。Server 会针对每条结果和目标媒体库再次验证。
               </p>
               <p v-if="followRouteLoading" class="mt-3 text-xs text-white/55">
                 正在预览站点路由…

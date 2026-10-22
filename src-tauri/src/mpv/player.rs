@@ -34,7 +34,9 @@ use super::{
     render::{current_render_state, MpvRenderState, RenderStatus},
     surface::{NativeRenderSurface, OwnerWindowEvent, RenderSurfaceBounds, ZOrderStrategy},
 };
-use crate::commands::player_shared::MpvEngineSettings;
+use crate::commands::player_shared::{
+    http_read_profile_diagnostic, playback_file_options, MpvEngineSettings, MpvHttpReadProfile,
+};
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
 
@@ -150,6 +152,7 @@ pub struct MpvPlayer {
     file_loaded: bool,
     stop_requested: bool,
     playback_transport: String,
+    http_read_profile_diagnostic: Option<String>,
     playback_epoch: Option<u64>,
     expected_entry_id: Option<i64>,
     event_entry_id: Option<i64>,
@@ -217,6 +220,7 @@ impl MpvPlayer {
             file_loaded: false,
             stop_requested: false,
             playback_transport: "none".to_string(),
+            http_read_profile_diagnostic: None,
             playback_epoch: None,
             expected_entry_id: None,
             event_entry_id: None,
@@ -267,6 +271,7 @@ impl MpvPlayer {
             self.drain_events(64);
         }
         self.playback_epoch = Some(epoch);
+        self.http_read_profile_diagnostic = None;
         self.expected_entry_id = None;
         self.logs_frozen = true;
         self.playback_logs = NativeLogBuffer::default();
@@ -304,6 +309,7 @@ impl MpvPlayer {
         path: &str,
         headers: &[(String, String)],
         audio_path: Option<&str>,
+        http_read_profile: Option<MpvHttpReadProfile>,
     ) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
         self.apply_http_headers(headers)?;
@@ -313,7 +319,19 @@ impl MpvPlayer {
         if let Some(surface) = self.render_surface.as_mut() {
             surface.set_playback_active(false);
         }
-        let audio_option = audio_path.map(|value| format!("audio-file={value}"));
+        let profile_supported = http_read_profile.is_some()
+            && self
+                .get_property_string("option-info/curl-max-request-size/name")?
+                .as_deref()
+                == Some("curl-max-request-size")
+            && self
+                .get_property_string("option-info/curl-enabled/name")?
+                .as_deref()
+                == Some("curl-enabled");
+        self.http_read_profile_diagnostic =
+            http_read_profile_diagnostic(http_read_profile, profile_supported);
+        let file_options =
+            playback_file_options(audio_path, http_read_profile.is_some() && profile_supported);
         self.playback_state = "loading".to_string();
         self.last_playback_event = "load-command".to_string();
         self.last_playback_error = None;
@@ -332,7 +350,7 @@ impl MpvPlayer {
             "direct"
         }
         .to_string();
-        let result = if let Some(option) = audio_option.as_deref() {
+        let result = if let Some(option) = file_options.as_deref() {
             self.load_command(&["loadfile", path, "replace", "-1", option])
         } else {
             self.load_command(&["loadfile", path, "replace"])
@@ -1300,6 +1318,7 @@ impl MpvPlayer {
             .take(12)
             .map(|line| format!("initialization: {line}"))
             .collect::<Vec<_>>();
+        logs.extend(self.http_read_profile_diagnostic.iter().cloned());
         logs.extend(self.playback_logs.snapshot());
         logs
     }

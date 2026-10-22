@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { ServerLibraryOption, ServerResourceItem, ServerRouteRecommendation } from '@/services/serverDiscovery'
+import type { ServerSharePreview, ServerShareSelection } from '@/services/serverSharePreview'
 import { computed, ref, watch } from 'vue'
+import DiscoverySharePreview from '@/components/server/DiscoverySharePreview.vue'
 
 const props = defineProps<{
   open: boolean
@@ -10,18 +12,21 @@ const props = defineProps<{
   routeError: string
   loading: boolean
   submitting: boolean
+  loadSharePreview: (downloaderId: string) => Promise<ServerSharePreview>
 }>()
 
 const emit = defineEmits<{
   close: []
   selectLibrary: [libraryId: number]
   retry: [libraryId?: number]
-  confirm: [value: { downloaderId: string, libraryId: number }]
+  confirm: [value: { downloaderId: string, libraryId: number, shareSelection?: ServerShareSelection }]
 }>()
 
 const step = ref<1 | 2 | 3>(1)
 const downloaderId = ref('')
 const libraryId = ref(0)
+const shareSelection = ref<ServerShareSelection | null>(null)
+const isShare = computed(() => props.recommendation?.sourceKind === '115_share' || props.recommendation?.sourceKind === 'quark_share')
 const routeChoices = computed(() => props.recommendation?.choices.filter(item => item.libraryId === libraryId.value) ?? [])
 const selectedChoice = computed(() => routeChoices.value.find(item => item.downloaderId === downloaderId.value && item.enabled))
 const selectedLibrary = computed(() => props.libraries.find(item => item.id === libraryId.value))
@@ -32,14 +37,15 @@ watch(() => props.open, (open) => {
   step.value = 1
   downloaderId.value = ''
   libraryId.value = 0
+  shareSelection.value = null
 }, { immediate: true })
 
-watch(() => props.recommendation, (value) => {
+watch(() => [props.recommendation, props.open] as const, ([value]) => {
   if (!props.open || !value)
     return
   libraryId.value = value.recommended?.libraryId ?? (libraryId.value || props.libraries[0]?.id || 0)
   downloaderId.value = value.recommended?.libraryId === libraryId.value ? value.recommended.downloaderId : ''
-})
+}, { immediate: true })
 watch(() => props.libraries, (items) => {
   if (!libraryId.value)
     libraryId.value = items[0]?.id ?? 0
@@ -50,14 +56,18 @@ function selectLibrary(id: number) {
     return
   libraryId.value = id
   downloaderId.value = ''
+  shareSelection.value = null
   emit('selectLibrary', id)
 }
 
 function confirm() {
-  if (!selectedChoice.value || !libraryId.value)
+  if (props.loading || props.routeError || props.submitting || !selectedChoice.value || !libraryId.value || (isShare.value && !shareSelection.value))
     return
-  emit('confirm', { downloaderId: downloaderId.value, libraryId: libraryId.value })
+  emit('confirm', { downloaderId: downloaderId.value, libraryId: libraryId.value, ...(shareSelection.value ? { shareSelection: shareSelection.value } : {}) })
 }
+watch([downloaderId, libraryId, () => props.resource?.token, step], () => {
+  shareSelection.value = null
+})
 </script>
 
 <template>
@@ -108,7 +118,7 @@ function confirm() {
             </template>
             <template v-else-if="!loading && step === 2">
               <p class="mb-3 text-xs text-white/45">
-                {{ recommendation?.sourceKind === 'pt' ? 'PT 资源只使用排序第一的 qBittorrent。' : recommendation?.sourceKind === '115_share' ? '115 分享使用分享转存。' : '公开 BT 可使用此目标库兼容的下载器。' }}
+                {{ recommendation?.sourceKind === 'pt' ? 'PT 资源只使用排序第一的 qBittorrent。' : recommendation?.sourceKind === '115_share' ? '115 分享使用 115 分享转存。' : recommendation?.sourceKind === 'quark_share' ? '夸克分享使用夸克转存，不会发送给 115 下载器。' : '公开 BT 可使用此目标库兼容的下载器。' }}
               </p>
               <button v-for="item in routeChoices" :key="item.downloaderId" class="option-card" :class="{ selected: downloaderId === item.downloaderId, unavailable: !item.enabled }" type="button" :disabled="!item.enabled" @click="downloaderId = item.downloaderId">
                 <span><b class="block text-sm text-white/90">{{ recommendation?.recommended?.downloaderId === item.downloaderId && recommendation.recommended.libraryId === libraryId ? `推荐 · ${item.downloaderName}` : item.downloaderName }}</b><small class="mt-1 block text-xs text-white/45">{{ item.enabled ? item.routeLabel || item.downloaderType || '可用' : item.reasonMessage || '无法使用此下载器' }}</small></span><span class="radio-mark">{{ downloaderId === item.downloaderId ? '✓' : '' }}</span>
@@ -144,6 +154,7 @@ function confirm() {
                   Server 会在下载前验证该资源与当前 TMDB 海报身份；明显不匹配时不会开始下载或错误入库。
                 </p>
               </div>
+              <DiscoverySharePreview v-if="isShare && resource && selectedChoice" :result-token="resource.token" :downloader-id="downloaderId" :provider-label="recommendation?.sourceKind === 'quark_share' ? '夸克分享' : '115 分享'" :load="loadSharePreview" @change="shareSelection = $event" />
             </template>
           </main>
 
@@ -154,7 +165,7 @@ function confirm() {
             <button v-if="step < 3" class="primary-button" type="button" :disabled="loading || Boolean(routeError) || step === 1 && !libraryId || step === 2 && !selectedChoice" @click="step = step === 1 ? 2 : 3">
               下一步
             </button>
-            <button v-else class="primary-button" type="button" :disabled="submitting || !selectedChoice" @click="confirm">
+            <button v-else class="primary-button" type="button" :disabled="submitting || loading || Boolean(routeError) || !selectedChoice || isShare && !shareSelection" @click="confirm">
               {{ submitting ? '正在创建任务…' : '确认入库' }}
             </button>
           </footer>

@@ -27,6 +27,7 @@ class LoadArgs {
     var headers: List<HeaderArgs>? = null
     var audioPath: String? = null
     var title: String? = null
+    var httpReadProfile: String? = null
 }
 
 @InvokeArg
@@ -120,6 +121,7 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
                 playablePath,
                 args.audioPath?.trim()?.takeIf { it.isNotEmpty() }?.let(::preparePlayablePath),
                 args.headers.orEmpty().map { MpvHeader(it.name, it.value) },
+                args.httpReadProfile,
             )
             currentMediaTitle = args.title?.trim()?.take(160).takeUnless { it.isNullOrEmpty() } ?: "正在播放"
             syncBackgroundPlaybackService()

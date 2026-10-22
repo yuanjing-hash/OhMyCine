@@ -8,6 +8,96 @@ use crate::storage;
 const MAX_PREPARED_SUBTITLE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_PREPARED_SUBTITLE_REDIRECTS: usize = 3;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub enum MpvHttpReadProfile {
+    #[serde(rename = "bounded_ranges_v1")]
+    BoundedRangesV1,
+}
+
+pub fn http_read_profile_diagnostic(
+    profile: Option<MpvHttpReadProfile>,
+    supported: bool,
+) -> Option<String> {
+    profile.map(|_| {
+        if supported {
+            "当前媒体已启用 8 MiB 分段读取。".to_string()
+        } else {
+            "当前引擎未启用分段读取，夸克原画可能缓冲。".to_string()
+        }
+    })
+}
+
+/// loadfile's options are file-local; mpv restores prior values at the next load.
+/// Length quoting keeps commas, quotes and UTF-8 audio URLs inside one value.
+pub fn playback_file_options(audio_path: Option<&str>, bounded_ranges: bool) -> Option<String> {
+    let mut options = Vec::new();
+    if bounded_ranges {
+        options.push("curl-enabled=yes,curl-max-request-size=8388608".to_string());
+    }
+    if let Some(value) = audio_path {
+        options.push(format!("audio-file=%{}%{}", value.len(), value));
+    }
+    (!options.is_empty()).then(|| options.join(","))
+}
+
+#[cfg(test)]
+mod http_read_profile_tests {
+    use super::*;
+
+    #[test]
+    fn http_read_profile_accepts_only_fixed_enum() {
+        assert!(matches!(
+            serde_json::from_str::<MpvHttpReadProfile>("\"bounded_ranges_v1\"").unwrap(),
+            MpvHttpReadProfile::BoundedRangesV1
+        ));
+        for value in [
+            "\"curl-max-request-size=1\"",
+            "\"tls-verify=no\"",
+            "\"future_profile\"",
+            "{}",
+            "1",
+        ] {
+            assert!(serde_json::from_str::<MpvHttpReadProfile>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn http_read_profile_options_are_file_local_and_audio_is_one_literal_value() {
+        assert_eq!(
+            playback_file_options(None, true).as_deref(),
+            Some("curl-enabled=yes,curl-max-request-size=8388608")
+        );
+        assert_eq!(playback_file_options(None, false), None);
+        let audio = "https://example.invalid/音频?x=,curl-max-request-size=1";
+        let quoted = format!("audio-file=%{}%{}", audio.len(), audio);
+        assert_eq!(
+            playback_file_options(Some(audio), false),
+            Some(quoted.clone())
+        );
+        assert_eq!(
+            playback_file_options(Some(audio), true),
+            Some(format!(
+                "curl-enabled=yes,curl-max-request-size=8388608,{quoted}"
+            ))
+        );
+    }
+
+    #[test]
+    fn http_read_profile_unsupported_is_an_advisory_without_options() {
+        assert_eq!(http_read_profile_diagnostic(None, false), None);
+        assert_eq!(
+            http_read_profile_diagnostic(Some(MpvHttpReadProfile::BoundedRangesV1), false)
+                .as_deref(),
+            Some("当前引擎未启用分段读取，夸克原画可能缓冲。")
+        );
+        assert!(
+            http_read_profile_diagnostic(Some(MpvHttpReadProfile::BoundedRangesV1), true)
+                .unwrap()
+                .contains("8 MiB")
+        );
+    }
+}
+
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MpvHttpHeader {

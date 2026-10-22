@@ -3,7 +3,7 @@ use tauri::{AppHandle, State};
 
 use super::player_shared::{
     prepare_external_subtitle, sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings,
-    MpvHttpHeader, MpvOrientationState,
+    MpvHttpHeader, MpvHttpReadProfile, MpvOrientationState,
 };
 use crate::mpv::{
     mobile::{AndroidMpvState, AndroidPlaybackDiagnostics, AndroidSurfaceStatus},
@@ -19,6 +19,7 @@ struct LoadPayload {
     headers: Vec<MpvHttpHeader>,
     audio_path: Option<String>,
     title: Option<String>,
+    http_read_profile: Option<MpvHttpReadProfile>,
 }
 
 #[derive(Clone, Serialize)]
@@ -136,6 +137,7 @@ pub async fn mpv_load(
     audio_path: Option<String>,
     audio_headers: Option<Vec<MpvHttpHeader>>,
     title: Option<String>,
+    http_read_profile: Option<MpvHttpReadProfile>,
     state: State<'_, AndroidMpvState>,
     stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
@@ -177,6 +179,7 @@ pub async fn mpv_load(
         path,
         headers,
         audio_path,
+        http_read_profile,
         title: title.and_then(|value| {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.chars().take(160).collect())

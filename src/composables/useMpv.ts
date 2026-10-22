@@ -1,3 +1,4 @@
+import type { HttpReadProfile } from '@/services/datasource/types'
 import type { LocalSubtitleDownloadResult } from '@/services/subtitle/types'
 import type { MpvColorDiagnostics, VideoDynamicRangeState } from '@/services/videoColor'
 import { invoke } from '@tauri-apps/api/core'
@@ -57,6 +58,7 @@ export interface MpvLoadOptions {
   readonly audioUrl?: string
   readonly audioHeaders?: Record<string, string>
   readonly title?: string
+  readonly httpReadProfile?: HttpReadProfile
 }
 
 interface MpvHttpHeaderPayload {
@@ -788,6 +790,7 @@ export function useMpv() {
           audioPath: options.audioUrl,
           audioHeaders: toMpvHeaderPayload(options.audioHeaders),
           title: options.title,
+          httpReadProfile: options.httpReadProfile,
         })
         if (!isCurrentPlaybackGeneration(generation))
           return

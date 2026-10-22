@@ -765,6 +765,12 @@ function handlePlayerBack() {
     void router.push('/')
 }
 
+async function handlePlaybackFailureBack() {
+  queueSwitchError.value = null
+  await stopPlaybackForRouteExit()
+  handlePlayerBack()
+}
+
 function markTitleLogoFailed(url: string) {
   failedTitleLogoUrls.value = new Set([...failedTitleLogoUrls.value, url])
 }
@@ -1299,6 +1305,7 @@ async function selectStreamVariant(variantId: string) {
       headers: request.headers,
       audioUrl: request.audioUrl,
       audioHeaders: request.audioHeaders,
+      httpReadProfile: request.httpReadProfile,
       title: mediaTitle.value,
     })
     if (!isCurrentPlaybackSession(generation))
@@ -1327,6 +1334,7 @@ async function selectStreamVariant(variantId: string) {
           headers: previousRequest.headers,
           audioUrl: previousRequest.audioUrl,
           audioHeaders: previousRequest.audioHeaders,
+          httpReadProfile: previousRequest.httpReadProfile,
           title: mediaTitle.value,
         })
         if (!isCurrentPlaybackSession(generation))
@@ -2556,6 +2564,7 @@ watch(
           headers: request.headers,
           audioUrl: request.audioUrl,
           audioHeaders: request.audioHeaders,
+          httpReadProfile: request.httpReadProfile,
           title: mediaTitle.value,
         })
         if (!isCurrentPlaybackSession(generation))
@@ -2566,12 +2575,14 @@ watch(
         void hydrateDownloadedSubtitles()
         startHistorySaveTimer()
         await resumeSavedProgressIfAvailable()
+        if (!isCurrentPlaybackSession(generation))
+          return
         syncProviderPlaybackStarted()
         if (isCurrentPlaybackSession(generation) && playbackEndedNaturally())
           void continueAfterNaturalEnd()
       }
       catch (error) {
-        if (!isCurrentPlaybackSession(generation))
+        if (!isCurrentPlaybackSession(generation) || (error instanceof Error && error.name === 'AbortError'))
           return
         mediaPath.value = ''
         mediaHeaders.value = {}
@@ -3616,6 +3627,22 @@ watch(
       @toggle-diagnostics="toggleDiagnosticsPanel"
       @set-strategy="handleSetStrategy"
     />
+
+    <div
+      v-if="isNativeAndroidPlayer && queueSwitchError"
+      class="absolute inset-x-4 top-1/2 z-30 mx-auto max-w-md -translate-y-1/2 rounded-2xl border border-white/14 bg-black/85 p-5 text-white shadow-2xl backdrop-blur-xl"
+      role="alert"
+    >
+      <p class="text-base font-semibold">
+        无法开始播放
+      </p>
+      <p class="mt-2 text-sm leading-relaxed text-red-100/90">
+        {{ queueSwitchError }}
+      </p>
+      <button class="mt-4 min-h-11 rounded-xl bg-white/12 px-5 text-sm font-semibold" @click.stop="handlePlaybackFailureBack">
+        返回
+      </button>
+    </div>
 
     <!-- Danmaku is media content, not Player chrome. Teleport it out of the PlayerView subtree so
          no current or future chrome visibility class/transition can become one of its ancestors. -->
