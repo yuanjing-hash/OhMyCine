@@ -3,7 +3,7 @@ import type { ServerAcquisitionStatus } from '@/services/serverDiscovery'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ServerDataSource } from '@/services/datasource/server'
-import { getServerAcquisitions } from '@/services/serverDiscovery'
+import { getServerAcquisitions, isTerminalServerAcquisition, serverAcquisitionLabel } from '@/services/serverDiscovery'
 import { useAcquisitionWorkspaceStore } from '@/stores/acquisitionWorkspace'
 import { useDataSourceStore } from '@/stores/datasource'
 
@@ -88,16 +88,11 @@ function stopTimer() {
 }
 
 function isTerminal(item: ServerAcquisitionStatus) {
-  return ['completed', 'failed', 'cancelled', 'canceled'].includes(item.status) || item.stage === 'library'
+  return isTerminalServerAcquisition(item)
 }
 
 function stageLabel(item: ServerAcquisitionStatus) {
-  const labels: Record<string, string> = { idle: '尚未开始', subscription: '订阅中', download: '下载中', organize: '整理中', transfer: '传输中', import: '刮削入库中', library: '已入库' }
-  if (item.status === 'queued')
-    return '等待执行'
-  if (item.status === 'failed')
-    return '需要处理'
-  return labels[item.stage] ?? item.stage
+  return serverAcquisitionLabel(item)
 }
 
 function progressLabel(item: ServerAcquisitionStatus) {
@@ -105,7 +100,7 @@ function progressLabel(item: ServerAcquisitionStatus) {
     return `${item.processedFiles} / ${item.totalFiles} 个文件`
   if (item.progress != null)
     return `${Math.round(item.progress)}%${item.downloadSpeed ? ` · ${formatSpeed(item.downloadSpeed)}` : ''}`
-  return item.status
+  return ''
 }
 
 function progressPercent(item: ServerAcquisitionStatus) {
