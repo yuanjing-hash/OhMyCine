@@ -101,7 +101,7 @@ assert.equal(source.hasCapability('media_catalog'), true)
 assert.equal(source.hasCapability('discovery_search'), false)
 const acquisitionPage = await getServerAcquisitions(source, 2, 12)
 assert.deepEqual(acquisitionPage, {
-  list: [{ id: 'acquisition-1', title: '七武士', mediaType: 'movie', tmdbId: 346, stage: 'download', status: 'running', progress: 62.5, bytesCompleted: 625, bytesTotal: 1000, downloadSpeed: 100, etaSeconds: 4, processedFiles: 1, totalFiles: 2, revision: 3, updatedAt: '2026-09-02T00:00:00Z', downloadTaskId: undefined, followSubscriptionId: undefined, targetLibraryId: undefined, transferTaskId: undefined, lastErrorCode: undefined }],
+  list: [{ id: 'acquisition-1', title: '七武士', mediaType: 'movie', tmdbId: 346, stage: 'download', status: 'running', progress: 62.5, bytesCompleted: 625, bytesTotal: 1000, downloadSpeed: 100, etaSeconds: 4, processedFiles: 1, totalFiles: 2, revision: 3, updatedAt: '2026-09-02T00:00:00Z', downloadTaskId: undefined, followSubscriptionId: undefined, targetLibraryId: undefined, catalogTarget: undefined, transferTaskId: undefined, lastErrorCode: undefined }],
   total: 13,
   page: 2,
   pageSize: 12,
@@ -170,10 +170,17 @@ assert.equal(categories[0].posterUrl, 'http://127.0.0.1:3000/api/v1/assets/gener
 assert.equal(categories[0].artworkRevision, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 assert.equal(categories[0].artworkSource, 'generated')
 
+let acquisitionCatalogTarget: unknown
+let acquisitionCatalogStatus = 'running'
+let acquisitionCatalogStage = 'download'
+let acquisitionCatalogDenied = false
+let acquisitionSeriesEpisodes = 1
+const acquisitionCatalogCalls: string[] = []
 const acquisitionCatalogSource = new ServerDataSource({
   bridge: {
     async request(request) {
-      const acquisition = { id: 'active-acquisition', title: 'Seven Samurai release', media_type: 'movie', tmdb_id: 346, stage: 'download', status: 'running', target_library_id: 9, progress: 25, processed_files: 0, total_files: 0, revision: 1, updated_at: '2026-09-02T00:00:00Z' }
+      acquisitionCatalogCalls.push(request.path)
+      const acquisition = { id: 'active-acquisition', title: 'Seven Samurai release', media_type: 'movie', tmdb_id: 346, stage: acquisitionCatalogStage, status: acquisitionCatalogStatus, target_library_id: 9, catalog_target: acquisitionCatalogTarget, progress: 25, processed_files: 0, total_files: 0, revision: 1, updated_at: '2026-09-02T00:00:00Z' }
       if (request.path === '/api/v1/player/media-libraries/9/categories')
         return { status: 200, body: { code: 0, message: 'success', data: { list: [], total: 0 } } }
       if (request.path.startsWith('/api/v1/player/discovery/acquisitions?'))
@@ -182,6 +189,15 @@ const acquisitionCatalogSource = new ServerDataSource({
         return { status: 200, body: { code: 0, message: 'success', data: { work: { provider: 'tmdb', provider_id: '346', media_type: 'movie', title: '七武士', tmdb_id: 346 }, genres: [], directors: [], cast: [] } } }
       if (request.path === '/api/v1/player/discovery/media/movie/346/acquisition')
         return { status: 200, body: { code: 0, message: 'success', data: acquisition } }
+      if (request.path === '/api/v1/player/discovery/media/tv/100/acquisition')
+        return { status: 200, body: { code: 0, message: 'success', data: { ...acquisition, media_type: 'tv', tmdb_id: 100 } } }
+      if (request.path.startsWith('/api/v1/player/media-libraries/9/catalog/')) {
+        if (acquisitionCatalogDenied)
+          return { status: 403, body: { code: 'PERMISSION_DENIED', message: '无权查看媒体库', data: {} } }
+        if (request.path.endsWith(`/catalog/${seriesItem().id}`))
+          return { status: 200, body: { code: 0, message: 'success', data: { item: { ...seriesItem(), episode_count: acquisitionSeriesEpisodes }, versions: Array.from({ length: acquisitionSeriesEpisodes }, (_, index) => ({ id: index + 201, item_token: `entry|9|${seriesItem().id}|${index + 201}`, history_identity: `server:v1:episode:9:${seriesItem().id}:1:${index + 1}`, title: `Published episode ${index + 1}`, season: 1, episode: index + 1, size: 2048, playable: true, exact_identity: `server:entry:${index + 201}` })) } } }
+        return bridge.request(request)
+      }
       return { status: 404, body: { code: 'NOT_FOUND', message: 'not found', data: {} } }
     },
   },
@@ -190,15 +206,160 @@ const acquisitionCatalogSource = new ServerDataSource({
 await acquisitionCatalogSource.init({ id: 'server-acquisition-catalog', type: 'server', name: '入库占位测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'acquisition-catalog-credential', deviceId: 'acquisition-catalog-device' } })
 const acquisitionCategories = await acquisitionCatalogSource.list('9')
 assert.deepEqual(acquisitionCategories, [])
-// Existing bookmarks may still resolve the old task-only deep link, but it is
-// never inserted into the real media-library category navigation.
-const acquisitionItems = await acquisitionCatalogSource.list('server-acquisition-category|9')
-assert.deepEqual(acquisitionItems.map(item => [item.name, item.type, item.acquisition?.progress]), [['Seven Samurai release', 'movie', 25]])
-const acquisitionDetail = await acquisitionCatalogSource.getDetail(acquisitionItems[0].id)
+assert.equal(acquisitionCatalogCalls.some(path => path.includes('/discovery/acquisitions')), false)
+assert.deepEqual((await acquisitionCatalogSource.list('server-acquisition-category|9')).map(item => item.name), ['Seven Samurai release'])
+const taskWorkspacePage = await getServerAcquisitions(acquisitionCatalogSource)
+assert.equal(taskWorkspacePage.list[0]?.progress, 25)
+const legacyAcquisitionID = 'server-acquisition|9|movie|346'
+const acquisitionDetail = await acquisitionCatalogSource.getDetail(legacyAcquisitionID)
 assert.equal(acquisitionDetail.name, '七武士')
 assert.equal(acquisitionDetail.acquisition?.stage, 'download')
 assert.deepEqual(acquisitionDetail.mediaSources, [])
+acquisitionCatalogTarget = { library_id: 9, work_token: mediaItem().id }
+for (const state of ['queued', 'running', 'failed']) {
+  acquisitionCatalogStatus = state
+  const current = await acquisitionCatalogSource.getDetail(legacyAcquisitionID)
+  assert.equal(current.id, `work|9|${mediaItem().id}`)
+  assert.equal(current.acquisition?.stage, 'download')
+  assert.equal(current.acquisition?.status, state)
+  assert.deepEqual(current.mediaSources?.map(item => item.id), ['77'])
+  assert.equal(current.children?.length, 1)
+}
+acquisitionCatalogStage = 'library'
+acquisitionCatalogStatus = 'completed'
+assert.equal((await acquisitionCatalogSource.getDetail(legacyAcquisitionID)).acquisition?.stage, 'library')
+const legacySeriesID = 'server-acquisition|9|tv|100'
+acquisitionCatalogTarget = { library_id: 9, work_token: seriesItem().id }
+const publishedSeries = await acquisitionCatalogSource.getDetail(legacySeriesID)
+assert.equal(publishedSeries.type, 'series')
+assert.equal(publishedSeries.children?.length, 1)
+const publishedSeasons = await acquisitionCatalogSource.list(publishedSeries.id)
+assert.deepEqual(publishedSeasons.map(season => season.seasonNumber), [1])
+assert.equal((await acquisitionCatalogSource.list(publishedSeasons[0]!.id)).length, 1)
+// A repeat read of the legacy navigation must obtain the new catalog revision,
+// not the old empty discovery shell or a frozen episode list.
+acquisitionSeriesEpisodes = 2
+assert.equal((await acquisitionCatalogSource.getDetail(legacySeriesID)).children?.length, 2)
+assert.deepEqual((await acquisitionCatalogSource.list(publishedSeasons[0]!.id)).map(episode => episode.episodeNumber), [1, 2])
+acquisitionCatalogTarget = { library_id: 9, work_token: mediaItem().id }
+// A stale target must reauthorize through the ordinary catalog endpoint. Do
+// not hide a permission or server error by rebuilding an empty queued shell.
+acquisitionCatalogDenied = true
+await assert.rejects(acquisitionCatalogSource.getDetail(legacyAcquisitionID), /无权查看媒体库/)
+acquisitionCatalogDenied = false
+const beforeInvalidTarget = acquisitionCatalogCalls.filter(path => path.includes('/catalog/')).length
+acquisitionCatalogTarget = undefined
+assert.deepEqual((await acquisitionCatalogSource.getDetail(legacyAcquisitionID)).mediaSources, [])
+for (const invalidTarget of [{ library_id: 10, work_token: mediaItem().id }, { library_id: 9, work_token: 'https://untrusted.example/file' }, { library_id: 9, work_token: `${mediaItem().id}=` }, { library_id: 9.5, work_token: mediaItem().id }]) {
+  acquisitionCatalogTarget = invalidTarget
+  await assert.rejects(acquisitionCatalogSource.getDetail(legacyAcquisitionID), /Server 返回的入库媒体目标/)
+}
+assert.equal(acquisitionCatalogCalls.filter(path => path.includes('/catalog/')).length, beforeInvalidTarget)
 acquisitionCatalogSource.destroy()
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+const lifetimeConfig = {
+  id: 'server-acquisition-lifetime', type: 'server' as const, name: 'Lifecycle fixture', order: 0,
+  url: 'http://127.0.0.1:3000', enabled: true,
+  extra: { credentialRef: 'lifetime-old', deviceId: 'lifetime-device' },
+}
+const lifetimeAcquisition = {
+  id: 'lifetime-intake', media_type: 'movie', tmdb_id: 346, stage: 'download', status: 'queued',
+  target_library_id: 9, processed_files: 0, total_files: 0, revision: 1,
+}
+// Destroying the source while its first acquisition response is pending must
+// prevent both catalog and discovery follow-ups, including a new direct call.
+for (const catalogTarget of [undefined, { library_id: 9, work_token: mediaItem().id }]) {
+  const response = deferred<{ status: number, body: unknown }>()
+  const started = deferred<void>()
+  const paths: string[] = []
+  let credentialReads = 0
+  const retiringSource = new ServerDataSource({
+    bridge: { async request(request) { paths.push(request.path); started.resolve(); return response.promise } },
+    readCredential: async () => { credentialReads++; return { accessToken: token } },
+  })
+  await retiringSource.init(lifetimeConfig)
+  const rejected = assert.rejects(retiringSource.getDetail(legacyAcquisitionID), /Server 连接已变化/)
+  await started.promise
+  retiringSource.destroy()
+  response.resolve({ status: 200, body: { code: 0, message: 'success', data: { ...lifetimeAcquisition, catalog_target: catalogTarget } } })
+  await rejected
+  await assert.rejects(retiringSource.getDetail(legacyAcquisitionID), /Server 连接已变化/)
+  assert.deepEqual(paths, ['/api/v1/player/discovery/media/movie/346/acquisition'])
+  assert.equal(credentialReads, 1)
+  assert.equal(retiringSource.isConnected, false)
+}
+// An account replacement on the same source instance also retires the old
+// response. New calls use the new account and can still reach real media.
+const oldAccountResponse = deferred<{ status: number, body: unknown }>()
+const oldAccountStarted = deferred<void>()
+const replacementCalls: Array<{ path: string, accessToken?: string }> = []
+const replacementToken = `omc_player_${'b'.repeat(43)}`
+const replacementSource = new ServerDataSource({
+  bridge: {
+    async request(request) {
+      replacementCalls.push({ path: request.path, accessToken: request.accessToken })
+      if (request.accessToken === token) {
+        oldAccountStarted.resolve()
+        return oldAccountResponse.promise
+      }
+      if (request.path.includes('/discovery/media/'))
+        return { status: 200, body: { code: 0, message: 'success', data: { ...lifetimeAcquisition, catalog_target: { library_id: 9, work_token: mediaItem().id } } } }
+      if (request.path.startsWith('/api/v1/player/media-libraries/9/catalog/'))
+        return { status: 200, body: { code: 0, message: 'success', data: { item: mediaItem(), versions: [{ id: 77, item_token: `entry|9|${mediaItem().id}|77`, history_identity: mediaItem().history_identity, title: 'Published fixture', size: 1024, playable: true, exact_identity: 'server:entry:77' }] } } }
+      throw new Error('Unexpected replacement fixture request')
+    },
+  },
+  readCredential: async ref => ({ accessToken: ref === 'lifetime-old' ? token : replacementToken }),
+})
+await replacementSource.init(lifetimeConfig)
+const replacedRequest = assert.rejects(replacementSource.getDetail(legacyAcquisitionID), /Server 连接已变化/)
+await oldAccountStarted.promise
+await replacementSource.init({ ...lifetimeConfig, extra: { ...lifetimeConfig.extra, credentialRef: 'lifetime-new' } })
+oldAccountResponse.resolve({ status: 200, body: { code: 0, message: 'success', data: lifetimeAcquisition } })
+await replacedRequest
+assert.equal(replacementCalls.length, 1)
+assert.deepEqual((await replacementSource.getDetail(legacyAcquisitionID)).mediaSources?.map(item => item.id), ['77'])
+assert.equal(replacementCalls.slice(1).every(request => request.accessToken === replacementToken), true)
+replacementSource.destroy()
+// Late credential reads must not register an old account or start a bridge
+// request after teardown, whether they belong to init or a normal JSON call.
+for (const duringInit of [true, false]) {
+  const credential = deferred<{ accessToken: string } | null>()
+  const reading = deferred<void>()
+  let reads = 0
+  let bridgeCalls = 0
+  const delayedSource = new ServerDataSource({
+    bridge: { async request() { bridgeCalls++; throw new Error('retired fixture reached bridge') } },
+    readCredential: async () => {
+      reads++
+      if (!duringInit && reads === 1)
+        return null
+      reading.resolve()
+      return credential.promise
+    },
+  })
+  let rejected: Promise<void>
+  if (duringInit)
+    rejected = assert.rejects(delayedSource.init(lifetimeConfig), /Server 连接已变化/)
+  else {
+    await delayedSource.init(lifetimeConfig)
+    rejected = assert.rejects(delayedSource.getDetail(legacyAcquisitionID), /Server 连接已变化/)
+  }
+  await reading.promise
+  delayedSource.destroy()
+  credential.resolve({ accessToken: token })
+  await rejected
+  await assert.rejects(delayedSource.getDiscoveryAcquisitions(), /Server 连接已变化/)
+  assert.equal(bridgeCalls, 0)
+  assert.equal(delayedSource.isConnected, false)
+  assert.equal(reads, duringInit ? 1 : 2)
+}
 
 const items = await source.list(categories[0].id)
 assert.equal(items.length, 101)

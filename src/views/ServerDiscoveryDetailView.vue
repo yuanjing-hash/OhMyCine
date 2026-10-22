@@ -11,7 +11,7 @@ import { useServerResourceRecognition } from '@/composables/useServerResourceRec
 import { ServerDataSource } from '@/services/datasource/server'
 import { registerLayoutBackHandler } from '@/services/layoutBackNavigation'
 import { publishFeedback } from '@/services/mediaActions'
-import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerFollowDefaults, getServerFollowRoutePreview, getServerResourceLink, getServerRouteRecommendation, getServerSearchSites, streamServerResources } from '@/services/serverDiscovery'
+import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerFollowDefaults, getServerFollowRoutePreview, getServerResourceLink, getServerRouteRecommendation, getServerSearchSites, isTerminalServerAcquisition, serverAcquisitionLabel, streamServerResources } from '@/services/serverDiscovery'
 import { beginResourceSearch, emptyResourceSearch, finishResourceSearch, reduceResourceSearch, resourceGroupRetryPage, ResourceSearchController } from '@/services/serverDiscoverySearch'
 import { previewServerShare } from '@/services/serverSharePreview'
 import { useAcquisitionWorkspaceStore } from '@/stores/acquisitionWorkspace'
@@ -515,18 +515,11 @@ function stopStatusPolling(invalidate = true) {
 }
 
 function isTerminalAcquisition(value: ServerAcquisitionStatus) {
-  return ['completed', 'failed', 'cancelled', 'canceled'].includes(value.status) || value.stage === 'library'
+  return isTerminalServerAcquisition(value)
 }
 
 function describeAcquisition(value: ServerAcquisitionStatus | null) {
-  if (!value || value.stage === 'idle')
-    return '尚未入库'
-  const labels: Record<string, string> = { subscription: '已订阅', download: '下载中', organize: '整理中', transfer: '传输中', import: '刮削入库中', library: '已入库' }
-  if (value.status === 'queued')
-    return '等待入库'
-  if (value.status === 'failed')
-    return '入库需要处理'
-  return labels[value.stage] ?? value.stage
+  return serverAcquisitionLabel(value)
 }
 
 async function openFollow() {
@@ -782,7 +775,7 @@ onBeforeUnmount(() => {
           </p><h2 class="mt-1 text-sm font-semibold text-white/88">
             {{ acquisitionLabel }}
           </h2><p class="mt-1 text-xs text-white/40">
-            {{ acquisition.totalFiles ? `${acquisition.processedFiles} / ${acquisition.totalFiles} 个文件` : acquisition.progress != null ? `${Math.round(acquisition.progress)}%` : acquisition.status }}<template v-if="acquisition.lastErrorCode">
+            {{ acquisition.totalFiles ? `${acquisition.processedFiles} / ${acquisition.totalFiles} 个文件` : acquisition.progress != null ? `${Math.round(acquisition.progress)}%` : '' }}<template v-if="acquisition.lastErrorCode">
               · {{ acquisition.lastErrorCode }}
             </template>
           </p>

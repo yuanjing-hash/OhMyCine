@@ -3,6 +3,7 @@ import type { AudioTrack, DataSource, MediaDetail, MediaItem, MediaLibrary, Medi
 import type { PlaybackQueueInput } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import type { SeriesEpisodeSearchEntry } from '@/services/seriesEpisodeSearch'
+import type { ServerLibraryRefreshDetail } from '@/services/serverMediaChanges'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import CachedImage from '@/components/media/CachedImage.vue'
@@ -12,16 +13,20 @@ import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
 import { describeMediaSource, hasMeaningfulMediaSource } from '@/services/datasource/mediaSourceDisplay'
 import { toOfflineMediaDetail } from '@/services/datasource/offline'
+import { ServerDataSource, ServerRequestError } from '@/services/datasource/server'
 import { getOfflineDetail } from '@/services/downloads'
 import { listSeriesEpisodes, resolveEpisodePlaybackQueue } from '@/services/episodePlayback'
 import { artworkURLCacheKey } from '@/services/imageCache'
 import { beginMediaActionLongPress, cancelMediaActionLongPress, createMediaActionTarget, endMediaActionLongPress, getMediaActionController, moveMediaActionLongPress, openMediaActionContextMenu, suppressMediaActionClick } from '@/services/mediaActions'
+import { MediaDetailRequestScope } from '@/services/mediaDetailRequest'
 import { createPlaybackQueue, getPlaybackMediaContext, savePlaybackMediaContext } from '@/services/playbackContext'
 import { areAllKnownPlayableChildrenCompleted, getPlaybackProgress, isCompletedPosition, playbackCompletionKey, playbackProgressIdentityForMediaItem, PLAYED_STATE_CHANGED_EVENT, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { episodeSearchTitle, searchSeriesEpisodes } from '@/services/seriesEpisodeSearch'
+import { serverAcquisitionLabel } from '@/services/serverDiscovery'
+import { SERVER_LIBRARY_REFRESH_EVENT } from '@/services/serverMediaChanges'
 import { useDataSourceStore } from '@/stores/datasource'
 
 const route = useRoute()
@@ -54,6 +59,9 @@ const episodeSearchError = ref<string | null>(null)
 const episodeSearchEntries = ref<SeriesEpisodeSearchEntry[]>([])
 const episodeSearchInputRef = ref<HTMLInputElement | null>(null)
 let episodeSearchGeneration = 0
+let acquisitionRefreshPending = false
+let detailViewMounted = false
+const detailRequestScope = new MediaDetailRequestScope()
 const selectedMediaSourceId = ref<string>('')
 const selectedAudioIndex = ref<number | null>(null)
 const selectedSubtitleIndex = ref<number | null>(null)
@@ -86,7 +94,7 @@ async function toggleDetailPlayedState() {
     return
   const outcome = await getMediaActionController().execute(target, detailPlayed.value ? 'markUnplayed' : 'markPlayed')
   if (outcome.status === 'completed')
-    await loadDetail()
+    await loadDetail(true)
 }
 
 async function enqueueOnlineDownload() {
@@ -168,16 +176,7 @@ const audioTracks = computed(() => isPlayableDetail.value ? (detail.value?.audio
 const subtitleTracks = computed(() => isPlayableDetail.value ? (detail.value?.subtitles ?? []) : [])
 const runtimeLabel = computed(() => detail.value?.duration ? `${Math.round(detail.value.duration / 60)} 分钟` : '')
 const sourceLabel = computed(() => selectedMediaSource.value ? describeMediaSource(selectedMediaSource.value) : '默认版本')
-const acquisitionLabel = computed(() => {
-  const acquisition = detail.value?.acquisition
-  if (!acquisition)
-    return ''
-  if (acquisition.status === 'failed')
-    return '入库需要处理'
-  if (acquisition.status === 'queued')
-    return '等待执行'
-  return ({ download: '正在下载', organize: '正在整理', transfer: '正在传输', import: '正在刮削入库', subscription: '订阅等待中' } as Record<string, string>)[acquisition.stage] ?? acquisition.stage
-})
+const acquisitionLabel = computed(() => serverAcquisitionLabel(detail.value?.acquisition))
 const acquisitionProgress = computed(() => {
   const acquisition = detail.value?.acquisition
   if (!acquisition)
@@ -264,7 +263,10 @@ const episodeIndicatorStyle = computed(() => {
 })
 
 onMounted(() => {
+  detailViewMounted = true
   window.addEventListener(PLAYED_STATE_CHANGED_EVENT, handlePlayedStateChanged)
+  window.addEventListener(SERVER_LIBRARY_REFRESH_EVENT, handleServerLibraryRefresh)
+  window.addEventListener('focus', handleAcquisitionFocus)
   mobileEpisodeMediaQuery = window.matchMedia('(max-width: 767px)')
   updateMobileEpisodeViewport()
   mobileEpisodeMediaQuery.addEventListener('change', updateMobileEpisodeViewport)
@@ -272,21 +274,82 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  detailViewMounted = false
+  detailRequestScope.invalidate()
+  acquisitionRefreshPending = false
   episodeSearchGeneration += 1
   mobileEpisodeMediaQuery?.removeEventListener('change', updateMobileEpisodeViewport)
   window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, handlePlayedStateChanged)
+  window.removeEventListener(SERVER_LIBRARY_REFRESH_EVENT, handleServerLibraryRefresh)
+  window.removeEventListener('focus', handleAcquisitionFocus)
 })
 
-function handlePlayedStateChanged() {
-  void loadDetail()
+function refreshAcquisitionDetail() {
+  if (!itemId.value.startsWith('server-acquisition|'))
+    return
+  if (isLoading.value)
+    acquisitionRefreshPending = true
+  else
+    void loadDetail(true)
 }
 
-watch([sourceId, itemId], loadDetail)
+function handleAcquisitionFocus() {
+  refreshAcquisitionDetail()
+}
 
-async function loadDetail() {
+function handleServerLibraryRefresh(event: Event) {
+  const update = (event as CustomEvent<ServerLibraryRefreshDetail>).detail
+  if (update?.sourceId !== sourceId.value)
+    return
+  const libraryId = detail.value?.libraryId
+  if (update.resyncRequired || !libraryId || update.libraryIds.includes(libraryId))
+    refreshAcquisitionDetail()
+}
+
+function handlePlayedStateChanged() {
+  void loadDetail(true)
+}
+
+function detailConfigurationKey() {
+  const config = store.configs.find(config => config.id === sourceId.value)
+  return JSON.stringify([config?.type, config?.enabled, config?.url, config?.extra?.credentialRef, config?.extra?.credentialVersion, config?.extra?.deviceId])
+}
+
+watch([sourceId, itemId, detailConfigurationKey, () => store.getSource(sourceId.value)], () => {
+  if (detailViewMounted)
+    void loadDetail()
+})
+
+async function loadDetail(preserveSelection = false) {
+  const retainedSelection = preserveSelection
+    ? {
+        seasonId: selectedSeasonId.value,
+        sourceId: selectedMediaSourceId.value,
+        episodeId: selectedEpisode.value?.id,
+        edition: selectedEpisodeEdition.value,
+      }
+    : undefined
+  const requestedSourceId = sourceId.value
+  const requestedItemId = itemId.value
+  const requestedConfiguration = detailConfigurationKey()
+  const hasContextOwner = () => {
+    const config = store.configs.find(config => config.id === requestedSourceId)
+    if (config)
+      return config.enabled !== false
+    const source = store.getSource(requestedSourceId)
+    return Boolean(source && source.type !== 'server')
+  }
+  let requestedSource: DataSource | undefined
+  const isCurrentRoute = detailRequestScope.begin(() => detailViewMounted
+    && sourceId.value === requestedSourceId && itemId.value === requestedItemId
+    && detailConfigurationKey() === requestedConfiguration)
+  const isCurrent = () => isCurrentRoute()
+    && (!requestedSource || store.getSource(requestedSourceId) === requestedSource)
+  acquisitionRefreshPending = false
   episodeSearchGeneration += 1
   closeEpisodeSearch()
   isLoading.value = true
+  isSeriesContentLoading.value = false
   errorMessage.value = null
   downloadFeedback.value = null
   seriesErrorMessage.value = null
@@ -302,7 +365,11 @@ async function loadDetail() {
   resetEpisodeWindow()
 
   try {
-    const contextual = recoverContextualDetail()
+    // Server catalog authority and an acquisition's target must be revalidated;
+    // playback context cannot revive a revoked work or an old queued shell.
+    const serverCatalog = store.configs.find(config => config.id === requestedSourceId)?.type === 'server'
+      && /^(?:work|season|entry)\|/.test(requestedItemId)
+    const contextual = !hasContextOwner() || requestedItemId.startsWith('server-acquisition|') || serverCatalog ? null : recoverContextualDetail()
     if (contextual) {
       detail.value = contextual.detail
       const selectableMediaSources = (contextual.detail.mediaSources ?? []).filter(hasMeaningfulMediaSource)
@@ -310,78 +377,122 @@ async function loadDetail() {
       selectedAudioIndex.value = contextual.detail.audioTracks?.find(track => track.isDefault)?.index ?? contextual.detail.audioTracks?.[0]?.index ?? null
       selectedSubtitleIndex.value = contextual.detail.subtitles?.find(track => track.isDefault)?.index ?? contextual.detail.subtitles?.[0]?.index ?? null
 
-      if (contextual.detail.type === 'series')
-        await loadSeriesSeasons(await resolveSource(), contextual.detail.id)
-      else
-        await refreshPlaybackProgress([contextual.detail])
+      if (contextual.detail.type === 'series') {
+        requestedSource = await resolveSource(requestedSourceId)
+        if (!isCurrent())
+          return
+        await loadSeriesSeasons(requestedSource, contextual.detail.id, isCurrent)
+      }
+      else {
+        await refreshPlaybackProgress([contextual.detail], isCurrent)
+      }
       return
     }
 
-    const source = await resolveSource()
-    const nextDetail = await source.getDetail(itemId.value)
+    requestedSource = await resolveSource(requestedSourceId)
+    if (!isCurrent())
+      return
+    const source = requestedSource
+    const nextDetail = await (source instanceof ServerDataSource ? source.getDetail(requestedItemId, isCurrent) : source.getDetail(requestedItemId))
+    if (!isCurrent())
+      return
     detail.value = nextDetail
     const selectableMediaSources = (nextDetail.mediaSources ?? []).filter(hasMeaningfulMediaSource)
-    selectedMediaSourceId.value = selectableMediaSources[0]?.id ?? ''
+    selectedMediaSourceId.value = selectableMediaSources.find(candidate => candidate.id === retainedSelection?.sourceId)?.id ?? selectableMediaSources[0]?.id ?? ''
     selectedAudioIndex.value = nextDetail.audioTracks?.find(track => track.isDefault)?.index ?? nextDetail.audioTracks?.[0]?.index ?? null
     selectedSubtitleIndex.value = nextDetail.subtitles?.find(track => track.isDefault)?.index ?? nextDetail.subtitles?.[0]?.index ?? null
 
     if (nextDetail.type === 'series')
-      await loadSeriesSeasons(source, nextDetail.id)
+      await loadSeriesSeasons(source, nextDetail.id, isCurrent, retainedSelection?.seasonId)
     else
-      await refreshPlaybackProgress([nextDetail])
+      await refreshPlaybackProgress([nextDetail], isCurrent)
+    if (isCurrent() && retainedSelection && nextDetail.type === 'series') {
+      if (retainedSelection.edition === null || episodeEditions.value.includes(retainedSelection.edition)) {
+        selectedEpisodeEdition.value = retainedSelection.edition
+        episodes.value = retainedSelection.edition === null ? editionEpisodes.value : editionEpisodes.value.filter(item => item.edition === retainedSelection.edition)
+      }
+      const previousEpisode = episodes.value.findIndex(item => item.id === retainedSelection.episodeId)
+      if (previousEpisode >= 0)
+        selectEpisodeIndex(previousEpisode, 'auto')
+    }
   }
   catch (error) {
-    const offline = await getOfflineDetail(sourceId.value, itemId.value).catch(() => undefined)
+    if (!isCurrent())
+      return
+    const isServer = requestedSource?.type === 'server' || store.configs.find(config => config.id === requestedSourceId)?.type === 'server'
+    const authoritativeDenial = !hasContextOwner() || (isServer && (requestedItemId.startsWith('server-acquisition|')
+      || (error instanceof ServerRequestError && (error.status < 500 || /permission|auth/i.test(error.code ?? '')))
+      || (error instanceof Error && (error.name === 'AbortError' || error.message.startsWith('Server 返回')))))
+    const offline = authoritativeDenial
+      ? undefined
+      : await getOfflineDetail(requestedSourceId, requestedItemId).catch(() => undefined)
+    if (!isCurrent())
+      return
     if (offline) {
       const offlineDetail = await toOfflineMediaDetail(offline)
+      if (!isCurrent())
+        return
       detail.value = offlineDetail
       selectedMediaSourceId.value = offlineDetail.mediaSources?.[0]?.id ?? ''
-      await refreshPlaybackProgress([offlineDetail])
-      errorMessage.value = null
+      await refreshPlaybackProgress([offlineDetail], isCurrent)
+      if (isCurrent())
+        errorMessage.value = null
       return
     }
     errorMessage.value = toSafeErrorMessage(error, '媒体详情加载失败。')
   }
   finally {
-    isLoading.value = false
+    if (isCurrent()) {
+      isLoading.value = false
+      if (acquisitionRefreshPending) {
+        acquisitionRefreshPending = false
+        refreshAcquisitionDetail()
+      }
+    }
   }
 }
 
-async function resolveSource(): Promise<DataSource> {
+async function resolveSource(requestedSourceId = sourceId.value): Promise<DataSource> {
   store.loadConfigs()
   await store.syncManager()
-  const source = store.getSource(sourceId.value)
+  const source = store.getSource(requestedSourceId)
   if (!source)
     throw new Error('数据源不可用，请检查设置或重新登录。')
   return source
 }
 
-async function loadSeriesSeasons(source: DataSource, seriesId: string) {
+async function loadSeriesSeasons(source: DataSource, seriesId: string, isCurrent: () => boolean, preferredSeasonId?: string) {
   isSeriesContentLoading.value = true
   seriesErrorMessage.value = null
   try {
     const children = await source.list(seriesId)
+    if (!isCurrent())
+      return
     const seasonItems = children.filter(item => item.type === 'season' || item.type === 'folder')
     const episodeItems = children.filter(item => item.type === 'episode')
     seasons.value = seasonItems
 
     if (seasonItems.length > 0) {
-      selectedSeasonId.value = seasonItems[0].id
-      await loadSeasonEpisodes(source, seasonItems[0].id)
+      const season = seasonItems.find(item => item.id === preferredSeasonId) ?? seasonItems[0]!
+      selectedSeasonId.value = season.id
+      await loadSeasonEpisodes(source, season.id, isCurrent)
       return
     }
 
     setEpisodeItems(episodeItems)
     seasonEpisodeCache.set(seriesId, episodeItems)
     resetEpisodeWindow()
-    await refreshPlaybackProgress(editionEpisodes.value)
-    selectInitialEpisodeForSeason()
+    await refreshPlaybackProgress(editionEpisodes.value, isCurrent)
+    if (isCurrent())
+      selectInitialEpisodeForSeason()
   }
   catch (error) {
-    seriesErrorMessage.value = toSafeErrorMessage(error, '剧集季/集信息加载失败。')
+    if (isCurrent())
+      seriesErrorMessage.value = toSafeErrorMessage(error, '剧集季/集信息加载失败。')
   }
   finally {
-    isSeriesContentLoading.value = false
+    if (isCurrent())
+      isSeriesContentLoading.value = false
   }
 }
 
@@ -390,12 +501,22 @@ async function selectSeason(season: MediaItem) {
     return
 
   selectedSeasonId.value = season.id
+  const requestedSourceId = sourceId.value
+  const requestedConfiguration = detailConfigurationKey()
+  const requestedItemId = itemId.value
+  const requestedDetail = detail.value
+  const requestedSource = store.getSource(requestedSourceId)
+  const isCurrent = () => detailViewMounted && sourceId.value === requestedSourceId
+    && itemId.value === requestedItemId && detail.value === requestedDetail
+    && detailConfigurationKey() === requestedConfiguration
+    && store.getSource(requestedSourceId) === requestedSource && selectedSeasonId.value === season.id
   const cachedEpisodes = seasonEpisodeCache.get(season.id)
   if (cachedEpisodes) {
     setEpisodeItems(cachedEpisodes)
     resetEpisodeWindow()
-    await refreshPlaybackProgress(editionEpisodes.value)
-    selectInitialEpisodeForSeason()
+    await refreshPlaybackProgress(editionEpisodes.value, isCurrent)
+    if (isCurrent())
+      selectInitialEpisodeForSeason()
     return
   }
 
@@ -403,25 +524,31 @@ async function selectSeason(season: MediaItem) {
   seriesErrorMessage.value = null
   try {
     setEpisodeItems([])
-    const source = await resolveSource()
-    await loadSeasonEpisodes(source, season.id)
+    const source = await resolveSource(requestedSourceId)
+    if (isCurrent())
+      await loadSeasonEpisodes(source, season.id, isCurrent)
   }
   catch (error) {
-    seriesErrorMessage.value = toSafeErrorMessage(error, '分集列表加载失败。')
+    if (isCurrent())
+      seriesErrorMessage.value = toSafeErrorMessage(error, '分集列表加载失败。')
   }
   finally {
-    isSeriesContentLoading.value = false
+    if (isCurrent())
+      isSeriesContentLoading.value = false
   }
 }
 
-async function loadSeasonEpisodes(source: DataSource, seasonId: string) {
+async function loadSeasonEpisodes(source: DataSource, seasonId: string, isCurrent: () => boolean) {
   const items = await source.list(seasonId)
+  if (!isCurrent())
+    return
   const playable = playableEpisodeItems(items)
   setEpisodeItems(playable)
   seasonEpisodeCache.set(seasonId, playable)
   resetEpisodeWindow()
-  await refreshPlaybackProgress(editionEpisodes.value)
-  selectInitialEpisodeForSeason()
+  await refreshPlaybackProgress(editionEpisodes.value, isCurrent)
+  if (isCurrent())
+    selectInitialEpisodeForSeason()
 }
 
 function playableEpisodeItems(items: readonly MediaItem[]): MediaItem[] {
@@ -518,11 +645,20 @@ function setEpisodeItems(items: MediaItem[]) {
 }
 
 async function selectEpisodeEdition(edition: string | null) {
+  const requestedDetail = detail.value
+  const requestedSourceId = sourceId.value
+  const requestedConfiguration = detailConfigurationKey()
+  const requestedSource = store.getSource(requestedSourceId)
+  const isCurrent = () => detailViewMounted && detail.value === requestedDetail
+    && sourceId.value === requestedSourceId && detailConfigurationKey() === requestedConfiguration
+    && store.getSource(requestedSourceId) === requestedSource
+    && selectedEpisodeEdition.value === edition
   selectedEpisodeEdition.value = edition
   episodes.value = edition === null ? editionEpisodes.value : editionEpisodes.value.filter(item => item.edition === edition)
   resetEpisodeWindow()
-  await refreshPlaybackProgress(episodes.value)
-  selectInitialEpisodeForSeason(true)
+  await refreshPlaybackProgress(episodes.value, isCurrent)
+  if (isCurrent())
+    selectInitialEpisodeForSeason(true)
 }
 
 function resetEpisodeWindow() {
@@ -698,12 +834,21 @@ function handleEpisodeIndicatorKeydown(event: KeyboardEvent) {
   }
 }
 
-async function refreshPlaybackProgress(items: readonly MediaItem[]) {
+async function refreshPlaybackProgress(items: readonly MediaItem[], isCurrent?: () => boolean) {
+  const requestedDetail = detail.value
+  const requestedSourceId = sourceId.value
+  const requestedConfiguration = detailConfigurationKey()
+  const requestedSource = store.getSource(requestedSourceId)
+  const canCommit = isCurrent ?? (() => detailViewMounted && detail.value === requestedDetail
+    && sourceId.value === requestedSourceId && detailConfigurationKey() === requestedConfiguration
+    && store.getSource(requestedSourceId) === requestedSource)
   const playableItems = items.filter(item => !['series', 'season', 'folder'].includes(item.type))
   if (playableItems.length === 0)
     return
 
   const entries = await Promise.all(playableItems.map(async item => [item.id, await getPlaybackProgress(playbackProgressIdentityForMediaItem(item))] as const))
+  if (!canCommit())
+    return
   playbackProgressByItemId.value = {
     ...playbackProgressByItemId.value,
     ...Object.fromEntries(entries.filter((entry): entry is readonly [string, PlaybackHistoryEntry] => entry[1] != null)),
@@ -1009,13 +1154,13 @@ function markTitleLogoFailed(url: string) {
           <span class="h-3 w-3 shrink-0 rounded-full" :class="detail.acquisition.status === 'failed' ? 'bg-red-400 shadow-[0_0_0_6px_rgba(248,113,113,.12)]' : 'bg-emerald-300 shadow-[0_0_0_6px_rgba(110,231,183,.12)]'" />
           <div class="min-w-0 flex-1">
             <p class="text-[11px] font-bold tracking-[.18em] text-white/38 uppercase">
-              Server 入库状态
+              本次 Server 入库任务
             </p>
             <h2 class="mt-1 text-sm font-semibold text-white/88">
               {{ acquisitionLabel }}
             </h2>
             <p class="mt-1 text-xs text-white/42">
-              {{ detail.acquisition.totalFiles ? `${detail.acquisition.processedFiles ?? 0} / ${detail.acquisition.totalFiles} 个文件` : acquisitionProgress != null ? `${acquisitionProgress}%` : detail.acquisition.status }}<template v-if="detail.acquisition.lastErrorCode">
+              {{ detail.acquisition.totalFiles ? `${detail.acquisition.processedFiles ?? 0} / ${detail.acquisition.totalFiles} 个文件` : acquisitionProgress != null ? `${acquisitionProgress}%` : '' }}<template v-if="detail.acquisition.lastErrorCode && detail.acquisition.lastErrorCode !== 'acquisition_publication_unverified'">
                 · {{ detail.acquisition.lastErrorCode }}
               </template>
             </p>

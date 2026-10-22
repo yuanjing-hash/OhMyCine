@@ -796,10 +796,18 @@ export class ServerDataSource implements DataSource {
     return [...physicalItems, ...onlineItems]
   }
 
-  async getDetail(id: string): Promise<MediaDetail> {
+  async getDetail(id: string, ownsRequest?: () => boolean): Promise<MediaDetail> {
+    const generation = this.lifecycleGeneration
+    const assertCurrent = () => {
+      this.assertLifecycle(generation)
+      if (ownsRequest && !ownsRequest())
+        throw new ServerSourceChangedError()
+    }
+    assertCurrent()
     const online = parseOnlineItemID(id)
     if (online?.kind === 'work' || online?.kind === 'version') {
       const [work] = await Promise.all([this.onlineWork(online.libraryId, online.workId), this.onlineLibraries()])
+      assertCurrent()
       const detail = onlineWorkToDetail(this.id, online.libraryId, work)
       if (online.kind === 'work')
         return detail
@@ -811,10 +819,19 @@ export class ServerDataSource implements DataSource {
     }
     const acquisition = parseServerAcquisitionItemID(id)
     if (acquisition) {
-      const [detail, status] = await Promise.all([
-        getServerDiscoveryDetail(this, 'tmdb', acquisition.mediaType, String(acquisition.tmdbId)),
-        getServerAcquisition(this, acquisition.mediaType, acquisition.tmdbId),
-      ])
+      const status = await getServerAcquisition(this, acquisition.mediaType, acquisition.tmdbId)
+      assertCurrent()
+      if (status.catalogTarget) {
+        if (String(status.catalogTarget.libraryId) !== acquisition.libraryId)
+          throw new Error('Server 返回的入库媒体目标不属于当前媒体库。')
+        const target = await this.getDetail(`work|${acquisition.libraryId}|${status.catalogTarget.workToken}`, ownsRequest)
+        assertCurrent()
+        if (target.tmdbId !== acquisition.tmdbId || (target.type === 'series' ? 'tv' : 'movie') !== acquisition.mediaType)
+          throw new Error('Server 返回的入库媒体目标身份不一致。')
+        return { ...target, acquisition: acquisitionState(status) }
+      }
+      const detail = await getServerDiscoveryDetail(this, 'tmdb', acquisition.mediaType, String(acquisition.tmdbId))
+      assertCurrent()
       return {
         id,
         sourceId: this.id,
@@ -845,6 +862,7 @@ export class ServerDataSource implements DataSource {
     if (!work)
       throw new Error('Server 媒体标识无效。')
     const detail = await this.detail(work.libraryId, work.workId)
+    assertCurrent()
     const item = this.mapItem(detail.item)
     const versions = detail.versions.filter(version => version.playable && (work.season == null || (version.season ?? 0) === work.season))
     const ownSources = versions.map(version => ({
@@ -1264,7 +1282,7 @@ export class ServerDataSource implements DataSource {
         throw new Error('Server 返回的媒体版本无效。')
       return version
     })
-    if (!item)
+    if (!item || item.id !== workID || String(item.library_id) !== libraryID)
       throw new Error('Server 返回的媒体详情无效。')
     return { item, versions }
   }

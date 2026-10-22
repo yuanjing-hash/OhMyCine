@@ -1,5 +1,6 @@
 import type { ServerDataSource, ServerDiscoveryStreamHandle } from '@/services/datasource/server'
 import { ServerRequestError } from '@/services/datasource/server'
+import { parseServerWorkItemIdentity } from './datasource/serverIdentity'
 
 export interface ServerDiscoveryWork {
   provider: 'tmdb' | 'douban'
@@ -110,6 +111,7 @@ export interface ServerAcquisitionStatus {
   downloadTaskId?: string
   followSubscriptionId?: string
   targetLibraryId?: number
+  catalogTarget?: { libraryId: number, workToken: string }
   transferTaskId?: string
   progress?: number
   bytesCompleted?: number
@@ -123,6 +125,29 @@ export interface ServerAcquisitionStatus {
   updatedAt?: string
 }
 export interface ServerAcquisitionPage { list: ServerAcquisitionStatus[], total: number, page: number, pageSize: number }
+export function isTerminalServerAcquisition(value: Pick<ServerAcquisitionStatus, 'stage' | 'status'>): boolean {
+  return value.stage === 'idle' || ['failed', 'cancelled', 'canceled', 'unavailable'].includes(value.status)
+    || (value.stage === 'library' && value.status === 'completed')
+}
+
+export function serverAcquisitionLabel(value: Pick<ServerAcquisitionStatus, 'stage' | 'status' | 'lastErrorCode'> | null | undefined): string {
+  if (!value || value.stage === 'idle')
+    return '尚未入库'
+  if (value.stage === 'library' && value.status === 'completed')
+    return '已入库'
+  if (value.status === 'unavailable')
+    return '任务状态暂不可用'
+  if (value.status === 'failed')
+    return '入库需要处理'
+  if (value.status === 'cancelled' || value.status === 'canceled')
+    return '入库已取消'
+  if (value.status === 'queued')
+    return '等待执行'
+  if (value.status === 'publishing')
+    return value.lastErrorCode === 'acquisition_publication_unverified' ? '入库结果待核对' : '正在发布入库目录'
+  return ({ download: '正在下载', organize: '正在整理', transfer: '正在传输', import: '正在刮削入库', subscription: '订阅等待中' } as Record<string, string>)[value.stage] ?? value.stage
+}
+
 export interface ServerFollowSnapshot {
   version: number
   routing_policy: 'source_priority'
@@ -543,6 +568,7 @@ function parseAcquisition(data: Record<string, unknown>, fallbackMediaType: 'mov
     downloadTaskId: text(data.download_task_id),
     followSubscriptionId: text(data.follow_subscription_id),
     targetLibraryId: number(data.target_library_id),
+    catalogTarget: parseAcquisitionCatalogTarget(data.catalog_target),
     transferTaskId: text(data.transfer_task_id),
     progress: number(data.progress),
     bytesCompleted: number(data.bytes_completed),
@@ -627,4 +653,18 @@ function strings(value: unknown): string[] {
 }
 function people(value: unknown): string[] {
   return array(value).map(item => text(record(item).name)).filter((item): item is string => Boolean(item))
+}
+
+function parseAcquisitionCatalogTarget(value: unknown): ServerAcquisitionStatus['catalogTarget'] {
+  if (value == null)
+    return undefined
+  const target = record(value)
+  const libraryId = number(target.library_id)
+  const workToken = text(target.work_token)
+  if (!Number.isSafeInteger(libraryId) || !libraryId || libraryId <= 0 || !workToken || !parseServerWorkItemIdentity(`work|${libraryId}|${workToken}`))
+    throw new Error('Server 返回的入库媒体目标无效。')
+  const canonical = btoa(atob(workToken.replace(/-/g, '+').replace(/_/g, '/'))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  if (canonical !== workToken)
+    throw new Error('Server 返回的入库媒体目标无效。')
+  return { libraryId, workToken }
 }
