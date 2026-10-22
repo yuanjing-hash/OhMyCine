@@ -76,6 +76,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     @Volatile
     private var surfaceHeight = 0
     private val diagnosticLogs = ArrayDeque<String>()
+    @Volatile
+    private var httpReadProfileDiagnostic: String? = null
 
     fun install(activity: Activity, webView: WebView) {
         webView.post {
@@ -145,15 +147,17 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         surfaceWidth = 0
         surfaceHeight = 0
         synchronized(diagnosticLogs) { diagnosticLogs.clear() }
+        httpReadProfileDiagnostic = null
     }
 
     fun isReady(): Boolean = initialized && surfaceAttached
     fun initializationError(): String? = initializationError
 
     @Synchronized
-    fun load(path: String, audioPath: String?, headers: List<MpvHeader>) {
+    fun load(path: String, audioPath: String?, headers: List<MpvHeader>, httpReadProfile: String? = null) {
         initializationError?.let { error(it) }
-        val request = PendingLoad(path, audioPath, headers)
+        require(httpReadProfile == null || httpReadProfile == "bounded_ranges_v1") { "播放读取配置无效。" }
+        val request = PendingLoad(path, audioPath, headers, httpReadProfile)
         pendingLoad = request
         if (!isReady())
             return
@@ -178,9 +182,19 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         val headers = request.headers
         val headerFields = headers.joinToString(",") { "${it.name}: ${it.value}" }
         MPVLib.setPropertyString("http-header-fields", headerFields)
-        val command = request.audioPath?.let {
-            arrayOf("loadfile", request.path, "replace", "-1", "audio-file=$it")
-        } ?: arrayOf("loadfile", request.path, "replace")
+        val bounded = request.httpReadProfile != null &&
+            safePropertyString("option-info/curl-max-request-size/name") == "curl-max-request-size" &&
+            safePropertyString("option-info/curl-enabled/name") == "curl-enabled"
+        httpReadProfileDiagnostic = request.httpReadProfile?.let {
+            if (bounded) "当前媒体已启用 8 MiB 分段读取。"
+            else "当前引擎未启用分段读取，夸克原画可能缓冲。"
+        }
+        val options = mutableListOf<String>()
+        if (bounded) options.add("curl-enabled=yes,curl-max-request-size=8388608")
+        request.audioPath?.let { options.add("audio-file=%${it.toByteArray(Charsets.UTF_8).size}%$it") }
+        val command = if (options.isNotEmpty()) {
+            arrayOf("loadfile", request.path, "replace", "-1", options.joinToString(","))
+        } else arrayOf("loadfile", request.path, "replace")
         MPVLib.command(command)
     }
 
@@ -313,7 +327,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     fun playbackDiagnostics(): MpvPlaybackDiagnostics {
-        val logs = synchronized(diagnosticLogs) { diagnosticLogs.toList() }
+        val logs = (listOfNotNull(httpReadProfileDiagnostic) + synchronized(diagnosticLogs) { diagnosticLogs.toList() }).take(MAX_DIAGNOSTIC_LOGS)
         return MpvPlaybackDiagnostics(
             state = playbackState,
             lastEvent = lastPlaybackEvent,
@@ -678,7 +692,7 @@ internal data class MpvEngineSettings(
     val fsrDenoise: Boolean,
     val fsrTarget: String,
 )
-internal data class PendingLoad(val path: String, val audioPath: String?, val headers: List<MpvHeader>)
+internal data class PendingLoad(val path: String, val audioPath: String?, val headers: List<MpvHeader>, val httpReadProfile: String? = null)
 internal data class MpvSnapshot(val time: Double, val duration: Double, val paused: Boolean)
 internal data class MpvTrack(
     val id: Long,

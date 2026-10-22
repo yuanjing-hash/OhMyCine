@@ -1,3 +1,4 @@
+import type { HttpReadProfile } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { computed, onUnmounted, ref } from 'vue'
@@ -52,6 +53,7 @@ export interface MpvLoadOptions {
   readonly audioUrl?: string
   readonly audioHeaders?: Record<string, string>
   readonly title?: string
+  readonly httpReadProfile?: HttpReadProfile
 }
 
 interface MpvHttpHeaderPayload {
@@ -670,6 +672,7 @@ export function useMpv() {
       audioPath: options.audioUrl,
       audioHeaders: toMpvHeaderPayload(options.audioHeaders),
       title: options.title,
+      httpReadProfile: options.httpReadProfile,
     })
     startBufferingPolling()
     try {

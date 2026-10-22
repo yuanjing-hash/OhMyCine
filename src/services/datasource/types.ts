@@ -263,9 +263,13 @@ export interface DataSourceConfig {
   extra?: Record<string, unknown>
 }
 
+/** Server-verified, fixed client reading hint; never arbitrary native options. */
+export type HttpReadProfile = 'bounded_ranges_v1'
+
 export interface MediaStreamRequest {
   readonly url: string
   readonly headers?: Record<string, string>
+  readonly httpReadProfile?: HttpReadProfile
   /** Optional separate audio asset for DASH-style playback. It is transient and never persisted. */
   readonly audioUrl?: string
   readonly audioHeaders?: Record<string, string>

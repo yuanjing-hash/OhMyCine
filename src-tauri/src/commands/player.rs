@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use super::player_shared::{
     prepare_external_subtitle, sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings,
-    MpvHttpHeader, MpvOrientationState,
+    MpvHttpHeader, MpvHttpReadProfile, MpvOrientationState,
 };
 use crate::mpv::{
     mobile_proxy::AndroidStreamProxyState,
@@ -145,6 +145,7 @@ pub async fn mpv_load(
     audio_path: Option<String>,
     audio_headers: Option<Vec<MpvHttpHeader>>,
     title: Option<String>,
+    http_read_profile: Option<MpvHttpReadProfile>,
     state: State<'_, MpvState>,
     stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
@@ -182,7 +183,9 @@ pub async fn mpv_load(
         _ => None,
     };
     let result = match state.lock() {
-        Ok(mut player) => player.load_file_with_headers(&path, &headers, audio_path.as_deref()),
+        Ok(mut player) => {
+            player.load_file_with_headers(&path, &headers, audio_path.as_deref(), http_read_profile)
+        }
         Err(error) => Err(error.to_string()),
     };
     if result.is_err() {

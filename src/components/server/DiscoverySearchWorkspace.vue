@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { ServerResourceGroup, ServerResourceItem, ServerSearchProgress } from '@/services/serverDiscovery'
+import type { ServerDiscoveryTypePolicy, ServerResourceGroup, ServerResourceItem, ServerSearchProgress } from '@/services/serverDiscovery'
 import { computed } from 'vue'
+import { serverDiscoveryTypeOptions, serverResourceTypeLabel } from '@/services/serverDiscovery'
 
 const props = defineProps<{
   open: boolean
@@ -11,6 +12,10 @@ const props = defineProps<{
   progress: ServerSearchProgress
   canAcquire: boolean
   busyToken?: string
+  mixedSupported?: boolean
+  typePolicy?: 'default' | ServerDiscoveryTypePolicy
+  cloudTypes?: string[]
+  copyingToken?: string
 }>()
 
 const emit = defineEmits<{
@@ -20,12 +25,26 @@ const emit = defineEmits<{
   selectSite: [siteId: number]
   selectResource: [item: ServerResourceItem]
   page: [siteId: number, page: number]
+  copyResource: [item: ServerResourceItem]
+  updateTypePolicy: [value: 'default' | ServerDiscoveryTypePolicy]
+  updateCloudTypes: [value: string[]]
+  refresh: []
 }>()
 
 const resultGroups = computed(() => props.groups.filter(group => group.items.length > 0))
 const statusGroups = computed(() => props.groups.filter(group => group.items.length === 0 || group.status !== 'success'))
 const activeGroup = computed(() => resultGroups.value.find(group => group.siteId === props.activeSiteId) ?? resultGroups.value[0])
 const progressPercent = computed(() => props.progress.total > 0 ? Math.round(props.progress.completed / props.progress.total * 100) : 0)
+const typePolicy = computed({ get: () => props.typePolicy ?? 'default', set: value => emit('updateTypePolicy', value) })
+const cloudTypes = computed({ get: () => props.cloudTypes ?? [], set: value => emit('updateCloudTypes', value) })
+const receivedOnly = computed(() => props.groups.some(group => group.partial || group.completion === 'received'))
+function unavailable(item: ServerResourceItem) {
+  if (activeGroup.value?.unavailableReason)
+    return activeGroup.value.unavailableReason
+  if (item.expiresAt && Date.parse(item.expiresAt) <= Date.now())
+    return '搜索结果已过期，请重新搜索。'
+  return item.acquisitionAvailable === false ? item.acquisitionReason || '当前类型仅支持查看链接，尚不支持自动入库。' : ''
+}
 
 function formatBytes(value?: number) {
   if (!value)
@@ -56,7 +75,7 @@ function formatBytes(value?: number) {
                   {{ title }}
                 </h2>
                 <p class="mt-1 text-sm text-white/45">
-                  {{ searching ? `正在并行搜索 ${progress.total} 个站点` : `搜索完成 · 共 ${progress.resultCount} 个结果` }}
+                  {{ searching ? `正在搜索 ${progress.total} 个站点，已收到 ${progress.resultCount} 条` : `${receivedOnly ? '本轮已返回' : '搜索结束'} · 共 ${progress.resultCount} 个结果` }}
                 </p>
               </div>
               <div class="flex shrink-0 items-center gap-2">
@@ -79,6 +98,24 @@ function formatBytes(value?: number) {
           </header>
 
           <main class="min-h-0 flex-1 overflow-y-auto px-6 py-5 cinema-scrollbar">
+            <section v-if="mixedSupported" class="type-controls mb-4 space-y-3 rounded-2xl p-4" aria-label="PanSou 结果类型">
+              <div class="flex flex-wrap items-end gap-3">
+                <label class="min-w-56 flex-1"><span class="mb-2 block text-xs">PanSou 结果类型</span><select v-model="typePolicy" class="w-full rounded-xl px-3 py-2 text-sm" :disabled="searching"><option value="default">使用站点默认设置</option><option value="auto">自动：已接入网盘＋磁力</option><option value="all">全部类型</option><option value="manual">指定类型</option></select></label><button class="page-button" type="button" :disabled="searching || typePolicy === 'manual' && !cloudTypes.length" @click="emit('refresh')">
+                  按此类型重新搜索
+                </button>
+              </div>
+              <fieldset v-if="typePolicy === 'manual'" class="flex flex-wrap gap-3 text-xs">
+                <legend class="mb-2">
+                  搜索类型
+                </legend><label v-for="option in serverDiscoveryTypeOptions" :key="option[0]"><input v-model="cloudTypes" type="checkbox" :value="option[0]"> {{ option[1] }}</label>
+              </fieldset>
+              <p class="text-xs">
+                类型只影响 PanSou；自动模式始终包含磁力。其他网盘可展示，但是否能入库取决于 Server 的接收能力。
+              </p>
+            </section>
+            <p v-else class="mb-4 text-xs text-[var(--color-text-secondary)]">
+              当前 Server 未提供混合搜索能力，继续使用原有搜索和入库功能。
+            </p>
             <div v-if="!resultGroups.length && searching" class="grid min-h-72 place-items-center text-center">
               <div>
                 <div class="search-spinner mx-auto h-9 w-9 rounded-full border-2" /><p class="mt-4 text-sm text-white/55">
@@ -89,9 +126,21 @@ function formatBytes(value?: number) {
               </div>
             </div>
             <div v-else-if="!resultGroups.length" class="grid min-h-64 place-items-center text-center text-sm text-white/45">
-              没有找到可入库的资源，可以返回重选站点或使用直接搜索。
+              没有找到资源，可以返回重选站点或使用直接搜索。
             </div>
             <template v-else-if="activeGroup">
+              <p v-if="activeGroup.unavailableReason" class="result-warning mb-3 rounded-xl p-3 text-xs" role="status">
+                {{ activeGroup.unavailableReason }}
+              </p>
+              <p v-for="warning in activeGroup.warnings || []" :key="warning.code" class="result-warning mb-3 rounded-xl p-3 text-xs" role="status">
+                {{ warning.message }}
+              </p>
+              <p v-if="activeGroup.truncated" class="result-warning mb-3 rounded-xl p-3 text-xs">
+                本次结果达到保存上限，尚未完整展示；请缩小范围后重新搜索。
+              </p>
+              <p v-if="activeGroup.completion === 'received' && !activeGroup.warnings?.length" class="mb-3 text-xs text-[var(--color-text-secondary)]">
+                已收到本批结果，上游尚未确认全部来源完成。
+              </p>
               <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h3 class="font-bold text-white/90">
@@ -103,10 +152,10 @@ function formatBytes(value?: number) {
                   </p>
                 </div>
                 <div class="flex items-center gap-2">
-                  <button class="page-button" type="button" :disabled="searching || activeGroup.page <= 1" @click="emit('page', activeGroup.siteId, activeGroup.page - 1)">
+                  <button class="page-button" type="button" :disabled="searching || !!activeGroup.unavailableReason || activeGroup.page <= 1" @click="emit('page', activeGroup.siteId, activeGroup.page - 1)">
                     上一页
                   </button>
-                  <button class="page-button" type="button" :disabled="searching || !activeGroup.hasNext" @click="emit('page', activeGroup.siteId, activeGroup.page + 1)">
+                  <button class="page-button" type="button" :disabled="searching || !!activeGroup.unavailableReason || !activeGroup.hasNext" @click="emit('page', activeGroup.siteId, activeGroup.page + 1)">
                     下一页
                   </button>
                 </div>
@@ -120,13 +169,23 @@ function formatBytes(value?: number) {
                     <p v-if="item.subtitle" class="mt-1 line-clamp-1 text-xs text-white/35">
                       {{ item.subtitle }}
                     </p>
+                    <div class="mt-2 flex flex-wrap gap-2 text-xs text-[var(--color-text-secondary)]">
+                      <span v-if="serverResourceTypeLabel(item)" class="resource-type">{{ serverResourceTypeLabel(item) }}</span><span v-for="origin in item.origins || []" :key="`${origin.kind}:${origin.name}`">PanSou · {{ origin.kind === 'tg' ? 'TG' : '插件' }} · {{ origin.name }}</span>
+                    </div>
                     <p class="mt-2 text-xs text-white/42">
                       {{ [formatBytes(item.sizeBytes), item.seeders != null ? `${item.seeders} 做种` : '', item.promotion, item.quality, item.matchedName ? `命中：${item.matchedName}` : ''].filter(Boolean).join(' · ') }}
                     </p>
+                    <p v-if="unavailable(item)" class="mt-2 text-xs text-[var(--color-text-secondary)]" role="status">
+                      {{ unavailable(item) }}
+                    </p>
                   </div>
-                  <button class="select-button" type="button" :disabled="!canAcquire || busyToken === item.token" @click="emit('selectResource', item)">
-                    {{ busyToken === item.token ? '处理中…' : '选择入库' }}
-                  </button>
+                  <div class="flex shrink-0 flex-wrap justify-end gap-2">
+                    <button v-if="mixedSupported && item.resultType" class="page-button" type="button" :disabled="copyingToken === item.token || !!activeGroup.unavailableReason" @click="emit('copyResource', item)">
+                      {{ copyingToken === item.token ? '正在读取…' : '复制链接' }}
+                    </button><button class="select-button" type="button" :disabled="!canAcquire || busyToken === item.token || !!unavailable(item)" :title="unavailable(item)" @click="emit('selectResource', item)">
+                      {{ busyToken === item.token ? '处理中…' : item.acquisitionAvailable === false ? '仅供查看' : item.sourceKind === 'quark_share' || item.sourceKind === '115_share' ? '转存入库' : '选择入库' }}
+                    </button>
+                  </div>
                 </article>
               </div>
             </template>
@@ -164,6 +223,9 @@ function formatBytes(value?: number) {
 .select-button { flex:0 0 auto; border-radius:999px; padding:.65rem 1rem; color:#080a0f; background:#fff; font-size:.78rem; font-weight:800; }
 .select-button:disabled,.page-button:disabled { cursor:not-allowed; opacity:.4; }
 .page-button { border:1px solid var(--color-border); border-radius:999px; padding:.5rem .8rem; color:var(--color-text-secondary); background:var(--surface-soft); font-size:.72rem; }
+.type-controls { border:1px solid var(--color-border); background:var(--surface-soft); color:var(--color-text-secondary); }
+.result-warning { border:1px solid var(--color-border); background:var(--surface-soft); color:var(--color-text-secondary); }
+.resource-type { padding:.1rem .45rem; border:1px solid var(--color-border); border-radius:999px; }
 .search-spinner { border-color:var(--color-border); border-top-color:var(--color-text); animation:spin .75s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
 .search-workspace-enter-active,.search-workspace-leave-active{transition:opacity 180ms ease}.search-workspace-enter-active .workspace-card,.search-workspace-leave-active .workspace-card{transition:transform 180ms ease,opacity 180ms ease}.search-workspace-enter-from,.search-workspace-leave-to{opacity:0}.search-workspace-enter-from .workspace-card,.search-workspace-leave-to .workspace-card{opacity:0;transform:translateY(16px) scale(.985)}

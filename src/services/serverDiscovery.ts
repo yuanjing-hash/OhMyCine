@@ -42,6 +42,13 @@ export interface ServerResourceItem {
   promotion?: string
   quality?: string
   matchedName?: string
+  sourceKind?: string
+  cloudProvider?: string
+  resultType?: string
+  origins?: { kind: 'tg' | 'plugin', name: string, postUrl?: string }[]
+  acquisitionAvailable?: boolean
+  acquisitionReason?: string
+  expiresAt?: string
 }
 export interface ServerResourceGroup {
   siteId: number
@@ -53,6 +60,13 @@ export interface ServerResourceGroup {
   hasNext: boolean
   skipped: number
   items: ServerResourceItem[]
+  snapshotId?: string
+  snapshotExpiresAt?: string
+  partial?: boolean
+  truncated?: boolean
+  completion?: string
+  warnings?: { code: string, message: string }[]
+  unavailableReason?: string
 }
 export interface ServerDownloadOption { id: string, name: string, type?: string }
 export interface ServerLibraryOption { id: number, name: string }
@@ -71,7 +85,7 @@ export interface ServerRouteChoice {
   routeLabel?: string
 }
 export interface ServerRouteRecommendation {
-  sourceKind: 'pt' | 'bt' | '115_share'
+  sourceKind: 'pt' | 'bt' | '115_share' | 'quark_share'
   recommended: ServerRoutePair | null
   choices: ServerRouteChoice[]
 }
@@ -140,7 +154,25 @@ export type ServerResourceStreamEvent
     | { type: 'done', progress: ServerSearchProgress }
     | { type: 'error', code?: string, message: string }
 
-export interface ServerResourceSearchInput { mediaType: 'movie' | 'tv', tmdbId?: number, title?: string, direct?: boolean, siteIds: number[], page?: number }
+export type ServerDiscoveryTypePolicy = 'auto' | 'all' | 'manual'
+export const serverDiscoveryTypeOptions = [
+  ['115', '115'],
+  ['quark', '夸克'],
+  ['magnet', '磁力'],
+  ['aliyun', '阿里'],
+  ['baidu', '百度'],
+  ['tianyi', '天翼'],
+  ['uc', 'UC'],
+  ['xunlei', '迅雷'],
+  ['123', '123 网盘'],
+  ['pikpak', 'PikPak'],
+  ['ed2k', '电驴'],
+  ['others', '其他'],
+] as const
+export function serverResourceTypeLabel(item: ServerResourceItem) {
+  return serverDiscoveryTypeOptions.find(option => option[0] === item.resultType)?.[1] ?? item.cloudProvider ?? (item.sourceKind === 'bt' ? '磁力' : '')
+}
+export interface ServerResourceSearchInput { mediaType: 'movie' | 'tv', tmdbId?: number, title?: string, direct?: boolean, siteIds: number[], page?: number, typePolicy?: ServerDiscoveryTypePolicy, cloudTypes?: string[], snapshotId?: string, refresh?: boolean }
 
 export async function searchServerDiscovery(source: ServerDataSource, query: string, mediaType: 'all' | 'movie' | 'tv' = 'all'): Promise<ServerDiscoveryWork[]> {
   const data = record(await source.searchDiscoveryMedia(query, mediaType))
@@ -254,7 +286,7 @@ export async function getServerRouteRecommendation(source: ServerDataSource, res
   }
   const data = record(response)
   const sourceKind = data.source_kind
-  if ((sourceKind !== 'pt' && sourceKind !== 'bt' && sourceKind !== '115_share') || !Array.isArray(data.choices))
+  if ((sourceKind !== 'pt' && sourceKind !== 'bt' && sourceKind !== '115_share' && sourceKind !== 'quark_share') || !Array.isArray(data.choices))
     throw new Error('Server 返回的入库路由无效，请升级 Server。')
   const choices = data.choices.flatMap((value): ServerRouteChoice[] => {
     const item = record(value)
@@ -310,13 +342,13 @@ function routeCapabilityError(reason: unknown): Error {
 }
 
 export async function searchServerResources(source: ServerDataSource, input: ServerResourceSearchInput): Promise<ServerResourceGroup[]> {
-  const path = resourceSearchPath(input, false)
+  const path = resourceSearchPath(input, false, source.hasCapability('mixed_discovery_v1'))
   const data = record(await source.searchDiscoveryResources(path))
   return array(data.groups).map(parseGroup).filter((item): item is ServerResourceGroup => item != null)
 }
 
 export async function streamServerResources(source: ServerDataSource, input: ServerResourceSearchInput, onEvent: (event: ServerResourceStreamEvent) => void): Promise<ServerDiscoveryStreamHandle> {
-  return source.streamDiscoveryResources(resourceSearchPath(input, true), (raw) => {
+  return source.streamDiscoveryResources(resourceSearchPath(input, true, source.hasCapability('mixed_discovery_v1')), (raw) => {
     const data = record(raw.data)
     if (raw.event === 'site') {
       const group = parseGroup(data)
@@ -334,8 +366,18 @@ export async function streamServerResources(source: ServerDataSource, input: Ser
   })
 }
 
-function resourceSearchPath(input: ServerResourceSearchInput, stream: boolean): string {
+function resourceSearchPath(input: ServerResourceSearchInput, stream: boolean, mixed: boolean): string {
   const params = new URLSearchParams({ page: String(input.page ?? 1) })
+  if (mixed) {
+    params.set('client_capabilities', 'mixed_discovery_v1')
+    if (input.typePolicy)
+      params.set('type_policy', input.typePolicy)
+    for (const type of input.cloudTypes ?? []) params.append('cloud_types', type)
+    if (input.snapshotId)
+      params.set('snapshot_id', input.snapshotId)
+    if (input.refresh)
+      params.set('refresh', 'true')
+  }
   for (const id of input.siteIds)
     params.append('site_ids', String(id))
   let path: string
@@ -399,12 +441,59 @@ function parseGroup(value: unknown): ServerResourceGroup | null {
   const siteName = text(item.site_name)
   if (!siteId || !siteName)
     return null
-  return { siteId, siteName, siteType: text(item.site_type) ?? '', status: text(item.status) ?? 'error', errorCode: text(item.error_code), page: number(item.page) ?? 1, hasNext: item.has_next === true, skipped: number(item.skipped) ?? 0, items: array(item.items).flatMap((raw): ServerResourceItem[] => {
+  const warnings = array(item.warnings).slice(0, 16).flatMap((value) => {
+    const warning = record(value)
+    const code = text(warning.code)
+    const message = text(warning.message)
+    return code && message ? [{ code, message }] : []
+  })
+  return { siteId, siteName, siteType: text(item.site_type) ?? '', status: text(item.status) ?? 'error', errorCode: text(item.error_code), page: number(item.page) ?? 1, hasNext: item.has_next === true, skipped: number(item.skipped) ?? 0, snapshotId: text(item.snapshot_id), snapshotExpiresAt: text(item.snapshot_expires_at), partial: item.partial === true, truncated: item.truncated === true, completion: text(item.completion), warnings, items: array(item.items).flatMap((raw): ServerResourceItem[] => {
     const result = record(raw)
     const token = text(result.token)
     const title = text(result.title)
-    return token && title ? [{ token, title, subtitle: text(result.subtitle), sizeBytes: number(result.size_bytes), seeders: number(result.seeders), promotion: text(result.promotion), quality: text(result.quality), matchedName: text(result.matched_name) }] : []
+    return token && title
+      ? [{ token, title, subtitle: text(result.subtitle), sizeBytes: number(result.size_bytes), seeders: number(result.seeders), promotion: text(result.promotion), quality: text(result.quality), matchedName: text(result.matched_name), sourceKind: text(result.source_kind), cloudProvider: text(result.cloud_provider), resultType: text(result.result_type), expiresAt: text(result.expires_at), acquisitionAvailable: typeof result.acquisition_available === 'boolean' ? result.acquisition_available : undefined, acquisitionReason: text(result.acquisition_reason), origins: parseOrigins(result) }]
+      : []
   }) }
+}
+
+function parseOrigins(result: Record<string, unknown>): NonNullable<ServerResourceItem['origins']> {
+  const rawOrigins = array(result.origins)
+  const origins = rawOrigins.length ? rawOrigins : text(result.channel) ? [{ kind: 'tg', name: result.channel, post_url: result.post_url }] : []
+  return origins.slice(0, 16).flatMap((value) => {
+    const origin = record(value)
+    const name = text(origin.name)
+    if ((origin.kind !== 'tg' && origin.kind !== 'plugin') || !name || name.length > 128 || hasDiscoveryControl(name))
+      return []
+    const rawPost = text(origin.post_url)
+    const postUrl = origin.kind === 'tg' && rawPost && /^https:\/\/t\.me\/\w{3,64}\/[1-9]\d{0,19}$/.test(rawPost) ? rawPost : undefined
+    return [{ kind: origin.kind, name, postUrl }]
+  })
+}
+
+export async function getServerResourceLink(source: ServerDataSource, item: ServerResourceItem): Promise<string> {
+  if (!source.hasCapability('mixed_discovery_v1'))
+    throw new Error('当前 Server 尚不支持混合资源链接查看；原有入库功能仍可使用。')
+  const result = record(await source.getDiscoveryResultLink(item.token))
+  const value = text(result.url)
+  if (!value || value.length > 8192 || hasDiscoveryControl(value, true))
+    throw new Error('Server 返回的资源链接无效。')
+  try {
+    const url = new URL(value)
+    if ((url.protocol === 'http:' || url.protocol === 'https:') && url.hostname && !url.username && !url.password)
+      return value
+    if ((url.protocol === 'magnet:' && url.searchParams.has('xt')) || url.protocol === 'ed2k:')
+      return value
+  }
+  catch { /* Never pass an unsafe scheme to the operating system. */ }
+  throw new Error('Server 返回的资源链接无效。')
+}
+
+function hasDiscoveryControl(value: string, rejectSpace = false) {
+  return Array.from(value).some((character) => {
+    const point = character.codePointAt(0) ?? 0
+    return point <= (rejectSpace ? 32 : 31) || point === 127
+  })
 }
 
 function parseAcquisition(data: Record<string, unknown>, fallbackMediaType: 'movie' | 'tv' = 'movie', fallbackTMDBId = 0): ServerAcquisitionStatus {

@@ -724,6 +724,12 @@ function handlePlayerBack() {
     void router.push('/')
 }
 
+async function handlePlaybackFailureBack() {
+  queueSwitchError.value = null
+  await stopPlaybackForRouteExit()
+  handlePlayerBack()
+}
+
 function markTitleLogoFailed(url: string) {
   failedTitleLogoUrls.value = new Set([...failedTitleLogoUrls.value, url])
 }
@@ -1128,6 +1134,7 @@ async function selectStreamVariant(variantId: string) {
       headers: request.headers,
       audioUrl: request.audioUrl,
       audioHeaders: request.audioHeaders,
+      httpReadProfile: request.httpReadProfile,
       title: mediaTitle.value,
     })
     await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousSpeed, previousSubtitleDelay)
@@ -1141,6 +1148,7 @@ async function selectStreamVariant(variantId: string) {
           headers: previousRequest.headers,
           audioUrl: previousRequest.audioUrl,
           audioHeaders: previousRequest.audioHeaders,
+          httpReadProfile: previousRequest.httpReadProfile,
           title: mediaTitle.value,
         })
         await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousSpeed, previousSubtitleDelay)
@@ -2100,15 +2108,26 @@ function isTauriRuntime(): boolean {
 
 watch(
   () => [route.query.sourceId, route.query.itemId, route.query.contextId, route.query.mediaSourceId],
-  async () => {
+  async (_value, _oldValue, onCleanup) => {
+    let current = true
+    onCleanup(() => {
+      current = false
+    })
+    const isCurrentLoad = () => current && !playbackCleanupStarted
     resetDanmakuUiForMediaChange()
     await saveCurrentProgress(true, 'stopped')
+    if (!isCurrentLoad())
+      return
     await saveMediaPreferenceNow()
+    if (!isCurrentLoad())
+      return
     cancelPendingTrackPreferenceRestore()
     resetPersistedTrackPreferences()
     clearMediaPreferenceSaveTimer()
     activeCachedSubtitlePath = null
     await releaseHeldArrow(false)
+    if (!isCurrentLoad())
+      return
     resetHistorySaveState()
     mediaPath.value = ''
     mediaHeaders.value = {}
@@ -2133,26 +2152,42 @@ watch(
 
     if (hasPlaybackTarget) {
       await ensureRenderInitialized()
-      if (playbackCleanupStarted)
+      if (!isCurrentLoad())
         return
       try {
         const request = await resolvePlaybackLoadRequest()
+        if (!isCurrentLoad())
+          return
         applyResolvedStreamRequest(request)
         await syncKnownSubtitleTracks(request.subtitles ?? [])
+        if (!isCurrentLoad())
+          return
         await load(request.url, {
           headers: request.headers,
           audioUrl: request.audioUrl,
           audioHeaders: request.audioHeaders,
+          httpReadProfile: request.httpReadProfile,
           title: mediaTitle.value,
         })
+        if (!isCurrentLoad()) {
+          if (playbackCleanupStarted)
+            await stopPlaybackSilently()
+          return
+        }
         await restoreMediaPlaybackPreference()
+        if (!isCurrentLoad())
+          return
         startHistorySaveTimer()
         await resumeSavedProgressIfAvailable()
+        if (!isCurrentLoad())
+          return
         syncProviderPlaybackStarted()
         if (playbackCleanupStarted)
           await stopPlaybackSilently()
       }
       catch (error) {
+        if (!isCurrentLoad() || (error instanceof Error && error.name === 'AbortError'))
+          return
         mediaPath.value = ''
         mediaHeaders.value = {}
         streamVariants.value = []
@@ -3064,6 +3099,22 @@ watch(
       @toggle-diagnostics="toggleDiagnosticsPanel"
       @set-strategy="handleSetStrategy"
     />
+
+    <div
+      v-if="isNativeAndroidPlayer && queueSwitchError"
+      class="absolute inset-x-4 top-1/2 z-30 mx-auto max-w-md -translate-y-1/2 rounded-2xl border border-white/14 bg-black/85 p-5 text-white shadow-2xl backdrop-blur-xl"
+      role="alert"
+    >
+      <p class="text-base font-semibold">
+        无法开始播放
+      </p>
+      <p class="mt-2 text-sm leading-relaxed text-red-100/90">
+        {{ queueSwitchError }}
+      </p>
+      <button class="mt-4 min-h-11 rounded-xl bg-white/12 px-5 text-sm font-semibold" @click.stop="handlePlaybackFailureBack">
+        返回
+      </button>
+    </div>
 
     <!-- Danmaku is media content, not Player chrome. Teleport it out of the PlayerView subtree so
          no current or future chrome visibility class/transition can become one of its ancestors. -->

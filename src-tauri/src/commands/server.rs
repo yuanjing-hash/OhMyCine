@@ -66,7 +66,7 @@ pub async fn server_request_json(request: ServerJsonRequest) -> Result<ServerJso
     }
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(server_json_timeout(&method, &request.path))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "Failed to initialize Server HTTP client.".to_string())?;
@@ -79,7 +79,7 @@ pub async fn server_request_json(request: ServerJsonRequest) -> Result<ServerJso
     if let Some(body) = request.body.as_ref() {
         let encoded =
             serde_json::to_vec(body).map_err(|_| "Server request body is invalid.".to_string())?;
-        if encoded.len() > MAX_REQUEST_BODY_BYTES {
+        if encoded.len() > server_json_body_limit(&method, &request.path) {
             return Err("Server request body is too large.".to_string());
         }
         builder = builder
@@ -450,9 +450,63 @@ fn server_method(method: &str) -> Result<Method, String> {
     }
 }
 
+fn server_json_timeout(method: &Method, path: &str) -> Duration {
+    if *method == Method::POST && path == "/api/v1/player/discovery/share-preview" {
+        Duration::from_secs(50)
+    } else {
+        Duration::from_secs(20)
+    }
+}
+
+fn server_json_body_limit(method: &Method, path: &str) -> usize {
+    if *method == Method::POST && path == "/api/v1/player/discovery/downloads" {
+        256 * 1024
+    } else {
+        MAX_REQUEST_BODY_BYTES
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn share_preview_limits_are_scoped_to_exact_player_methods_and_paths() {
+        assert_eq!(
+            server_json_timeout(&Method::POST, "/api/v1/player/discovery/share-preview"),
+            Duration::from_secs(50)
+        );
+        assert_eq!(
+            server_json_timeout(&Method::GET, "/api/v1/player/discovery/share-preview"),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            server_json_timeout(
+                &Method::POST,
+                "/api/v1/player/discovery/share-preview/recognize"
+            ),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            server_json_timeout(
+                &Method::POST,
+                "/api/v1/player/discovery/share-preview?extra=1"
+            ),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            server_json_body_limit(&Method::POST, "/api/v1/player/discovery/downloads"),
+            256 * 1024
+        );
+        assert_eq!(
+            server_json_body_limit(&Method::PUT, "/api/v1/player/discovery/downloads"),
+            MAX_REQUEST_BODY_BYTES
+        );
+        assert_eq!(
+            server_json_body_limit(&Method::POST, "/api/v1/player/discovery/follows"),
+            MAX_REQUEST_BODY_BYTES
+        );
+    }
 
     #[test]
     fn server_url_accepts_only_player_api_paths() {

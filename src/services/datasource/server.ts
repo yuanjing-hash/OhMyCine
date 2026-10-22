@@ -218,6 +218,13 @@ export class ServerRequestError extends Error {
   }
 }
 
+class ServerSourceChangedError extends Error {
+  constructor() {
+    super('Server 连接已变化，请重新打开当前操作。')
+    this.name = 'AbortError'
+  }
+}
+
 export interface ServerLoginInput {
   id: string
   url: string
@@ -275,6 +282,8 @@ export class ServerDataSource implements DataSource {
   private readonly bridge: ServerBridge
   private readonly readCredential: (ref: string) => Promise<ServerCredentialValue | null>
   private mediaChangeWatchGeneration = 0
+  private lifecycleGeneration = 0
+  private retired = false
 
   constructor(options: { bridge?: ServerBridge, readCredential?: (ref: string) => Promise<ServerCredentialValue | null> } = {}) {
     this.bridge = options.bridge ?? defaultServerBridge
@@ -291,10 +300,16 @@ export class ServerDataSource implements DataSource {
   }
 
   async init(config: DataSourceConfig): Promise<void> {
+    const generation = ++this.lifecycleGeneration
+    this.retired = false
+    this.credential = null
+    this.connected = false
     this.config = sanitizeServerConfig(config)
     this.baseUrl = normalizeServerBaseUrl(config.url)
     this.credentialRef = readServerExtra(config).credentialRef ?? ''
-    this.credential = this.credentialRef ? await this.readCredential(this.credentialRef) : null
+    const credential = this.credentialRef ? await this.readCredential(this.credentialRef) : null
+    this.assertLifecycle(generation)
+    this.credential = credential
     this.capabilities = new Set(readServerExtra(config).capabilities ?? [])
     this.connected = Boolean(this.baseUrl && this.credential)
     if (this.credential)
@@ -392,7 +407,15 @@ export class ServerDataSource implements DataSource {
     return this.request('/api/v1/player/discovery/routes/recommend', 'POST', payload)
   }
 
-  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id?: number, priority: number, expected_tmdb_id?: number, expected_media_type?: 'movie' | 'tv' }): Promise<unknown> {
+  async getDiscoveryResultLink(resultToken: string): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/results/link', 'POST', { result_token: resultToken })
+  }
+
+  async previewDiscoveryShare(payload: { result_token: string, downloader_id: string }): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/share-preview', 'POST', payload)
+  }
+
+  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id?: number, priority: number, expected_tmdb_id?: number, expected_media_type?: 'movie' | 'tv', preview_token?: string, selected_entry_tokens?: string[] }): Promise<unknown> {
     return this.request('/api/v1/player/discovery/downloads', 'POST', payload)
   }
 
@@ -416,6 +439,8 @@ export class ServerDataSource implements DataSource {
   }
 
   destroy(): void {
+    this.lifecycleGeneration++
+    this.retired = true
     unregisterServerArtworkSource(this.id, this.credential?.accessToken)
     this.mediaChangeWatchGeneration += 1
     this.credential = null
@@ -829,6 +854,8 @@ export class ServerDataSource implements DataSource {
   }
 
   async getStreamRequest(request: PlaybackRequest): Promise<MediaStreamRequest> {
+    const generation = this.lifecycleGeneration
+    this.assertLifecycle(generation)
     const online = parseOnlineItemID(request.itemId)
     if (online?.kind === 'work' || online?.kind === 'version') {
       const work = await this.onlineWork(online.libraryId, online.workId)
@@ -877,11 +904,27 @@ export class ServerDataSource implements DataSource {
     }
     if (!entryID)
       throw new Error('请选择可播放的 Server 媒体版本。')
+    // This optional JSON preflight never returns a CDN URL or media bytes.
+    // Older Servers keep the original stream path without an extra request.
+    let httpReadProfile: MediaStreamRequest['httpReadProfile']
+    if (this.hasCapability('playback_check_v1')) {
+      const check = await this.request(`/api/v1/player/media-entries/${entryID}/stream?check=1`)
+      if (!isRecord(check) || check.version !== 1 || check.ready !== true)
+        throw new Error('Server 返回的播放检查结果无效，请重试或检查 Server 版本。')
+      if (check.http_read_profile !== undefined) {
+        if (check.http_read_profile !== 'bounded_ranges_v1')
+          throw new Error('Server 返回的播放读取配置无效，请重试或检查 Server 版本。')
+        httpReadProfile = check.http_read_profile
+      }
+    }
+    this.assertLifecycle(generation)
     const credential = await this.ensureCredential()
+    this.assertLifecycle(generation)
     return {
       url: `${this.baseUrl}/api/v1/player/media-entries/${entryID}/stream`,
       headers: { Authorization: `Bearer ${credential.accessToken}` },
       mediaSourceId: String(entryID),
+      ...(httpReadProfile ? { httpReadProfile } : {}),
     }
   }
 
@@ -1202,18 +1245,24 @@ export class ServerDataSource implements DataSource {
   }
 
   private async request(path: string, method: ServerNativeRequest['method'] = 'GET', body?: unknown): Promise<unknown> {
+    const generation = this.lifecycleGeneration
+    this.assertLifecycle(generation)
     const credential = path === '/api/v1/player/auth/login' ? null : await this.ensureCredential()
+    this.assertLifecycle(generation)
     try {
       const response = await this.bridge.request({ baseUrl: this.baseUrl, method, path, accessToken: credential?.accessToken, body })
+      this.assertLifecycle(generation)
       const envelope = isRecord(response.body) ? response.body : {}
       if (response.status < 200 || response.status >= 300 || envelope.code !== 0) {
         const message = typeof envelope.message === 'string' ? envelope.message : `Server 请求失败（HTTP ${response.status}）`
-        throw new ServerRequestError(redactSensitiveText(message), response.status, typeof envelope.code === 'string' ? envelope.code : undefined)
+        const rawCode = isRecord(envelope.data) && typeof envelope.data.error_code === 'string' ? envelope.data.error_code : envelope.code
+        const code = typeof rawCode === 'string' && /^\w{1,80}$/.test(rawCode) ? rawCode : undefined
+        throw new ServerRequestError(redactSensitiveText(message), response.status, code)
       }
       return envelope.data
     }
     catch (error) {
-      if (error instanceof ServerRequestError)
+      if (error instanceof ServerRequestError || error instanceof ServerSourceChangedError)
         throw error
       throw new Error(redactSensitiveText(error))
     }
@@ -1261,14 +1310,24 @@ export class ServerDataSource implements DataSource {
   }
 
   private async ensureCredential(): Promise<ServerCredentialValue> {
+    const generation = this.lifecycleGeneration
+    this.assertLifecycle(generation)
     if (this.credential)
       return this.credential
-    if (this.credentialRef)
-      this.credential = await this.readCredential(this.credentialRef)
+    if (this.credentialRef) {
+      const credential = await this.readCredential(this.credentialRef)
+      this.assertLifecycle(generation)
+      this.credential = credential
+    }
     if (!this.credential)
       throw new Error('OhMyCine Server 登录凭据不存在，请重新连接。')
     registerServerArtworkSource(this.id, this.baseUrl, this.credential.accessToken)
     return this.credential
+  }
+
+  private assertLifecycle(generation: number): void {
+    if (this.retired || generation !== this.lifecycleGeneration)
+      throw new ServerSourceChangedError()
   }
 
   private rememberOnlineProgressContext(itemId: string, mediaSourceId: string, context: ServerOnlineProgressContext): void {
