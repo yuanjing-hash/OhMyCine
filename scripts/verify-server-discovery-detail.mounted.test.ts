@@ -11,12 +11,18 @@ const details = vi.hoisted(() => vi.fn())
 const siteLists = vi.hoisted(() => vi.fn())
 const coverage = vi.hoisted(() => vi.fn())
 const acquisition = vi.hoisted(() => vi.fn())
+const followDefaults = vi.hoisted(() => vi.fn())
+const followPreview = vi.hoisted(() => vi.fn())
+const createFollow = vi.hoisted(() => vi.fn())
 vi.mock('vue-router', async () => {
   const { reactive } = await import('vue')
   const route = reactive({ params: { sourceId: 'fixture', provider: 'tmdb', mediaType: 'movie', providerId: '100' }, query: {}, fullPath: '/fixture' })
   return { useRoute: () => route, useRouter: () => ({ replace: vi.fn() }) }
 })
-vi.mock('@/services/datasource/server', () => ({ ServerDataSource: class { async refreshCapabilities() { return ['discovery_search', 'mixed_discovery_v1'] } } }))
+vi.mock('@/services/datasource/server', () => ({ ServerDataSource: class {
+  async refreshCapabilities() { return ['discovery_search', 'mixed_discovery_v1', 'subscription_create'] }
+  createDiscoveryFollow(input: unknown) { return createFollow(input) }
+} }))
 vi.mock('@/stores/datasource', async () => {
   const { ServerDataSource } = await import('@/services/datasource/server')
   const sources = { fixture: new ServerDataSource(), next: new ServerDataSource() }
@@ -32,7 +38,7 @@ vi.mock('@/services/serverDiscovery', async original => ({
   getServerDiscoveryDetail: details,
   getServerCoverage: coverage, getServerAcquisition: acquisition,
   getServerSearchSites: siteLists,
-  getServerFollowDefaults: vi.fn(), getServerFollowRoutePreview: vi.fn(), getServerResourceLink: vi.fn(), getServerRouteRecommendation: vi.fn(),
+  getServerFollowDefaults: followDefaults, getServerFollowRoutePreview: followPreview, getServerResourceLink: vi.fn(), getServerRouteRecommendation: vi.fn(),
   streamServerResources: async (_source: unknown, input: Record<string, unknown>, event: (value: unknown) => void) => {
     calls.push(input)
     event({ type: 'site', group: { siteId: 8, siteName: 'PanSou', status: 'success', page: input.page, hasNext: input.page === 1, skipped: 0, snapshotId: 'owned-snapshot', items: [{ token: 'fixture-token', title: 'Fixture result', resultType: 'magnet' }] } })
@@ -45,8 +51,13 @@ beforeEach(() => {
   siteLists.mockReset().mockResolvedValue([{ id: 8, name: 'PanSou', kind: 'pansou_tg', siteType: 'cloud_share', searchable: true }])
   coverage.mockReset().mockResolvedValue(null)
   acquisition.mockReset().mockResolvedValue(null)
+  followDefaults.mockReset()
+  followPreview.mockReset().mockImplementation(async (_source, siteIds: number[], libraryId: number) => ({ available: true, routes: siteIds.map(siteId => ({ siteId, siteName: `站点 ${siteId}`, sourceKind: 'bt', recommended: { downloaderId: 'qbit', libraryId } })) }))
+  createFollow.mockReset().mockResolvedValue({})
   const route = useRoute()
   route.params.sourceId = 'fixture'
+  route.params.mediaType = 'movie'
+  route.params.providerId = '100'
   route.fullPath = '/fixture'
 })
 afterEach(() => { calls.splice(0); document.body.innerHTML = '' })
@@ -54,6 +65,164 @@ afterEach(() => { calls.splice(0); document.body.innerHTML = '' })
 function render() {
   return mount(Detail, { global: { stubs: { teleport: true, transition: false, MediaDetailHero: { props: ['title'], template: '<div><h1>{{ title }}</h1><slot name="actions" /></div>' }, DiscoveryAcquisitionDialog: true } } })
 }
+
+async function subscriptionDefaults() {
+  // The released Server supplies available seasons in coverage, while the
+  // execution snapshot intentionally has no selected seasons yet.
+  const { getServerFollowDefaults } = await vi.importActual<typeof import('../src/services/serverDiscovery')>('../src/services/serverDiscovery')
+  return getServerFollowDefaults({ getDiscoveryFollowDefaults: async () => ({
+    snapshot: { version: 2, routing_policy: 'source_priority', seasons: null, site_ids: [8], media_library_id: 1, schedule: { kind: 'interval', minutes: 360 }, max_resources_per_run: 3, download_priority: 0 },
+    coverage: { tv: { seasons: [
+      { season_number: 0, name: '特别篇', counts: { missing: 2 } },
+      { season_number: 1, name: '第一季', counts: { missing: 8 } },
+      { season_number: 3, name: '第三季', counts: { missing: 5 } },
+    ] } },
+    subscribed_seasons: [1], sites: [{ id: 8, name: '站点 8', site_type: 'bt' }], downloaders: [{ id: 'qbit', name: 'qBittorrent' }], media_libraries: [{ id: 1, name: '媒体库一' }, { id: 2, name: '媒体库二' }],
+  }) } as Parameters<typeof getServerFollowDefaults>[0], 100)
+}
+
+async function openSubscription(wrapper: ReturnType<typeof render>) {
+  await flushPromises()
+  await wrapper.findAll('button').find(button => button.text() === '订阅')!.trigger('click')
+  await flushPromises()
+}
+function confirmSubscription(wrapper: ReturnType<typeof render>) { return wrapper.findAll('button').find(button => button.text() === '确认订阅')! }
+
+it('uses actual unsubscribed seasons from Server defaults and can submit a valid first-time subscription', async () => {
+  useRoute().params.mediaType = 'tv'
+  details.mockResolvedValue({ work: { title: 'Fixture show', tmdbId: 100 }, seasonCount: 3, genres: [] })
+  followDefaults.mockResolvedValue(await subscriptionDefaults())
+  const wrapper = render()
+  try {
+    await openSubscription(wrapper)
+    expect(wrapper.text()).not.toContain('第 2 季')
+    expect(wrapper.text()).toContain('第三季')
+    expect(wrapper.findAll('button').find(button => button.text().includes('第一季'))!.attributes('disabled')).toBeDefined()
+    expect(confirmSubscription(wrapper).attributes('disabled')).toBeUndefined()
+    await confirmSubscription(wrapper).trigger('click')
+    await flushPromises()
+    expect(createFollow).toHaveBeenCalledWith(expect.objectContaining({ tmdb_id: 100, snapshot: expect.objectContaining({ seasons: [3], site_ids: [8], media_library_id: 1, routing_policy: 'source_priority' }) }))
+  } finally { wrapper.unmount() }
+})
+
+it('explains a missing season at the confirmation button and includes specials only after explicit selection', async () => {
+  useRoute().params.mediaType = 'tv'
+  followDefaults.mockResolvedValue(await subscriptionDefaults())
+  const wrapper = render()
+  try {
+    await openSubscription(wrapper)
+    await wrapper.findAll('button').find(button => button.text().includes('第三季'))!.trigger('click')
+    expect(confirmSubscription(wrapper).attributes('disabled')).toBeDefined()
+    expect(wrapper.get('#follow-submit-status').text()).toContain('请选择至少一季')
+    await wrapper.findAll('button').find(button => button.text() === '特别篇')!.trigger('click')
+    expect(confirmSubscription(wrapper).attributes('disabled')).toBeUndefined()
+    await confirmSubscription(wrapper).trigger('click')
+    await flushPromises()
+    expect(createFollow.mock.calls.at(-1)?.[0].snapshot.seasons).toEqual([0])
+  } finally { wrapper.unmount() }
+})
+
+it('keeps numeric library selection and the newest preview while waiting, without overwriting the chosen season', async () => {
+  useRoute().params.mediaType = 'tv'
+  followDefaults.mockResolvedValue(await subscriptionDefaults())
+  let finishOld!: (value: unknown) => void
+  followPreview.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+  const wrapper = render()
+  try {
+    await openSubscription(wrapper)
+    expect(confirmSubscription(wrapper).attributes('disabled')).toBeDefined()
+    expect(wrapper.get('#follow-submit-status').text()).toContain('路由')
+    await wrapper.findAll('button').find(button => button.text().includes('第三季'))!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '特别篇')!.trigger('click')
+    await wrapper.get('.follow-card select').setValue('2')
+    await flushPromises()
+    expect(followPreview.mock.calls.at(-1)?.[2]).toBe(2)
+    finishOld({ available: false, routes: [] })
+    await flushPromises()
+    expect(confirmSubscription(wrapper).attributes('disabled')).toBeUndefined()
+    await confirmSubscription(wrapper).trigger('click')
+    await flushPromises()
+    expect(createFollow.mock.calls.at(-1)?.[0].snapshot).toMatchObject({ seasons: [0], media_library_id: 2 })
+  } finally { wrapper.unmount() }
+})
+
+it('does not restore follow defaults or issue its preview after the detail route changes', async () => {
+  useRoute().params.mediaType = 'tv'
+  let finish!: (value: unknown) => void
+  followDefaults.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  const wrapper = render()
+  try {
+    await openSubscription(wrapper)
+    useRoute().params.sourceId = 'next'
+    useRoute().fullPath = '/next'
+    await flushPromises()
+    finish(await subscriptionDefaults())
+    await flushPromises()
+    expect(wrapper.find('.follow-card').exists()).toBe(false)
+    expect(followPreview).not.toHaveBeenCalled()
+  } finally { wrapper.unmount() }
+})
+
+it('reports unavailable seasons, missing sites, invalid limits, and unavailable routes without sending a follow', async () => {
+  useRoute().params.mediaType = 'tv'
+  followDefaults.mockResolvedValue(await subscriptionDefaults())
+  const wrapper = render()
+  try {
+    await openSubscription(wrapper)
+    await wrapper.findAll('button').find(button => button.text() === '取消全选')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('#follow-submit-status').text()).toContain('搜索站点')
+    expect(confirmSubscription(wrapper).attributes('disabled')).toBeDefined()
+    await wrapper.findAll('button').find(button => button.text() === '快速全选')!.trigger('click')
+    await flushPromises()
+    const limits = wrapper.findAll('.follow-card input[type="number"]')
+    await limits[0].setValue('1')
+    expect(wrapper.get('#follow-submit-status').text()).toContain('检查间隔')
+    await limits[0].setValue('360')
+    await limits[1].setValue('21')
+    expect(wrapper.get('#follow-submit-status').text()).toContain('下载资源数')
+    await limits[1].setValue('3')
+    followPreview.mockResolvedValue({ available: false, routes: [{ siteId: 8, siteName: '站点 8', recommended: null, reasonMessage: '目标库不可达' }] })
+    await wrapper.get('.follow-card select').setValue('2')
+    await flushPromises()
+    expect(wrapper.text()).toContain('目标库不可达')
+    expect(wrapper.get('#follow-submit-status').text()).toContain('下载路由')
+    expect(confirmSubscription(wrapper).attributes('disabled')).toBeDefined()
+    expect(createFollow).not.toHaveBeenCalled()
+  } finally { wrapper.unmount() }
+
+  const defaults = await subscriptionDefaults()
+  followDefaults.mockResolvedValue({ ...defaults, seasons: [], snapshot: { ...defaults.snapshot, seasons: [] } })
+  const empty = render()
+  try {
+    await openSubscription(empty)
+    expect(empty.get('#follow-submit-status').text()).toContain('尚未返回可订阅季')
+    expect(empty.text()).not.toContain('第 1 季')
+    expect(confirmSubscription(empty).attributes('disabled')).toBeDefined()
+  } finally { empty.unmount() }
+})
+
+it('does not replace a newly opened follow or its explicit season choice with the closed dialog defaults', async () => {
+  useRoute().params.mediaType = 'tv'
+  let finish!: (value: unknown) => void
+  followDefaults.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  followDefaults.mockResolvedValue(await subscriptionDefaults())
+  const wrapper = render()
+  try {
+    await openSubscription(wrapper)
+    await wrapper.findAll('.follow-card button').find(button => button.text() === '取消')!.trigger('click')
+    await openSubscription(wrapper)
+    await wrapper.findAll('button').find(button => button.text() === '第三季')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '特别篇')!.trigger('click')
+    const stale = await subscriptionDefaults()
+    finish({ ...stale, snapshot: { ...stale.snapshot, seasons: [3], media_library_id: 2 } })
+    await flushPromises()
+    expect(followPreview).toHaveBeenCalledTimes(1)
+    await confirmSubscription(wrapper).trigger('click')
+    await flushPromises()
+    expect(createFollow.mock.calls.at(-1)?.[0].snapshot).toMatchObject({ seasons: [0], media_library_id: 1 })
+  } finally { wrapper.unmount() }
+})
 
 it('keeps the owned snapshot on next and previous page and refreshes only on retry or applied type changes', async () => {
   const wrapper = render()
