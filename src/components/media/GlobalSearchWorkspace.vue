@@ -37,7 +37,10 @@ const checkingServerCapabilities = ref(false)
 const serverCapabilityRevision = ref(0)
 const completedItemKeys = ref<Set<string>>(new Set())
 let searchTimer: number | undefined
+let focusTimer: number | undefined
 let searchGeneration = 0
+let discoveryGeneration = 0
+let sessionGeneration = 0
 
 const enabledSources = computed(() => store.orderedConfigs.filter(config => config.enabled !== false))
 const enabledServerSources = computed(() => {
@@ -83,59 +86,52 @@ const statusLabel = computed(() => {
 })
 
 watch(() => workspace.open, async (open) => {
-  if (!open)
+  const session = ++sessionGeneration
+  if (!open) {
+    invalidateSearch(false)
+    checkingServerCapabilities.value = false
+    loadingLibraries.value = false
+    if (focusTimer != null)
+      window.clearTimeout(focusTimer)
     return
+  }
   store.loadConfigs()
   void store.loadHomeSections({ background: store.homeSections.length > 0 })
   void loadLibraries()
   void refreshServerCapabilities()
   void refreshSearchPlayedStates()
+  if (hasActiveQuery.value && !results.value.length)
+    void runSearch(normalizedQuery.value, searchGeneration)
   await nextTick()
-  window.setTimeout(() => inputRef.value?.focus(), 80)
-})
+  if (session === sessionGeneration && workspace.open)
+    focusTimer = window.setTimeout(() => inputRef.value?.focus(), 80)
+}, { flush: 'sync' })
 
 async function refreshServerCapabilities() {
+  const session = sessionGeneration
   checkingServerCapabilities.value = true
   try {
     await store.syncManager()
+    if (session !== sessionGeneration || !workspace.open)
+      return
     await Promise.allSettled(enabledServerSources.value.map(({ source }) => source.refreshCapabilities()))
   }
   finally {
-    serverCapabilityRevision.value += 1
-    checkingServerCapabilities.value = false
+    if (session === sessionGeneration && workspace.open) {
+      serverCapabilityRevision.value += 1
+      checkingServerCapabilities.value = false
+    }
   }
 }
 
-watch(() => route.fullPath, () => workspace.hide())
-
-watch(query, () => {
-  if (searchTimer)
-    window.clearTimeout(searchTimer)
-  error.value = null
-  loadingDiscovery.value = false
-  const keyword = normalizedQuery.value
-  if (!keyword) {
-    results.value = []
-    discoveryResults.value = []
-    loading.value = false
-    searchGeneration += 1
-    return
-  }
-
-  const generation = ++searchGeneration
-  loading.value = true
-  searchTimer = window.setTimeout(() => {
-    searchTimer = undefined
-    void runSearch(keyword, generation)
-  }, SEARCH_DEBOUNCE_MS)
-})
+watch(() => route.fullPath, () => workspace.hide(), { flush: 'sync' })
+watch(query, () => restartSearch(true), { flush: 'sync' })
 
 watch(selectedSourceId, () => {
   if (selectedLibraryId.value !== ALL_FILTER && !sourceLibraries.value.some(library => libraryFilterKey(library) === selectedLibraryId.value))
     selectedLibraryId.value = ALL_FILTER
-  if (hasActiveQuery.value)
-    restartSearch()
-})
+  restartSearch()
+}, { flush: 'sync' })
 
 function filterItems(items: readonly MediaItem[]): MediaItem[] {
   return items.filter((item) => {
@@ -161,22 +157,29 @@ function uniqueItems(items: readonly MediaItem[]): MediaItem[] {
 }
 
 async function loadLibraries() {
+  const session = sessionGeneration
+  const current = () => session === sessionGeneration && workspace.open
   loadingLibraries.value = true
   const cached = enabledSources.value.flatMap(config => store.getSourceRootSnapshot(config.id)?.libraries ?? [])
   libraries.value = uniqueLibraries(cached)
   try {
     await store.syncManager()
+    if (!current())
+      return
     const settled = await Promise.allSettled(enabledSources.value.map(async (config) => {
       const source = store.getSource(config.id)
       return source?.listLibraries ? source.listLibraries() : []
     }))
+    if (!current())
+      return
     libraries.value = uniqueLibraries([
       ...libraries.value,
       ...settled.flatMap(result => result.status === 'fulfilled' ? result.value : []),
     ])
   }
   finally {
-    loadingLibraries.value = false
+    if (current())
+      loadingLibraries.value = false
   }
 }
 
@@ -185,19 +188,23 @@ function uniqueLibraries(items: readonly MediaLibrary[]): MediaLibrary[] {
 }
 
 async function runSearch(keyword: string, generation: number) {
+  const origin = selectedSourceId.value
+  const current = () => workspace.open && generation === searchGeneration && keyword === normalizedQuery.value && origin === selectedSourceId.value
+  if (!current())
+    return
+  loading.value = true
   try {
-    const sourceIds = selectedSourceId.value === ALL_FILTER ? undefined : [selectedSourceId.value]
+    const sourceIds = origin === ALL_FILTER ? undefined : [origin]
     const items = await store.searchAllSources(keyword, 100, sourceIds)
-    if (generation !== searchGeneration || keyword !== normalizedQuery.value)
+    if (!current())
       return
     results.value = uniqueItems(items)
     void refreshSearchPlayedStates()
   }
   catch {
-    if (generation !== searchGeneration)
+    if (!current())
       return
     results.value = []
-    discoveryResults.value = []
     error.value = '部分媒体源暂时无法搜索，请稍后重试。'
   }
   finally {
@@ -209,49 +216,91 @@ async function runSearch(keyword: string, generation: number) {
 async function searchServerMore() {
   const keyword = normalizedQuery.value
   const discoveryType = selectedType.value === 'movie' ? 'movie' : selectedType.value === 'series' ? 'tv' : selectedType.value === 'other' ? null : 'all'
-  if (!keyword || !discoveryType)
+  if (!workspace.open || !keyword || !discoveryType || loadingDiscovery.value)
     return
   loadingDiscovery.value = true
   error.value = null
   const generation = searchGeneration
+  const request = ++discoveryGeneration
+  const origin = selectedSourceId.value
+  const type = selectedType.value
+  const current = () => workspace.open && generation === searchGeneration && request === discoveryGeneration && keyword === normalizedQuery.value && origin === selectedSourceId.value && type === selectedType.value
   try {
     await store.syncManager()
-    await Promise.allSettled(enabledServerSources.value.map(({ source }) => source.refreshCapabilities()))
+    if (!current())
+      return
+    const enabled = [...enabledServerSources.value]
+    const sourcesCurrent = () => enabled.every(({ config, source }) => store.getSource(config.id) === source && enabledSources.value.some(item => item.id === config.id))
+    await Promise.allSettled(enabled.map(({ source }) => source.refreshCapabilities()))
+    if (!current() || !sourcesCurrent())
+      return
     serverCapabilityRevision.value += 1
-    const serverSources = discoveryServerSources.value
-    if (!enabledServerSources.value.length)
+    const serverSources = enabled.filter(({ source }) => source.hasCapability('discovery_search'))
+    if (!enabled.length)
       throw new Error('请先连接并启用 OhMyCine Server。')
     if (!serverSources.length)
       throw new Error('当前 Server 账号没有影视搜索权限，请让管理员分配“发现搜索”能力。')
     const settled = await Promise.allSettled(serverSources.map(async ({ config, source }) => (await searchServerDiscovery(source, keyword, discoveryType)).map(work => ({ sourceId: config.id, sourceName: config.displayName ?? config.name, work }))))
-    if (generation !== searchGeneration || keyword !== normalizedQuery.value)
+    if (!current() || !sourcesCurrent())
       return
     discoveryResults.value = settled.flatMap(result => result.status === 'fulfilled' ? result.value : [])
     if (!discoveryResults.value.length && settled.every(result => result.status === 'rejected'))
       throw new Error('Server 暂时无法搜索更多影视，请检查连接或账号权限。')
   }
   catch (reason) {
-    if (generation === searchGeneration)
+    if (current())
       error.value = reason instanceof Error ? reason.message : 'Server 搜索失败。'
   }
   finally {
-    if (generation === searchGeneration)
+    if (request === discoveryGeneration)
       loadingDiscovery.value = false
   }
 }
 
-function restartSearch() {
+function invalidateDiscovery(clearResults = true) {
+  discoveryGeneration++
+  loadingDiscovery.value = false
+  if (clearResults)
+    discoveryResults.value = []
+}
+
+function invalidateSearch(clearResults = true) {
+  searchGeneration++
+  if (searchTimer != null) {
+    window.clearTimeout(searchTimer)
+    searchTimer = undefined
+  }
+  loading.value = false
+  error.value = null
+  invalidateDiscovery(clearResults)
+  if (clearResults)
+    results.value = []
+}
+
+function restartSearch(debounce = false) {
+  invalidateSearch()
   const keyword = normalizedQuery.value
-  if (!keyword)
+  if (!keyword || !workspace.open)
     return
-  const generation = ++searchGeneration
+  const generation = searchGeneration
   loading.value = true
-  void runSearch(keyword, generation)
+  if (debounce) {
+    searchTimer = window.setTimeout(() => {
+      searchTimer = undefined
+      void runSearch(keyword, generation)
+    }, SEARCH_DEBOUNCE_MS)
+  }
+  else {
+    void runSearch(keyword, generation)
+  }
 }
 
 function chooseType(type: string) {
+  if (type === selectedType.value)
+    return
   selectedType.value = type
-  discoveryResults.value = []
+  invalidateDiscovery()
+  error.value = null
 }
 
 function chooseLibrary(libraryId: string) {
@@ -289,9 +338,12 @@ function isSearchItemPlayed(item: MediaItem): boolean {
 }
 
 async function refreshSearchPlayedStates() {
+  const session = sessionGeneration
+  const generation = searchGeneration
   const items = uniqueItems([...suggestionItems.value, ...filteredResults.value])
   const entries = await getPlaybackCompletionBatch(items.map(playbackProgressIdentityForMediaItem))
-  completedItemKeys.value = new Set(entries.filter(entry => entry.completed).map(entry => playbackCompletionKey(entry.sourceId, entry.mediaIdentity)))
+  if (session === sessionGeneration && generation === searchGeneration && workspace.open)
+    completedItemKeys.value = new Set(entries.filter(entry => entry.completed).map(entry => playbackCompletionKey(entry.sourceId, entry.mediaIdentity)))
 }
 
 function beginSearchActionLongPress(item: MediaItem, event: PointerEvent) {
@@ -383,9 +435,11 @@ function handleKeydown(event: KeyboardEvent) {
 
 onMounted(() => window.addEventListener(PLAYED_STATE_CHANGED_EVENT, refreshSearchPlayedStates))
 onBeforeUnmount(() => {
+  sessionGeneration++
+  invalidateSearch(false)
   window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, refreshSearchPlayedStates)
-  if (searchTimer)
-    window.clearTimeout(searchTimer)
+  if (focusTimer != null)
+    window.clearTimeout(focusTimer)
 })
 </script>
 

@@ -66,6 +66,7 @@ let detailGeneration = 0
 let siteGeneration = 0
 let routeGeneration = 0
 let followRouteGeneration = 0
+let followGeneration = 0
 let statusGeneration = 0
 let statusTimer: number | undefined
 let submittedSearchInput: ServerResourceSearchInput | undefined
@@ -80,7 +81,38 @@ const canSearch = computed(() => capabilities.value.has('discovery_search'))
 const canAcquire = computed(() => capabilities.value.has('acquisition_create'))
 const canSubscribe = computed(() => capabilities.value.has('subscription_create'))
 const mixedSupported = computed(() => capabilities.value.has('mixed_discovery_v1'))
-const followRoutesAvailable = computed(() => !followRouteLoading.value && !followRouteError.value && followRoutePreview.value?.available === true && followRoutePreview.value.routes.length === followForm.value.siteIds.length)
+const followRoutesAvailable = computed(() => !followRouteLoading.value && !followRouteError.value
+  && followRoutePreview.value?.available === true
+  && followRoutePreview.value.routes.length === followForm.value.siteIds.length
+  && followForm.value.siteIds.every(id => followRoutePreview.value?.routes.filter(item => item.siteId === id && item.recommended?.libraryId === followForm.value.libraryId).length === 1))
+const followBlockedReason = computed(() => {
+  if (!canSubscribe.value)
+    return '当前账号没有创建订阅的权限。'
+  if (followLoading.value)
+    return '正在读取订阅选项，请稍候。'
+  const defaults = followDefaults.value
+  if (!defaults?.seasons.length)
+    return 'Server 尚未返回可订阅季，请稍后重新打开订阅。'
+  if (!followForm.value.seasons.length)
+    return '请选择至少一季后再确认订阅。'
+  if (followForm.value.seasons.some(season => !defaults.seasons.some(item => item.seasonNumber === season) || defaults.subscribedSeasons.includes(season)))
+    return '所选季已订阅或已不可用，请重新选择。'
+  if (!followForm.value.siteIds.length)
+    return '请选择至少一个搜索站点。'
+  if (!defaults.mediaLibraries.some(item => item.id === followForm.value.libraryId))
+    return '请选择目标媒体库。'
+  if (!Number.isInteger(followForm.value.minutes) || followForm.value.minutes < 10 || followForm.value.minutes > 10080)
+    return '检查间隔须为 10 至 10080 分钟的整数。'
+  if (!Number.isInteger(followForm.value.maxResources) || followForm.value.maxResources < 1 || followForm.value.maxResources > 20)
+    return '每次下载资源数须为 1 至 20 的整数。'
+  if (followRouteLoading.value)
+    return '正在检查下载路由，请稍候。'
+  if (followRouteError.value)
+    return followRouteError.value
+  if (!followRoutesAvailable.value)
+    return '部分站点没有可用的下载路由，请调整站点或目标媒体库。'
+  return ''
+})
 const coverageLabel = computed(() => {
   if (!coverage.value)
     return '媒体库覆盖未知'
@@ -487,27 +519,49 @@ async function openFollow() {
   const tmdbId = detail.value?.work.tmdbId
   if (!tmdbId)
     return
+  const generation = ++followGeneration
+  const origin = sourceId.value
+  const ownerRoute = route.fullPath
+  let source: ServerDataSource | undefined
+  const current = () => generation === followGeneration && followOpen.value && origin === sourceId.value && ownerRoute === route.fullPath && (!source || store.getSource(origin) === source)
   followOpen.value = true
   followLoading.value = true
   followDefaults.value = null
   followRoutePreview.value = null
   followRouteError.value = ''
   try {
-    const defaults = await getServerFollowDefaults(await resolveSource(), tmdbId)
+    source = await resolveSource(origin)
+    if (!current())
+      return
+    const defaults = await getServerFollowDefaults(source, tmdbId)
+    if (!current())
+      return
     followDefaults.value = defaults
-    followForm.value = { seasons: [...defaults.snapshot.seasons], siteIds: [...defaults.snapshot.site_ids], libraryId: defaults.snapshot.media_library_id, minutes: defaults.snapshot.schedule.minutes, maxResources: defaults.snapshot.max_resources_per_run, priority: defaults.snapshot.download_priority }
+    const ordinary = defaults.seasons.filter(item => item.seasonNumber > 0 && !defaults.subscribedSeasons.includes(item.seasonNumber))
+    const selected = defaults.snapshot.seasons.filter(season => ordinary.some(item => item.seasonNumber === season))
+    const preferred = ordinary.find(item => item.missing > 0) ?? ordinary[0]
+    const seasons = selected.length ? selected : preferred ? [preferred.seasonNumber] : []
+    followForm.value = { seasons, siteIds: [...defaults.snapshot.site_ids], libraryId: defaults.snapshot.media_library_id, minutes: defaults.snapshot.schedule.minutes, maxResources: defaults.snapshot.max_resources_per_run, priority: defaults.snapshot.download_priority }
   }
   catch (reason) {
-    publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
-    followOpen.value = false
+    if (current()) {
+      publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
+      followOpen.value = false
+    }
   }
   finally {
-    followLoading.value = false
+    if (current())
+      followLoading.value = false
   }
 }
 
 async function refreshFollowRoutePreview() {
   const generation = ++followRouteGeneration
+  const owner = followGeneration
+  const origin = sourceId.value
+  const ownerRoute = route.fullPath
+  let source: ServerDataSource | undefined
+  const current = () => generation === followRouteGeneration && owner === followGeneration && followOpen.value && origin === sourceId.value && ownerRoute === route.fullPath && (!source || store.getSource(origin) === source)
   const siteIds = [...followForm.value.siteIds]
   const libraryId = followForm.value.libraryId
   if (!followOpen.value || !followDefaults.value || !siteIds.length || !libraryId) {
@@ -520,16 +574,19 @@ async function refreshFollowRoutePreview() {
   followRouteError.value = ''
   followRoutePreview.value = null
   try {
-    const preview = await getServerFollowRoutePreview(await resolveSource(), siteIds, libraryId)
-    if (generation === followRouteGeneration)
+    source = await resolveSource(origin)
+    if (!current())
+      return
+    const preview = await getServerFollowRoutePreview(source, siteIds, libraryId)
+    if (current())
       followRoutePreview.value = preview
   }
   catch (reason) {
-    if (generation === followRouteGeneration)
+    if (current())
       followRouteError.value = message(reason)
   }
   finally {
-    if (generation === followRouteGeneration)
+    if (current())
       followRouteLoading.value = false
   }
 }
@@ -538,33 +595,60 @@ watch(() => [followOpen.value, followDefaults.value, followForm.value.siteIds.jo
   void refreshFollowRoutePreview()
 })
 
+watch(followOpen, (open) => {
+  if (!open) {
+    followGeneration++
+    followRouteGeneration++
+    followLoading.value = false
+    followRouteLoading.value = false
+    subscribing.value = false
+  }
+}, { flush: 'sync' })
+
 function toggleFollowSite(id: number) {
   followForm.value.siteIds = followForm.value.siteIds.includes(id) ? followForm.value.siteIds.filter(value => value !== id) : [...followForm.value.siteIds, id]
 }
 
 function toggleSeason(season: number) {
+  if (!followDefaults.value?.seasons.some(item => item.seasonNumber === season) || followDefaults.value.subscribedSeasons.includes(season))
+    return
   followForm.value.seasons = followForm.value.seasons.includes(season) ? followForm.value.seasons.filter(value => value !== season) : [...followForm.value.seasons, season].sort((a, b) => a - b)
 }
 
 async function createFollow() {
   const work = detail.value?.work
-  if (!work?.tmdbId || !followDefaults.value || !followRoutesAvailable.value)
+  if (!followOpen.value || subscribing.value || !work?.tmdbId || !followDefaults.value || followBlockedReason.value)
     return
+  const owner = followGeneration
+  const origin = sourceId.value
+  const ownerRoute = route.fullPath
+  let source: ServerDataSource | undefined
+  const current = () => owner === followGeneration && followOpen.value && origin === sourceId.value && ownerRoute === route.fullPath && (!source || store.getSource(origin) === source)
+  const base = followDefaults.value.snapshot
+  const payload = { tmdb_id: work.tmdbId, title: work.title, year: work.year, snapshot: { ...base, seasons: [...followForm.value.seasons], site_ids: [...followForm.value.siteIds], media_library_id: followForm.value.libraryId, schedule: { kind: 'interval', minutes: followForm.value.minutes }, max_resources_per_run: followForm.value.maxResources, download_priority: followForm.value.priority } }
   subscribing.value = true
   try {
-    const source = await resolveSource()
-    const base = followDefaults.value.snapshot
-    await source.createDiscoveryFollow({ tmdb_id: work.tmdbId, title: work.title, year: work.year, snapshot: { ...base, seasons: followForm.value.seasons, site_ids: followForm.value.siteIds, media_library_id: followForm.value.libraryId, schedule: { kind: 'interval', minutes: followForm.value.minutes }, max_resources_per_run: followForm.value.maxResources, download_priority: followForm.value.priority } })
-    acquisition.value = await getServerAcquisition(source, 'tv', work.tmdbId)
+    source = await resolveSource(origin)
+    if (!current())
+      return
+    await source.createDiscoveryFollow(payload)
+    if (!current())
+      return
+    const nextAcquisition = await getServerAcquisition(source, 'tv', work.tmdbId)
+    if (!current())
+      return
+    acquisition.value = nextAcquisition
     followOpen.value = false
     scheduleStatusRefresh(true)
     publishFeedback({ id: Date.now(), kind: 'success', message: `《${work.title}》已订阅，Server 将自动搜索缺失剧集并入库。` })
   }
   catch (reason) {
-    publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
+    if (current())
+      publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
   }
   finally {
-    subscribing.value = false
+    if (current())
+      subscribing.value = false
   }
 }
 
@@ -616,6 +700,7 @@ watch(() => route.fullPath, async () => {
   copyGeneration++
   routeGeneration++
   acquisitionDialogOpen.value = false
+  followOpen.value = false
   await cancelSearch()
   await load()
 })
@@ -625,6 +710,8 @@ onBeforeUnmount(() => {
   copyGeneration++
   routeGeneration++
   acquisitionDialogOpen.value = false
+  followGeneration++
+  followRouteGeneration++
   unregisterBack?.()
   stopStatusPolling()
   void cancelSearch()
@@ -711,9 +798,13 @@ onBeforeUnmount(() => {
           </div>
           <div v-else-if="followDefaults" class="mt-6 space-y-5">
             <div>
-              <label class="text-xs text-white/48">订阅季</label><div class="mt-2 flex flex-wrap gap-2">
-                <button v-for="season in Math.max(detail.seasonCount || 1, 1)" :key="season" type="button" class="glass-button rounded-full px-3 py-2 text-sm" :class="{ 'bg-white text-black': followForm.seasons.includes(season) }" @click="toggleSeason(season)">
-                  第 {{ season }} 季
+              <label class="text-xs text-white/48">订阅季</label>
+              <p class="mt-1 text-xs text-white/45">
+                已选 {{ followForm.seasons.length }} 季。可调整下方选择；特别篇须单独勾选，已订阅的季不可重复添加。
+              </p>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button v-for="season in followDefaults.seasons" :key="season.seasonNumber" type="button" class="glass-button rounded-full px-3 py-2 text-sm disabled:opacity-45" :aria-pressed="followForm.seasons.includes(season.seasonNumber)" :disabled="followDefaults.subscribedSeasons.includes(season.seasonNumber)" :class="{ 'bg-white text-black': followForm.seasons.includes(season.seasonNumber) }" @click="toggleSeason(season.seasonNumber)">
+                  {{ season.name }}<span v-if="followDefaults.subscribedSeasons.includes(season.seasonNumber)"> · 已订阅</span>
                 </button>
               </div>
             </div>
@@ -729,7 +820,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="grid gap-3 md:grid-cols-2">
-              <label class="text-xs text-white/48">目标媒体库<select v-model="followForm.libraryId" class="follow-input mt-2 w-full rounded-2xl p-3 text-white"><option v-for="item in followDefaults.mediaLibraries" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><label class="text-xs text-white/48">检查间隔（分钟）<input v-model.number="followForm.minutes" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="10" max="10080"></label><label class="text-xs text-white/48">每次最多下载资源数<input v-model.number="followForm.maxResources" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="1" max="20"></label>
+              <label class="text-xs text-white/48">目标媒体库<select v-model="followForm.libraryId" class="follow-input mt-2 w-full rounded-2xl p-3 text-white"><option :value="0" disabled>请选择媒体库</option><option v-for="item in followDefaults.mediaLibraries" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><label class="text-xs text-white/48">检查间隔（分钟）<input v-model.number="followForm.minutes" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="10" max="10080"></label><label class="text-xs text-white/48">每次最多下载资源数<input v-model.number="followForm.maxResources" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="1" max="20"></label>
             </div>
             <div class="rounded-2xl border border-white/10 bg-white/[.035] p-4 text-sm">
               <p class="font-semibold text-white/88">
@@ -754,8 +845,11 @@ onBeforeUnmount(() => {
                 请选择搜索站点和目标媒体库。
               </p>
             </div>
-            <footer class="flex justify-end">
-              <button class="rounded-full bg-white px-6 py-2.5 font-bold text-black disabled:opacity-50" :disabled="subscribing || !followForm.seasons.length || !followForm.siteIds.length || !followForm.libraryId || !followRoutesAvailable" @click="createFollow">
+            <footer class="flex flex-wrap items-center justify-end gap-3">
+              <p v-if="followBlockedReason" id="follow-submit-status" class="min-w-0 flex-1 text-sm text-amber-200" role="status">
+                {{ followBlockedReason }}
+              </p>
+              <button class="rounded-full bg-white px-6 py-2.5 font-bold text-black disabled:opacity-50" :disabled="subscribing || Boolean(followBlockedReason)" :aria-describedby="followBlockedReason ? 'follow-submit-status' : undefined" @click="createFollow">
                 {{ subscribing ? '正在创建…' : '确认订阅' }}
               </button>
             </footer>

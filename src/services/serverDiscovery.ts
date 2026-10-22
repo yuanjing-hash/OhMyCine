@@ -136,6 +136,7 @@ export interface ServerFollowSnapshot {
 }
 export interface ServerFollowDefaults {
   snapshot: ServerFollowSnapshot
+  seasons: { seasonNumber: number, name: string, missing: number }[]
   sites: { id: number, name: string, site_type: string }[]
   downloaders: ServerDownloadOption[]
   mediaLibraries: ServerLibraryOption[]
@@ -280,6 +281,13 @@ export async function getServerFollowDefaults(source: ServerDataSource, tmdbId: 
     const name = text(item.name)
     return id && name ? [{ id, name }] : []
   })
+  const seasons = array(record(record(data.coverage).tv).seasons).flatMap((value) => {
+    const item = record(value)
+    const seasonNumber = nonnegativeInteger(item.season_number)
+    if (seasonNumber == null)
+      return []
+    return [{ seasonNumber, name: text(item.name) ?? (seasonNumber === 0 ? '特别篇' : `第 ${seasonNumber} 季`), missing: nonnegativeInteger(record(item.counts).missing) ?? 0 }]
+  })
   return {
     snapshot: {
       version: number(snapshot.version) ?? 2,
@@ -292,6 +300,7 @@ export async function getServerFollowDefaults(source: ServerDataSource, tmdbId: 
       max_resources_per_run: number(snapshot.max_resources_per_run) ?? 3,
       download_priority: number(snapshot.download_priority) ?? 0,
     },
+    seasons: [...new Map(seasons.map(season => [season.seasonNumber, season])).values()].sort((left, right) => left.seasonNumber - right.seasonNumber),
     sites,
     downloaders,
     mediaLibraries,
