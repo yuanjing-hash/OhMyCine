@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ShareContentAnalysis } from '@/services/serverShareContent'
 import type { ServerShareEntry, ServerSharePreview, ServerShareSelection } from '@/services/serverSharePreview'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { maxServerShareSelectedFiles, shareEntryLeaves, toggleServerShareEntry, validateServerShareSelection } from '@/services/serverSharePreview'
@@ -9,7 +10,7 @@ const props = defineProps<{
   providerLabel: string
   load: (downloaderId: string) => Promise<ServerSharePreview>
 }>()
-const emit = defineEmits<{ change: [selection: ServerShareSelection | null] }>()
+const emit = defineEmits<{ change: [selection: ServerShareSelection | null], analysis: [token: string, analysis: ShareContentAnalysis] }>()
 const preview = ref<ServerSharePreview | null>(null)
 const selected = ref<string[]>([])
 const loading = ref(false)
@@ -53,6 +54,8 @@ async function reload(preserve = true) {
     if (Date.parse(result.expiresAt) <= Date.now())
       throw new Error('分享预览已过期，请重新读取。')
     preview.value = result
+    if (result.shareAnalysis)
+      emit('analysis', props.resultToken, result.shareAnalysis)
     expireAt(version, result.expiresAt)
   }
   catch (reason) {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ServerLibraryOption, ServerResourceItem, ServerRouteRecommendation } from '@/services/serverDiscovery'
+import type { ShareContentAnalysis } from '@/services/serverShareContent'
 import type { ServerSharePreview, ServerShareSelection } from '@/services/serverSharePreview'
 import { computed, ref, watch } from 'vue'
 import DiscoverySharePreview from '@/components/server/DiscoverySharePreview.vue'
@@ -20,6 +21,7 @@ const emit = defineEmits<{
   selectLibrary: [libraryId: number]
   retry: [libraryId?: number]
   confirm: [value: { downloaderId: string, libraryId: number, shareSelection?: ServerShareSelection }]
+  shareAnalysis: [token: string, analysis: ShareContentAnalysis]
 }>()
 
 const step = ref<1 | 2 | 3>(1)
@@ -154,7 +156,7 @@ watch([downloaderId, libraryId, () => props.resource?.token, step], () => {
                   Server 会在下载前验证该资源与当前 TMDB 海报身份；明显不匹配时不会开始下载或错误入库。
                 </p>
               </div>
-              <DiscoverySharePreview v-if="isShare && resource && selectedChoice" :result-token="resource.token" :downloader-id="downloaderId" :provider-label="recommendation?.sourceKind === 'quark_share' ? '夸克分享' : '115 分享'" :load="loadSharePreview" @change="shareSelection = $event" />
+              <DiscoverySharePreview v-if="isShare && resource && selectedChoice" :result-token="resource.token" :downloader-id="downloaderId" :provider-label="recommendation?.sourceKind === 'quark_share' ? '夸克分享' : '115 分享'" :load="loadSharePreview" @change="shareSelection = $event" @analysis="(token, analysis) => emit('shareAnalysis', token, analysis)" />
             </template>
           </main>
 

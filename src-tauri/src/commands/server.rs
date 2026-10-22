@@ -594,7 +594,9 @@ fn server_method(method: &str) -> Result<Method, String> {
 }
 
 fn server_json_timeout(method: &Method, path: &str) -> Duration {
-    if *method == Method::POST && path == "/api/v1/player/discovery/share-preview" {
+    if *method == Method::POST && path == "/api/v1/player/discovery/torrent-results/recognize" {
+        Duration::from_secs(60)
+    } else if *method == Method::POST && path == "/api/v1/player/discovery/share-preview" {
         Duration::from_secs(50)
     } else {
         json_request_timeout(path.split('?').next().unwrap_or(path))
@@ -615,6 +617,25 @@ mod tests {
 
     #[test]
     fn share_preview_limits_are_scoped_to_exact_player_methods_and_paths() {
+        assert_eq!(
+            server_json_timeout(
+                &Method::POST,
+                "/api/v1/player/discovery/torrent-results/recognize"
+            ),
+            Duration::from_secs(60)
+        );
+        for (method, path) in [
+            (
+                Method::GET,
+                "/api/v1/player/discovery/torrent-results/recognize",
+            ),
+            (
+                Method::POST,
+                "/api/v1/player/discovery/torrent-results/recognize?extra=1",
+            ),
+        ] {
+            assert_eq!(server_json_timeout(&method, path), Duration::from_secs(20));
+        }
         assert_eq!(
             server_json_timeout(&Method::GET, "/api/v1/player/online-libraries?limit=10"),
             Duration::from_secs(60)

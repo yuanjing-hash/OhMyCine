@@ -25,5 +25,5 @@ export default defineConfig({
     '@vue/test-utils': fromRuntime('@vue/test-utils/dist/vue-test-utils.esm-bundler.mjs'),
     'vitest': fromRuntime('vitest/dist/index.js'),
   }, dedupe: ['vue'] },
-  test: { environment: 'happy-dom', include: ['scripts/verify-server-discovery-detail.mounted.test.ts', 'scripts/verify-global-search-workspace.mounted.test.ts'] },
+  test: { environment: 'happy-dom', include: ['scripts/verify-server-discovery-detail.mounted.test.ts', 'scripts/verify-global-search-workspace.mounted.test.ts', 'scripts/verify-share-content.mounted.test.ts'] },
 })

@@ -528,6 +528,10 @@ export class ServerDataSource implements DataSource {
     return this.request('/api/v1/player/discovery/share-preview', 'POST', payload)
   }
 
+  async recognizeDiscoveryResource(resultToken: string): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/torrent-results/recognize', 'POST', { result_token: resultToken })
+  }
+
   async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id?: number, priority: number, expected_tmdb_id?: number, expected_media_type?: 'movie' | 'tv', preview_token?: string, selected_entry_tokens?: string[] }): Promise<unknown> {
     return this.request('/api/v1/player/discovery/downloads', 'POST', payload)
   }
@@ -638,14 +642,7 @@ export class ServerDataSource implements DataSource {
       return onlineWorkToDetail(this.id, online.libraryId, work).children ?? []
     }
     if (/^\d+$/.test(value)) {
-      const [categories, acquisitions] = await Promise.all([
-        this.categories(value),
-        this.acquisitionItems(value).catch(() => []),
-      ])
-      const result = categories.map(category => this.mapCategory(value, category))
-      if (acquisitions.length)
-        result.unshift(this.mapAcquisitionCategory(value, acquisitions.length))
-      return result
+      return (await this.categories(value)).map(category => this.mapCategory(value, category))
     }
     const acquisitionCategory = parseServerAcquisitionCategoryID(value)
     if (acquisitionCategory)
@@ -1197,20 +1194,6 @@ export class ServerDataSource implements DataSource {
       backdropUrl: resolveServerArtworkURL(this.baseUrl, category.artwork_url),
       artworkRevision: category.artwork_revision,
       artworkSource: category.artwork_source,
-      path: '',
-    }
-  }
-
-  private mapAcquisitionCategory(libraryID: string, count: number): MediaItem {
-    return {
-      id: createServerAcquisitionCategoryID(libraryID),
-      sourceId: this.id,
-      originType: 'server',
-      libraryId: libraryID,
-      name: '正在入库',
-      type: 'folder',
-      overview: `${count} 个任务正在下载、整理或等待处理`,
-      artworkSource: 'fallback',
       path: '',
     }
   }
@@ -1903,10 +1886,6 @@ function mediaLibraryToRootItem(library: MediaLibrary): MediaItem {
     displaySubtitle: library.itemCount == null ? '媒体库' : `${library.itemCount} 项内容`,
     path: '',
   }
-}
-
-function createServerAcquisitionCategoryID(libraryId: string): string {
-  return `server-acquisition-category|${encodeURIComponent(libraryId)}`
 }
 
 function parseServerAcquisitionCategoryID(value: string): { libraryId: string } | null {
