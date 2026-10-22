@@ -95,13 +95,18 @@ pub async fn mpv_capture_screenshot(
     if format != "png" && format != "jpg" {
         return Err("不支持的截图格式。".to_string());
     }
-    state.run("captureScreenshot", ScreenshotPayload {
-        title: title.chars().take(160).collect(),
-        season_number,
-        episode_number,
-        directory_uri: directory.filter(|value| !value.trim().is_empty()),
-        format,
-    }).await
+    state
+        .run(
+            "captureScreenshot",
+            ScreenshotPayload {
+                title: title.chars().take(160).collect(),
+                season_number,
+                episode_number,
+                directory_uri: directory.filter(|value| !value.trim().is_empty()),
+                format,
+            },
+        )
+        .await
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -139,11 +144,14 @@ pub async fn mpv_load(
     if path.trim().is_empty() {
         return Err("播放地址为空。".to_string());
     }
-    stream_proxy.clear().await;
+    let epoch = stream_proxy.begin_load().await;
     let headers = sanitize_http_headers(headers.unwrap_or_default())?;
     let audio_headers = sanitize_http_headers(audio_headers.unwrap_or_default())?;
     let (path, headers) = if is_remote_http_stream(&path) {
-        (stream_proxy.prepare(path, headers).await?, Vec::new())
+        (
+            stream_proxy.prepare_for_epoch(path, headers, epoch).await?,
+            Vec::new(),
+        )
     } else {
         (path, headers)
     };
@@ -151,10 +159,13 @@ pub async fn mpv_load(
         Some(value) if !value.trim().is_empty() => {
             let value = value.trim().to_string();
             if is_remote_http_stream(&value) {
-                match stream_proxy.prepare(value, audio_headers).await {
+                match stream_proxy
+                    .prepare_for_epoch(value, audio_headers, epoch)
+                    .await
+                {
                     Ok(url) => Some(url),
                     Err(error) => {
-                        stream_proxy.clear().await;
+                        stream_proxy.cancel_preserving_diagnostics(epoch).await;
                         return Err(error);
                     }
                 }
@@ -176,11 +187,12 @@ pub async fn mpv_load(
     };
     let result = async {
         wait_for_android_surface(state.inner()).await?;
+        let _submission = stream_proxy.current_load_guard(epoch).await?;
         state.run("load", payload).await
     }
     .await;
     if result.is_err() {
-        stream_proxy.clear().await;
+        stream_proxy.cancel_preserving_diagnostics(epoch).await;
     }
     result
 }
@@ -242,8 +254,13 @@ pub async fn mpv_stop(
     state: State<'_, AndroidMpvState>,
     stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
+    let epoch = stream_proxy.diagnostic_epoch();
+    let Ok(submission) = stream_proxy.current_load_guard(epoch).await else {
+        // This stop belonged to a playback already replaced by another load.
+        return Ok(());
+    };
     let result = state.run("stop", ()).await;
-    stream_proxy.clear().await;
+    submission.clear_after_stop().await;
     result
 }
 
@@ -290,8 +307,14 @@ pub async fn mpv_track_state(state: State<'_, AndroidMpvState>) -> Result<MpvTra
 #[tauri::command]
 pub async fn mpv_playback_diagnostics(
     state: State<'_, AndroidMpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<AndroidPlaybackDiagnostics, String> {
-    state.run("playbackDiagnostics", ()).await
+    let epoch = stream_proxy.diagnostic_epoch();
+    let mut diagnostics: AndroidPlaybackDiagnostics = state.run("playbackDiagnostics", ()).await?;
+    diagnostics
+        .logs
+        .extend(stream_proxy.diagnostic_logs(epoch).await);
+    Ok(diagnostics)
 }
 
 #[tauri::command]

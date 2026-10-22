@@ -6,13 +6,29 @@ const cachedReads = new Map<string, Promise<string | null>>()
 const cacheWrites = new Map<string, Promise<string>>()
 interface ServerArtworkCredential { sourceId: string, baseUrl: string, accessToken: string, generation: number }
 const serverArtworkSources = new Map<string, ServerArtworkCredential>()
+const serverArtworkListeners = new Set<() => void>()
 const protectedArtworkMemory = new Map<string, { sourceId: string, data: string }>()
 const MAX_PROTECTED_ARTWORK_MEMORY = 32 * 1024 * 1024
 let protectedArtworkMemorySize = 0
 let serverArtworkGeneration = 0
 
+function isCurrentCredential(credential: ServerArtworkCredential): boolean {
+  return serverArtworkSources.get(credential.sourceId)?.generation === credential.generation
+}
+
+function notifyServerArtworkSources(): void {
+  for (const listener of serverArtworkListeners) {
+    try {
+      listener()
+    }
+    catch {
+      // An image observer must not prevent credential replacement or removal.
+    }
+  }
+}
+
 function rememberProtectedArtwork(key: string, credential: ServerArtworkCredential, data: string): void {
-  if (serverArtworkSources.get(credential.sourceId)?.generation !== credential.generation || data.length > MAX_PROTECTED_ARTWORK_MEMORY)
+  if (!isCurrentCredential(credential) || data.length > MAX_PROTECTED_ARTWORK_MEMORY)
     return
   const previous = protectedArtworkMemory.get(key)
   if (previous)
@@ -41,8 +57,12 @@ function forgetProtectedArtwork(sourceId: string): void {
 
 export function registerServerArtworkSource(sourceId: string, baseUrl: string, accessToken: string): void {
   if (sourceId && baseUrl && accessToken) {
+    const registered = serverArtworkSources.get(sourceId)
+    if (registered?.baseUrl === baseUrl && registered.accessToken === accessToken)
+      return
     forgetProtectedArtwork(sourceId)
     serverArtworkSources.set(sourceId, { sourceId, baseUrl, accessToken, generation: ++serverArtworkGeneration })
+    notifyServerArtworkSources()
   }
 }
 
@@ -51,6 +71,7 @@ export function unregisterServerArtworkSource(sourceId: string, accessToken?: st
   if (registered && (!accessToken || registered.accessToken === accessToken)) {
     serverArtworkSources.delete(sourceId)
     forgetProtectedArtwork(sourceId)
+    notifyServerArtworkSources()
   }
 }
 
@@ -59,6 +80,15 @@ function serverArtworkCredential(cacheKey: string, url: string): ServerArtworkCr
   return [...serverArtworkSources.entries()]
     .filter(([id, source]) => source.baseUrl === origin && cacheKey.startsWith(`${id}:`))
     .sort(([left], [right]) => right.length - left.length)[0]?.[1]
+}
+
+export function serverArtworkCredentialGeneration(cacheKey: string, url: string): number | null {
+  return isProtectedServerArtworkURL(url) ? serverArtworkCredential(cacheKey, url)?.generation ?? null : null
+}
+
+export function subscribeServerArtworkSources(listener: () => void): () => void {
+  serverArtworkListeners.add(listener)
+  return () => serverArtworkListeners.delete(listener)
 }
 const IMAGE_CACHE_SETTINGS_KEY = 'ohmycine-image-cache-settings-v1'
 const DEFAULT_IMAGE_CACHE_LIMIT_MB = 500
@@ -170,6 +200,8 @@ export async function getCachedImage(cacheKey: string, url: string): Promise<str
     },
   })
     .then((cached) => {
+      if (credential && !isCurrentCredential(credential))
+        return null
       if (cached && credential)
         rememberProtectedArtwork(requestKey, credential, cached)
       return cached
@@ -204,6 +236,8 @@ export async function cacheImage(cacheKey: string, url: string): Promise<string>
     },
   })
     .then((resolved) => {
+      if (credential && !isCurrentCredential(credential))
+        return ''
       if (resolved && credential)
         rememberProtectedArtwork(requestKey, credential, resolved)
       return resolved

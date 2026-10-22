@@ -179,6 +179,7 @@ interface EmbyItemRecord {
     readonly IsFavorite?: boolean
     readonly PlayedPercentage?: number
     readonly PlaybackPositionTicks?: number
+    readonly LastPlayedDate?: string
   }
 }
 
@@ -315,6 +316,7 @@ export class EmbyDataSource implements DataSource {
   private instanceFingerprint = ''
   private readonly cache = new SourceMetadataCache()
   private readonly playbackSessions = new Map<string, EmbyPlaybackSessionMetadata>()
+  private readonly playbackWatchedUpdates = new Map<string, Promise<void>>()
   private readonly playbackInfoFailures = new Map<string, EmbyPlaybackInfoFailure>()
   private readonly playbackSyncDiagnostics: ProviderPlaybackSyncDiagnostic[] = []
   private readonly favoriteStateOverrides = new Map<string, FavoriteStateOverride>()
@@ -397,6 +399,8 @@ export class EmbyDataSource implements DataSource {
   destroy(): void {
     this.connected = false
     this.favoriteStateOverrides.clear()
+    this.playbackSessions.clear()
+    this.playbackWatchedUpdates.clear()
   }
 
   clearCache(): void {
@@ -640,11 +644,21 @@ export class EmbyDataSource implements DataSource {
       return
     }
 
+    if (progress.event === 'started')
+      this.playbackWatchedUpdates.delete(itemId)
     const session = await this.ensurePlaybackSession(itemId, progress)
     if (!session.playSessionId) {
       this.rememberPlaybackSyncDiagnostic(progress, 'session-metadata', '/Items/{Id}/PlaybackInfo', false, missingPlaySessionMessage(session), session)
-      if (progress.event === 'stopped' || progress.event === 'completed')
-        this.playbackSessions.delete(itemId)
+      try {
+        if (progress.completed)
+          await this.markPlaybackWatchedOnce(itemId)
+      }
+      finally {
+        if (progress.event === 'stopped' || progress.event === 'completed') {
+          this.playbackSessions.delete(itemId)
+          this.playbackWatchedUpdates.delete(itemId)
+        }
+      }
       return
     }
 
@@ -663,12 +677,16 @@ export class EmbyDataSource implements DataSource {
 
     const sessionError = await this.syncSessionPlaybackProgress(itemId, session, progress)
 
-    if (progress.completed)
-      await this.markPlayed(itemId)
-
-    if (progress.event === 'stopped' || progress.event === 'completed') {
-      this.cache.clear()
-      this.playbackSessions.delete(itemId)
+    try {
+      if (progress.completed)
+        await this.markPlaybackWatchedOnce(itemId)
+    }
+    finally {
+      if (progress.event === 'stopped' || progress.event === 'completed') {
+        this.cache.clear()
+        this.playbackSessions.delete(itemId)
+        this.playbackWatchedUpdates.delete(itemId)
+      }
     }
 
     throwPlaybackSyncDiagnostic(progress.event, startError ?? sessionError)
@@ -1297,12 +1315,19 @@ export class EmbyDataSource implements DataSource {
     })
   }
 
-  private async markPlayed(itemId: string): Promise<void> {
+  private async markPlaybackWatchedOnce(itemId: string): Promise<void> {
+    const pending = this.playbackWatchedUpdates.get(itemId)
+    if (pending)
+      return pending
+    const update = this.setPlayedState(itemId, 'played')
+    this.playbackWatchedUpdates.set(itemId, update)
     try {
-      await this.request(`/Users/{UserId}/PlayedItems/${encodeURIComponent(itemId)}`, {}, 'POST')
+      await update
     }
-    catch {
-      // The stopped/progress report is still useful; explicit watched marking is best-effort.
+    catch (error) {
+      if (this.playbackWatchedUpdates.get(itemId) === update)
+        this.playbackWatchedUpdates.delete(itemId)
+      throw error
     }
   }
 
@@ -1563,6 +1588,8 @@ export class EmbyDataSource implements DataSource {
       duration: ticksToSeconds(item.RunTimeTicks),
       size: item.Size ?? mediaSourceSize,
       modified: item.DateCreated ?? item.DateLastMediaAdded,
+      addedAt: item.DateCreated ?? item.DateLastMediaAdded,
+      lastPlayedAt: item.UserData?.LastPlayedDate,
       path: item.Id,
       resumePosition,
       progress,

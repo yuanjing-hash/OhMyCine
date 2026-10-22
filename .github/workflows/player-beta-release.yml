@@ -29,13 +29,20 @@ on:
       - ".github/scripts/verify-player-release-source.sh"
       - "package.json"
       - "scripts/build-android-preview.mjs"
+      - "scripts/setup-libmpv.mjs"
       - "scripts/setup-libmpv-android.mjs"
+      - "scripts/android-mpv-runtime/**"
+      - "scripts/setup-remux.mjs"
       - "src-tauri/tauri.conf.json"
       - "src-tauri/tauri.windows.conf.json"
       - "src-tauri/tauri.updater.conf.json"
       - "src-tauri/Cargo.toml"
+      - "src-tauri/build.rs"
+      - "src-tauri/native/**"
       - "src-tauri/src/commands/updater.rs"
       - "src-tauri/src/commands/downloads.rs"
+      - "src-tauri/src/commands/download_online.rs"
+      - "src-tauri/src/commands/download_remux.rs"
       - "src-tauri/src/commands/download_android.rs"
       - "src-tauri/src/commands/provider_file.rs"
       - "src-tauri/gen/android/app/build.gradle.kts"
@@ -58,13 +65,20 @@ on:
       - ".github/scripts/verify-player-release-source.sh"
       - "package.json"
       - "scripts/build-android-preview.mjs"
+      - "scripts/setup-libmpv.mjs"
       - "scripts/setup-libmpv-android.mjs"
+      - "scripts/android-mpv-runtime/**"
+      - "scripts/setup-remux.mjs"
       - "src-tauri/tauri.conf.json"
       - "src-tauri/tauri.windows.conf.json"
       - "src-tauri/tauri.updater.conf.json"
       - "src-tauri/Cargo.toml"
+      - "src-tauri/build.rs"
+      - "src-tauri/native/**"
       - "src-tauri/src/commands/updater.rs"
       - "src-tauri/src/commands/downloads.rs"
+      - "src-tauri/src/commands/download_online.rs"
+      - "src-tauri/src/commands/download_remux.rs"
       - "src-tauri/src/commands/download_android.rs"
       - "src-tauri/src/commands/provider_file.rs"
       - "src-tauri/gen/android/app/build.gradle.kts"
@@ -175,6 +189,28 @@ jobs:
       - name: Install frontend dependencies
         working-directory: .
         run: npm ci
+
+      - name: Restore pinned Android mpv runtime
+        id: android-mpv-runtime
+        uses: actions/cache@v4
+        with:
+          path: .build/android-mpv-runtime/output
+          key: android-mpv-vulkan-arm64-${{ hashFiles('scripts/android-mpv-runtime/sources.json', 'scripts/android-mpv-runtime/build-runtime.py', 'scripts/android-mpv-runtime/shaderc.sh', 'scripts/android-mpv-runtime/Dockerfile', 'scripts/android-mpv-runtime/android-hdr-egl.c') }}
+
+      - name: Build pinned Android mpv runtime on cache miss
+        if: steps.android-mpv-runtime.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .build/android-mpv-runtime
+          docker build -t ohmycine-android-mpv-builder scripts/android-mpv-runtime
+          docker run --rm --cpus=4 --memory=5g \
+            -v "${GITHUB_WORKSPACE}/scripts/android-mpv-runtime:/builder:ro" \
+            -v "${GITHUB_WORKSPACE}/.build/android-mpv-runtime:/work" \
+            ohmycine-android-mpv-builder --work-dir /work --jobs 4
+
+      - name: Import verified Android mpv runtime
+        run: node scripts/setup-libmpv-android.mjs
 
       - name: Sync Player version
         shell: bash
@@ -457,6 +493,20 @@ jobs:
             cp "${release_dir}/${file}" "${standard_dir}/${file}"
             cp "${release_dir}/${file}" "${portable_dir}/${file}"
           done
+          remux_dir="src-tauri/resources/remux"
+          (cd "$remux_dir" && sha256sum --check "${GITHUB_WORKSPACE}/src-tauri/native/remux-windows.sha256")
+          mkdir -p "${standard_dir}/remux" "${portable_dir}/remux"
+          while read -r checksum file; do
+            cp "${remux_dir}/${file}" "${standard_dir}/remux/${file}"
+            cp "${remux_dir}/${file}" "${portable_dir}/remux/${file}"
+          done < src-tauri/native/remux-windows.sha256
+          for file in LICENSE.txt README.md; do
+            test -f "${remux_dir}/${file}"
+            cp "${remux_dir}/${file}" "${standard_dir}/remux/${file}"
+            cp "${remux_dir}/${file}" "${portable_dir}/remux/${file}"
+          done
+          (cd "${standard_dir}/remux" && sha256sum --check "${GITHUB_WORKSPACE}/src-tauri/native/remux-windows.sha256")
+          (cd "${portable_dir}/remux" && sha256sum --check "${GITHUB_WORKSPACE}/src-tauri/native/remux-windows.sha256")
           if [[ -f "${release_dir}/WebView2Loader.dll" ]]; then
             cp "${release_dir}/WebView2Loader.dll" "${standard_dir}/WebView2Loader.dll"
             cp "${release_dir}/WebView2Loader.dll" "${portable_dir}/WebView2Loader.dll"

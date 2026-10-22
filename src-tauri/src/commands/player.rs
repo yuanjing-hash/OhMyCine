@@ -1,6 +1,12 @@
-use std::{fs, fs::OpenOptions, io::{Read, Seek, SeekFrom}, path::{Path, PathBuf}, time::Duration};
-use tauri::{AppHandle, State};
 use serde::Serialize;
+use std::{
+    fs,
+    fs::OpenOptions,
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tauri::{AppHandle, State};
 
 use super::player_shared::{
     prepare_external_subtitle, sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings,
@@ -43,12 +49,25 @@ fn screenshot_stem(title: &str, season_number: Option<i32>, episode_number: Opti
     let cleaned: String = title
         .chars()
         .filter(|value| !value.is_control())
-        .map(|value| if r#"<>:"/\|?*"#.contains(value) { ' ' } else { value })
+        .map(|value| {
+            if r#"<>:"/\|?*"#.contains(value) {
+                ' '
+            } else {
+                value
+            }
+        })
         .take(80)
         .collect();
     let cleaned = cleaned.trim().trim_matches('.').trim();
-    let title = if cleaned.is_empty() { "未命名视频" } else { cleaned };
-    let episode = match (season_number.filter(|value| *value >= 0), episode_number.filter(|value| *value >= 0)) {
+    let title = if cleaned.is_empty() {
+        "未命名视频"
+    } else {
+        cleaned
+    };
+    let episode = match (
+        season_number.filter(|value| *value >= 0),
+        episode_number.filter(|value| *value >= 0),
+    ) {
         (Some(season), Some(number)) => format!("-S{season:02}E{number:02}"),
         (None, Some(number)) => format!("-E{number:02}"),
         _ => String::new(),
@@ -57,9 +76,17 @@ fn screenshot_stem(title: &str, season_number: Option<i32>, episode_number: Opti
 }
 
 fn screenshot_file_complete(path: &Path, format: &str) -> bool {
-    let Ok(mut file) = fs::File::open(path) else { return false };
-    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else { return false };
-    let marker: &[u8] = if format == "png" { b"IEND\xaeB\x60\x82" } else { b"\xff\xd9" };
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+        return false;
+    };
+    let marker: &[u8] = if format == "png" {
+        b"IEND\xaeB\x60\x82"
+    } else {
+        b"\xff\xd9"
+    };
     if length < marker.len() as u64 {
         return false;
     }
@@ -90,8 +117,11 @@ pub async fn mpv_capture_screenshot(
     let player_state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let directory = screenshot_directory(directory.as_deref())?;
-        fs::create_dir_all(&directory).map_err(|_| "无法创建截图目录，请在设置中选择可写目录。".to_string())?;
-        let directory = directory.canonicalize().map_err(|_| "截图目录不可访问。".to_string())?;
+        fs::create_dir_all(&directory)
+            .map_err(|_| "无法创建截图目录，请在设置中选择可写目录。".to_string())?;
+        let directory = directory
+            .canonicalize()
+            .map_err(|_| "截图目录不可访问。".to_string())?;
         let stem = screenshot_stem(&title, season_number, episode_number);
         for number in 1..=9999 {
             let name = format!("{stem}{number:04}.{format}");
@@ -112,12 +142,18 @@ pub async fn mpv_capture_screenshot(
             }
             for _ in 0..200 {
                 if screenshot_file_complete(&path, &format) {
-                    return Ok(ScreenshotResult { name, path: path.display().to_string() });
+                    return Ok(ScreenshotResult {
+                        name,
+                        path: path.display().to_string(),
+                    });
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
             // A backend may fail after accepting the asynchronous screenshot command.
-            if fs::metadata(&path).map(|value| value.len() == 0).unwrap_or(false) {
+            if fs::metadata(&path)
+                .map(|value| value.len() == 0)
+                .unwrap_or(false)
+            {
                 let _ = fs::remove_file(&path);
             }
             return Err("截图写入超时，请检查目录权限和播放器日志。".to_string());
@@ -129,13 +165,25 @@ pub async fn mpv_capture_screenshot(
 }
 
 #[tauri::command]
-pub fn mpv_playback_diagnostics(
+pub async fn mpv_playback_diagnostics(
     state: State<'_, MpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<DesktopPlaybackDiagnostics, String> {
-    state
+    let epoch = stream_proxy.diagnostic_epoch();
+    // Hold the async submission guard while taking both snapshots, never the mpv mutex
+    // across await. A concurrent begin_load cannot mix old native and new HTTP evidence.
+    let _submission = stream_proxy.current_load_guard(epoch).await?;
+    let transport_logs = stream_proxy.diagnostic_logs(epoch).await;
+    let player = state
         .lock()
-        .map(|player| player.playback_diagnostics())
-        .map_err(|_| "播放器状态暂不可用。".to_string())
+        .map_err(|_| "播放器状态暂不可用。".to_string())?;
+    if player.playback_epoch() != Some(epoch) && !(epoch == 0 && player.playback_epoch().is_none())
+    {
+        return Err("播放器正在切换媒体，请稍后读取诊断。".to_string());
+    }
+    let mut diagnostics = player.playback_diagnostics();
+    diagnostics.logs.extend(transport_logs);
+    Ok(diagnostics)
 }
 
 #[tauri::command]
@@ -150,46 +198,60 @@ pub async fn mpv_load(
     stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
     let _ = title;
-    // Every load owns a fresh loopback session. Video and external DASH audio
-    // may register separate targets below, while tokens from the previous
-    // media item become invalid before libmpv starts the new request set.
-    stream_proxy.clear().await;
     let headers = sanitize_http_headers(headers.unwrap_or_default())?;
     let audio_headers = sanitize_http_headers(audio_headers.unwrap_or_default())?;
-    let (path, headers) = if is_remote_http_stream(&path) && !headers.is_empty() {
-        (stream_proxy.prepare(path, headers).await?, Vec::new())
-    } else {
-        (path, headers)
-    };
-    let headers = headers
-        .into_iter()
-        .map(|header| (header.name, header.value))
-        .collect::<Vec<_>>();
-    let audio_path = match audio_path {
-        Some(value) if !value.trim().is_empty() => {
-            let value = value.trim().to_string();
-            if is_remote_http_stream(&value) && !audio_headers.is_empty() {
-                match stream_proxy.prepare(value, audio_headers).await {
-                    Ok(url) => Some(url),
-                    Err(error) => {
-                        stream_proxy.clear().await;
-                        return Err(error);
-                    }
+    // One epoch owns preparation, native submission, diagnostics and cancellation for
+    // both video and independent audio. A stale failure must not clear the next load.
+    let epoch = stream_proxy.begin_load().await;
+    {
+        let _submission = stream_proxy.current_load_guard(epoch).await?;
+        state
+            .lock()
+            .map_err(|_| "播放器状态暂不可用。".to_string())?
+            .begin_load_attempt(epoch);
+    }
+    let result = async {
+        let (path, headers) = if is_remote_http_stream(&path) && !headers.is_empty() {
+            (
+                stream_proxy.prepare_for_epoch(path, headers, epoch).await?,
+                Vec::new(),
+            )
+        } else {
+            (path, headers)
+        };
+        let headers = headers
+            .into_iter()
+            .map(|header| (header.name, header.value))
+            .collect::<Vec<_>>();
+        let audio_path = match audio_path {
+            Some(value) if !value.trim().is_empty() => {
+                let value = value.trim().to_string();
+                if is_remote_http_stream(&value) && !audio_headers.is_empty() {
+                    Some(
+                        stream_proxy
+                            .prepare_for_epoch(value, audio_headers, epoch)
+                            .await?,
+                    )
+                } else {
+                    Some(value)
                 }
-            } else {
-                Some(value)
             }
+            _ => None,
+        };
+        let _submission = stream_proxy.current_load_guard(epoch).await?;
+        let mut player = state
+            .lock()
+            .map_err(|_| "播放器状态暂不可用。".to_string())?;
+        player.load_file_with_headers(&path, &headers, audio_path.as_deref(), http_read_profile)
+    }
+    .await;
+    if let Err(error) = &result {
+        if let Ok(submission) = stream_proxy.current_load_guard(epoch).await {
+            if let Ok(mut player) = state.lock() {
+                player.fail_load_attempt(epoch, error);
+            }
+            submission.cancel_preserving_diagnostics().await;
         }
-        _ => None,
-    };
-    let result = match state.lock() {
-        Ok(mut player) => {
-            player.load_file_with_headers(&path, &headers, audio_path.as_deref(), http_read_profile)
-        }
-        Err(error) => Err(error.to_string()),
-    };
-    if result.is_err() {
-        stream_proxy.clear().await;
     }
     result
 }
@@ -264,11 +326,15 @@ pub async fn mpv_stop(
     state: State<'_, MpvState>,
     stream_proxy: State<'_, AndroidStreamProxyState>,
 ) -> Result<(), String> {
-    let result = {
-        let mut player = state.lock().map_err(|err| err.to_string())?;
-        player.stop()
+    let epoch = stream_proxy.diagnostic_epoch();
+    let Ok(submission) = stream_proxy.current_load_guard(epoch).await else {
+        return Ok(());
     };
-    stream_proxy.clear().await;
+    let result = state
+        .lock()
+        .map_err(|_| "播放器状态暂不可用。".to_string())
+        .and_then(|mut player| player.stop());
+    submission.cancel_preserving_diagnostics().await;
     result
 }
 

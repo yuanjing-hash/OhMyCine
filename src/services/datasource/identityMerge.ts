@@ -100,8 +100,21 @@ function mergePair(left: MediaItem, right: MediaItem): MediaItem {
     overview: preferred.overview ?? alternate.overview,
     tagline: preferred.tagline ?? alternate.tagline,
     duration: preferred.duration ?? alternate.duration,
+    // The merged work keeps the newest proven admission, independently from
+    // which source owns its default playback route or preferred artwork.
+    addedAt: newestAdmission(left.addedAt, right.addedAt),
     playbackTargets: mergeTargets(left, right),
   }
+}
+
+function newestAdmission(left?: string, right?: string): string | undefined {
+  const leftTime = left ? Date.parse(left) : Number.NaN
+  const rightTime = right ? Date.parse(right) : Number.NaN
+  if (!Number.isFinite(leftTime))
+    return Number.isFinite(rightTime) ? right : undefined
+  if (!Number.isFinite(rightTime) || leftTime >= rightTime)
+    return left
+  return right
 }
 
 function prefersRight(left: MediaItem, right: MediaItem): boolean {

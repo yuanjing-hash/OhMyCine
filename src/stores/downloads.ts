@@ -2,6 +2,7 @@ import type { MediaItem } from '@/services/datasource/types'
 import type { DownloadSettings, DownloadTask, OfflineItemSummary } from '@/services/downloads'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { parseOnlineItemID } from '@/services/datasource/serverOnline'
 import {
   cancelDownload,
   getDefaultDownloadDirectory,
@@ -221,9 +222,20 @@ export function deriveOfflineBadge(
 ): OfflineBadge | null {
   if (completedKeys.has(identityKey(item.sourceId, item.id)))
     return { state: 'complete', downloaded: 1, total: 1, label: '已下载' }
+  const online = parseOnlineItemID(item.id)
+  if (item.type === 'movie' && online?.kind === 'work' && offlineItems.some((entry) => {
+    const version = parseOnlineItemID(entry.itemId)
+    return entry.sourceId === item.sourceId && entry.mediaType === 'movie'
+      && version?.kind === 'version' && version.libraryId === online.libraryId && version.workId === online.workId
+      && (!entry.mediaSourceId || entry.mediaSourceId === version.versionId)
+  })) {
+    return { state: 'complete', downloaded: 1, total: 1, label: '已下载' }
+  }
   if (!['series', 'season', 'folder'].includes(item.type))
     return null
   const descendants = flattenPlayable(item.children ?? [])
+  if (!descendants.length && online?.kind === 'work')
+    return null
   const downloaded = descendants.length
     ? descendants.filter(child => completedKeys.has(identityKey(child.sourceId, child.id))).length
     : offlineItems.filter((entry) => {

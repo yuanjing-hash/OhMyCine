@@ -1,18 +1,23 @@
-import type { MediaItem } from '@/services/datasource/types'
+import type { DataSourceConfig, MediaItem } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
 import { redactSensitiveText } from '@/services/datasource/errors'
+import { createServerWorkItemId, parseServerHistoryIdentity, parseServerWorkItemIdentity } from '@/services/datasource/serverIdentity'
+import { createOnlineWorkID, parseOnlineItemID } from '@/services/datasource/serverOnline'
 
-export type PlaybackProgressSource = 'local'
+export type PlaybackProgressSource = 'local' | 'server'
+export type PlaybackHistoryStatus = 'all' | 'inProgress' | 'watched'
 export const PLAYED_STATE_CHANGED_EVENT = 'ohmycine:played-state-changed'
 
 export interface PlaybackProgressIdentity {
   sourceId: string
   mediaIdentity: string
+  ownerScope?: string | null
 }
 
 export interface PlaybackProgressUpsert extends PlaybackProgressIdentity {
   libraryId?: string
   itemId?: string
+  seriesId?: string
   title: string
   streamIdentity?: string
   mediaType?: MediaItem['type']
@@ -29,6 +34,7 @@ export interface PlaybackProgressUpsert extends PlaybackProgressIdentity {
 export interface PlaybackHistoryEntry extends PlaybackProgressIdentity {
   libraryId?: string | null
   itemId?: string | null
+  seriesId?: string | null
   title: string
   streamIdentity?: string | null
   mediaType?: MediaItem['type'] | null
@@ -54,18 +60,48 @@ export interface PlaybackHistoryPage {
   hasMore: boolean
 }
 
+export interface PlaybackHistorySnapshot {
+  entries: PlaybackHistoryEntry[]
+  revision: number | null
+}
+
 const RESUME_MIN_POSITION = 30
 const COMPLETED_REMAINING_SECONDS = 90
 const COMPLETED_PROGRESS_RATIO = 0.92
+const COMPLETED_TAIL_MIN_RATIO = 0.90
 const SENSITIVE_URL_PATTERN = /[?&](?:api_key|apikey|access_key|accesskeyid|access_token|token|x-emby-token|expires|x-amz-expires|signature|sig|sign|password|passwd|pwd|security-token|x-amz-signature|x-amz-credential|x-amz-security-token|ossaccesskeyid|awsaccesskeyid)=/i
+let resolveOwnerScope: ((sourceId: string) => Promise<string | null>) | undefined
+let mutationEpoch = 0
+
+export function invalidatePendingPlaybackHistoryMutations(): void {
+  mutationEpoch++
+}
+
+export function configurePlaybackHistoryScopeResolver(resolver: (sourceId: string) => Promise<string | null>): () => void {
+  resolveOwnerScope = resolver
+  return () => {
+    if (resolveOwnerScope === resolver)
+      resolveOwnerScope = undefined
+  }
+}
+
+export async function playbackHistoryOwnerScope(sourceId: string): Promise<string | null> {
+  return resolveOwnerScope?.(sourceId).catch(() => null) ?? null
+}
 
 export async function savePlaybackProgress(input: PlaybackProgressUpsert): Promise<PlaybackHistoryEntry | null> {
+  const epoch = mutationEpoch
   const progress = sanitizeProgressInput(input)
   if (!progress)
     return null
 
   try {
-    const saved = await invoke<PlaybackHistoryEntry>('player_upsert_playback_progress', { progress })
+    const generation = await invoke<number>('player_get_playback_history_generation')
+    if (progress.ownerScope === undefined)
+      progress.ownerScope = await playbackHistoryOwnerScope(progress.sourceId)
+    if (epoch !== mutationEpoch)
+      return null
+    const saved = await invoke<PlaybackHistoryEntry>('player_upsert_playback_progress', { progress, generation })
     notifyPlaybackHistoryChanged('progress-saved')
     return saved
   }
@@ -79,37 +115,68 @@ export async function getPlaybackProgress(identity: PlaybackProgressIdentity): P
     return null
 
   try {
-    return await invoke<PlaybackHistoryEntry | null>('player_get_playback_progress', { identity })
+    return await invoke<PlaybackHistoryEntry | null>('player_get_playback_progress', { identity: {
+      ...identity,
+      ownerScope: identity.ownerScope === undefined ? await playbackHistoryOwnerScope(identity.sourceId) : identity.ownerScope,
+    } })
   }
   catch {
     return null
   }
 }
 
-export async function listLocalContinueWatching(limit = 20): Promise<PlaybackHistoryEntry[]> {
+export function disabledPlaybackHistorySourceIds(configs: readonly DataSourceConfig[]): string[] {
+  return configs
+    .filter(config => config.enabled === false && ['server', 'emby', 'jellyfin'].includes(config.type))
+    .map(config => config.id)
+    .sort()
+}
+
+export async function listLocalContinueWatching(limit = 20, excludedSourceIds: readonly string[] = []): Promise<PlaybackHistoryEntry[]> {
   try {
-    return await invoke<PlaybackHistoryEntry[]>('player_list_continue_watching', { limit })
+    return await invoke<PlaybackHistoryEntry[]>('player_list_continue_watching', { limit, excludedSourceIds })
   }
   catch {
     return []
   }
 }
 
-export async function listPlaybackHistoryPage(page = 1, pageSize = 24): Promise<PlaybackHistoryPage> {
+export async function listPlaybackHistoryPage(page = 1, pageSize = 24, excludedSourceIds: readonly string[] = [], status: PlaybackHistoryStatus = 'all'): Promise<PlaybackHistoryPage> {
   const safePage = Number.isInteger(page) ? Math.max(1, Math.min(100_000, page)) : 1
   const safePageSize = Number.isInteger(pageSize) ? Math.max(1, Math.min(100, pageSize)) : 24
   try {
-    return await invoke<PlaybackHistoryPage>('player_list_playback_history', { page: safePage, pageSize: safePageSize })
+    return await invoke<PlaybackHistoryPage>('player_list_playback_history', { page: safePage, pageSize: safePageSize, excludedSourceIds, status })
   }
   catch {
     return { list: [], total: 0, page: safePage, pageSize: safePageSize, hasMore: false }
   }
 }
 
-export async function listPlaybackHistorySyncPage(page = 1, pageSize = 100): Promise<PlaybackHistoryPage> {
+/** One SQLite snapshot, including terminal facts needed to suppress stale provider resume rows. */
+export async function listPlaybackHistorySnapshot(excludedSourceIds: readonly string[] = []): Promise<PlaybackHistorySnapshot> {
+  try {
+    return await invoke<PlaybackHistorySnapshot>('player_list_playback_history_snapshot', { excludedSourceIds })
+  }
+  catch {
+    return { entries: [], revision: null }
+  }
+}
+
+export async function isPlaybackHistorySnapshotCurrent(snapshot: PlaybackHistorySnapshot): Promise<boolean> {
+  if (snapshot.revision === null)
+    return true
+  try {
+    return snapshot.revision === await invoke<number>('player_get_playback_history_revision')
+  }
+  catch {
+    return false
+  }
+}
+
+export async function listPlaybackHistorySyncPage(page = 1, pageSize = 100, scope?: string): Promise<PlaybackHistoryPage> {
   const safePage = Number.isInteger(page) ? Math.max(1, Math.min(100_000, page)) : 1
   const safePageSize = Number.isInteger(pageSize) ? Math.max(1, Math.min(100, pageSize)) : 100
-  return invoke<PlaybackHistoryPage>('player_list_playback_history_sync', { page: safePage, pageSize: safePageSize })
+  return invoke<PlaybackHistoryPage>('player_list_playback_history_sync', { page: safePage, pageSize: safePageSize, scope })
 }
 
 export async function listPlaybackHistoryTombstones(): Promise<PlaybackHistoryEntry[]> {
@@ -124,19 +191,33 @@ export async function listPlaybackHistoryTombstones(): Promise<PlaybackHistoryEn
 }
 
 export async function setPlaybackCompleted(identity: PlaybackProgressIdentity, completed: boolean): Promise<boolean> {
+  const epoch = mutationEpoch
   if (!isValidIdentity(identity))
     return false
-  const changed = await invoke<boolean>('player_set_playback_completed', { identity, completed })
+  const generation = await invoke<number>('player_get_playback_history_generation')
+  const scopedIdentity = {
+    ...identity,
+    ownerScope: identity.ownerScope === undefined ? await playbackHistoryOwnerScope(identity.sourceId) : identity.ownerScope,
+  }
+  if (epoch !== mutationEpoch)
+    return false
+  const changed = await invoke<boolean>('player_set_playback_completed', { identity: scopedIdentity, completed, generation })
   if (changed)
     notifyPlaybackHistoryChanged('completion-changed')
   return changed
 }
 
 export async function removeContinueWatching(input: Omit<PlaybackProgressUpsert, 'position'>): Promise<PlaybackHistoryEntry> {
+  const epoch = mutationEpoch
   const progress = sanitizeProgressInput({ ...input, position: 0, completed: false })
   if (!progress)
     throw new Error('观看记录身份无效，未执行删除。')
-  const deleted = await invoke<PlaybackHistoryEntry>('player_remove_continue_watching', { progress })
+  const generation = await invoke<number>('player_get_playback_history_generation')
+  if (progress.ownerScope === undefined)
+    progress.ownerScope = await playbackHistoryOwnerScope(progress.sourceId)
+  if (epoch !== mutationEpoch)
+    throw new Error('本地历史已重置，请刷新后重试。')
+  const deleted = await invoke<PlaybackHistoryEntry>('player_remove_continue_watching', { progress, generation })
   if (!deleted.deleted)
     throw new Error('观看记录未被删除。')
   notifyPlaybackHistoryChanged('history-deleted')
@@ -211,9 +292,6 @@ export function shouldResumePlayback(entry: PlaybackHistoryEntry | null | undefi
   if (entry.position < RESUME_MIN_POSITION)
     return false
 
-  if (typeof entry.duration === 'number' && Number.isFinite(entry.duration) && entry.duration > 0)
-    return !isCompletedPosition(entry.position, entry.duration)
-
   return true
 }
 
@@ -221,7 +299,26 @@ export function isCompletedPosition(position: number, duration: number | undefin
   if (!Number.isFinite(position) || position < 0 || !duration || !Number.isFinite(duration) || duration <= RESUME_MIN_POSITION)
     return false
 
-  return position >= duration * COMPLETED_PROGRESS_RATIO || duration - position <= COMPLETED_REMAINING_SECONDS
+  return position >= duration * COMPLETED_PROGRESS_RATIO
+    || (position >= duration * COMPLETED_TAIL_MIN_RATIO && duration - position <= COMPLETED_REMAINING_SECONDS)
+}
+
+export function playbackSeriesId(item: Pick<MediaItem, 'type' | 'seriesId' | 'historyIdentity' | 'id'>): string | undefined {
+  if (item.type !== 'episode')
+    return undefined
+  if (item.seriesId)
+    return item.seriesId
+  for (const value of [item.historyIdentity, item.id]) {
+    if (!value)
+      continue
+    const online = parseOnlineItemID(value)
+    if (online?.kind === 'version')
+      return createOnlineWorkID(online.libraryId, online.workId)
+    const physical = parseServerHistoryIdentity(value) ?? parseServerWorkItemIdentity(value)
+    if (physical)
+      return createServerWorkItemId(physical)
+  }
+  return undefined
 }
 
 export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaItem {
@@ -235,6 +332,7 @@ export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaI
     backdropUrl: safeArtworkUrl(entry.backdropUrl),
     titleLogoUrl: safeArtworkUrl(entry.titleLogoUrl),
     historyIdentity: entry.mediaIdentity,
+    seriesId: playbackSeriesId({ type: entry.mediaType ?? 'file', id: entry.itemId ?? entry.mediaIdentity, historyIdentity: entry.mediaIdentity, seriesId: entry.seriesId ?? undefined }),
     displaySubtitle: nonEmpty(entry.displaySubtitle),
     episodeStillUrl: safeArtworkUrl(entry.episodeStillUrl),
     cardLayout: entry.mediaType === 'episode' ? 'poster' : undefined,
@@ -242,8 +340,10 @@ export function toContinueWatchingMediaItem(entry: PlaybackHistoryEntry): MediaI
     path: entry.streamIdentity ?? entry.mediaIdentity,
     resumePosition: entry.position,
     progress: entry.progress ?? undefined,
-    progressSource: entry.progressSource,
+    played: entry.completed,
+    progressSource: entry.progressSource === 'local' ? 'local' : undefined,
     modified: new Date(entry.updatedAt).toISOString(),
+    lastPlayedAt: new Date(entry.updatedAt).toISOString(),
   }
 }
 
@@ -269,7 +369,9 @@ function sanitizeProgressInput(input: PlaybackProgressUpsert): PlaybackProgressU
     sourceId: input.sourceId.trim(),
     libraryId: nonEmpty(input.libraryId),
     itemId: nonEmpty(input.itemId),
+    seriesId: nonEmpty(input.seriesId),
     mediaIdentity: sanitizeMediaIdentity(input.mediaIdentity),
+    ownerScope: input.ownerScope == null ? input.ownerScope : /^[a-f0-9]{64}$/.test(input.ownerScope) ? input.ownerScope : undefined,
     title: nonEmpty(input.title) ?? '未命名影片',
     streamIdentity: sanitizeStreamIdentity(input.streamIdentity),
     mediaType: input.mediaType,

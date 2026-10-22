@@ -1,4 +1,5 @@
 use std::{
+    cell::{Cell, RefCell},
     ffi::{CStr, CString},
     os::raw::{c_char, c_int, c_void},
     path::PathBuf,
@@ -7,21 +8,29 @@ use std::{
 };
 
 use libmpv_sys::{
-    mpv_command, mpv_create, mpv_end_file_reason_MPV_END_FILE_REASON_EOF,
+    mpv_command, mpv_command_ret, mpv_create, mpv_end_file_reason_MPV_END_FILE_REASON_EOF,
     mpv_end_file_reason_MPV_END_FILE_REASON_ERROR, mpv_end_file_reason_MPV_END_FILE_REASON_QUIT,
     mpv_end_file_reason_MPV_END_FILE_REASON_REDIRECT, mpv_end_file_reason_MPV_END_FILE_REASON_STOP,
-    mpv_error_string, mpv_event_end_file, mpv_event_id_MPV_EVENT_END_FILE,
-    mpv_event_id_MPV_EVENT_FILE_LOADED, mpv_event_id_MPV_EVENT_LOG_MESSAGE,
-    mpv_event_id_MPV_EVENT_NONE, mpv_event_id_MPV_EVENT_START_FILE,
-    mpv_event_id_MPV_EVENT_VIDEO_RECONFIG, mpv_event_log_message, mpv_format_MPV_FORMAT_DOUBLE,
-    mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64, mpv_format_MPV_FORMAT_NODE,
-    mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP, mpv_format_MPV_FORMAT_STRING,
-    mpv_free, mpv_free_node_contents, mpv_get_property, mpv_get_property_string, mpv_handle,
-    mpv_initialize, mpv_node, mpv_node_list, mpv_request_log_messages, mpv_set_option_string,
-    mpv_set_property, mpv_set_property_string, mpv_terminate_destroy, mpv_wait_event,
+    mpv_error_string, mpv_event_end_file, mpv_event_hook, mpv_event_id_MPV_EVENT_END_FILE,
+    mpv_event_id_MPV_EVENT_FILE_LOADED, mpv_event_id_MPV_EVENT_HOOK,
+    mpv_event_id_MPV_EVENT_LOG_MESSAGE, mpv_event_id_MPV_EVENT_NONE,
+    mpv_event_id_MPV_EVENT_PLAYBACK_RESTART, mpv_event_id_MPV_EVENT_START_FILE,
+    mpv_event_id_MPV_EVENT_VIDEO_RECONFIG, mpv_event_log_message, mpv_event_start_file,
+    mpv_format_MPV_FORMAT_DOUBLE, mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64,
+    mpv_format_MPV_FORMAT_NODE, mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP,
+    mpv_format_MPV_FORMAT_STRING, mpv_free, mpv_free_node_contents, mpv_get_property,
+    mpv_get_property_string, mpv_handle, mpv_hook_add, mpv_hook_continue, mpv_initialize, mpv_node,
+    mpv_node_list, mpv_request_log_messages, mpv_set_option_string, mpv_set_property,
+    mpv_set_property_string, mpv_terminate_destroy, mpv_wait_event,
 };
 
 use super::{
+    color::{
+        color_metadata, target_transfer_mode, transfer_mode, MpvColorDiagnostics,
+        MpvColorOutputMode,
+    },
+    diagnostics::NativeLogBuffer,
+    playback::MpvEndReason,
     render::{current_render_state, MpvRenderState, RenderStatus},
     surface::{NativeRenderSurface, OwnerWindowEvent, RenderSurfaceBounds, ZOrderStrategy},
 };
@@ -30,6 +39,8 @@ use crate::commands::player_shared::{
 };
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
+
+const FSR_LOAD_HOOK_ID: u64 = 1;
 
 #[derive(Debug, Default)]
 pub struct MpvEventBatch {
@@ -49,6 +60,7 @@ enum EndFileDisposition {
 
 fn end_file_disposition(
     reason: i32,
+    error_code: i32,
     file_loaded: bool,
     stop_requested: bool,
 ) -> EndFileDisposition {
@@ -59,7 +71,10 @@ fn end_file_disposition(
         EndFileDisposition::Stopped
     } else if reason == mpv_end_file_reason_MPV_END_FILE_REASON_REDIRECT as i32 {
         EndFileDisposition::Redirecting
-    } else if reason == mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32 && file_loaded {
+    } else if reason == mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32
+        && error_code >= 0
+        && file_loaded
+    {
         EndFileDisposition::Ended
     } else {
         EndFileDisposition::Failed
@@ -91,6 +106,9 @@ pub struct MpvTrackState {
 #[serde(rename_all = "camelCase")]
 pub struct DesktopPlaybackDiagnostics {
     pub state: String,
+    pub end_reason: Option<MpvEndReason>,
+    pub position: f64,
+    pub duration: f64,
     pub last_event: String,
     pub last_error: Option<String>,
     pub file_loaded: bool,
@@ -103,6 +121,7 @@ pub struct DesktopPlaybackDiagnostics {
     pub playback_transport: String,
     pub fsr_status: String,
     pub fsr_reason: Option<String>,
+    pub color: Option<MpvColorDiagnostics>,
     pub logs: Vec<String>,
 }
 
@@ -116,13 +135,30 @@ pub struct MpvPlayer {
     fsr_shader_path: Option<PathBuf>,
     fsr_status: String,
     fsr_reason: Option<String>,
+    fsr_applied_configuration: Option<(String, String)>,
+    fsr_failed_for_file: bool,
+    fsr_load_hook_available: bool,
+    color_metadata_ready: bool,
     playback_state: String,
     last_playback_event: String,
     last_playback_error: Option<String>,
+    end_reason: Option<MpvEndReason>,
+    last_position: Cell<f64>,
+    last_duration: Cell<f64>,
+    last_video_format: RefCell<Option<String>>,
+    last_audio_codec: RefCell<Option<String>>,
+    last_hardware_decoder: RefCell<Option<String>>,
+    source_color_snapshot: MpvColorDiagnostics,
     file_loaded: bool,
     stop_requested: bool,
     playback_transport: String,
     http_read_profile_diagnostic: Option<String>,
+    playback_epoch: Option<u64>,
+    expected_entry_id: Option<i64>,
+    event_entry_id: Option<i64>,
+    logs_frozen: bool,
+    initialization_logs: NativeLogBuffer,
+    playback_logs: NativeLogBuffer,
 }
 
 // MpvPlayer is only accessed through Arc<Mutex<_>> in Tauri state. libmpv handles are designed
@@ -167,13 +203,30 @@ impl MpvPlayer {
             fsr_shader_path: None,
             fsr_status: "not-configured".to_string(),
             fsr_reason: None,
+            fsr_applied_configuration: None,
+            fsr_failed_for_file: false,
+            fsr_load_hook_available: false,
+            color_metadata_ready: false,
             playback_state: "idle".to_string(),
             last_playback_event: "not-started".to_string(),
             last_playback_error: None,
+            end_reason: None,
+            last_position: Cell::new(0.0),
+            last_duration: Cell::new(0.0),
+            last_video_format: RefCell::new(None),
+            last_audio_codec: RefCell::new(None),
+            last_hardware_decoder: RefCell::new(None),
+            source_color_snapshot: MpvColorDiagnostics::default(),
             file_loaded: false,
             stop_requested: false,
             playback_transport: "none".to_string(),
             http_read_profile_diagnostic: None,
+            playback_epoch: None,
+            expected_entry_id: None,
+            event_entry_id: None,
+            logs_frozen: true,
+            initialization_logs: NativeLogBuffer::default(),
+            playback_logs: NativeLogBuffer::default(),
         };
 
         // Non-Windows: initialize immediately in the no-visible-video safety mode. Visible video
@@ -200,9 +253,55 @@ impl MpvPlayer {
         if !self.initialized || !self.file_loaded {
             return Err("视频画面尚未加载，无法截图。".to_string());
         }
-        let target = path.to_str().ok_or_else(|| "截图路径包含不支持的字符。".to_string())?;
+        let target = path
+            .to_str()
+            .ok_or_else(|| "截图路径包含不支持的字符。".to_string())?;
         // The array API passes the filename literally. subtitles excludes the WebView and mpv OSD.
         self.command(&["screenshot-to-file", target, "subtitles"])
+    }
+
+    pub fn playback_epoch(&self) -> Option<u64> {
+        self.playback_epoch
+    }
+
+    pub fn begin_load_attempt(&mut self, epoch: u64) {
+        if self.playback_epoch.is_none() {
+            // The first load can precede the 250ms event tick. Keep queued initialization
+            // evidence in its own phase before opening this media's diagnostic window.
+            self.drain_events(64);
+        }
+        self.playback_epoch = Some(epoch);
+        self.http_read_profile_diagnostic = None;
+        self.expected_entry_id = None;
+        self.logs_frozen = true;
+        self.playback_logs = NativeLogBuffer::default();
+        self.playback_state = "loading".to_string();
+        self.last_playback_event = "preparing-load".to_string();
+        self.last_playback_error = None;
+        self.end_reason = None;
+        self.file_loaded = false;
+        self.color_metadata_ready = false;
+        self.stop_requested = false;
+        self.last_position.set(0.0);
+        self.last_duration.set(0.0);
+        *self.last_video_format.borrow_mut() = None;
+        *self.last_audio_codec.borrow_mut() = None;
+        *self.last_hardware_decoder.borrow_mut() = None;
+        self.source_color_snapshot = MpvColorDiagnostics::default();
+        self.playback_transport = "none".to_string();
+    }
+
+    pub fn fail_load_attempt(&mut self, epoch: u64, error: &str) {
+        if self.playback_epoch != Some(epoch) {
+            return;
+        }
+        self.playback_state = "error".to_string();
+        self.last_playback_event = "load-command-error".to_string();
+        self.last_playback_error = Some(error.to_string());
+        self.end_reason = Some(MpvEndReason::Error);
+        self.logs_frozen = true;
+        self.file_loaded = false;
+        self.color_metadata_ready = false;
     }
 
     pub fn load_file_with_headers(
@@ -214,6 +313,9 @@ impl MpvPlayer {
     ) -> Result<(), String> {
         self.ensure_initialized_fallback()?;
         self.apply_http_headers(headers)?;
+        // Clear synchronously before loadfile can render the next source. on_load also covers
+        // libmpv playlist/redirect transitions that do not issue another Player load command.
+        self.prepare_color_for_load()?;
         if let Some(surface) = self.render_surface.as_mut() {
             surface.set_playback_active(false);
         }
@@ -233,6 +335,13 @@ impl MpvPlayer {
         self.playback_state = "loading".to_string();
         self.last_playback_event = "load-command".to_string();
         self.last_playback_error = None;
+        self.end_reason = None;
+        self.last_position.set(0.0);
+        self.last_duration.set(0.0);
+        *self.last_video_format.borrow_mut() = None;
+        *self.last_audio_codec.borrow_mut() = None;
+        *self.last_hardware_decoder.borrow_mut() = None;
+        self.source_color_snapshot = MpvColorDiagnostics::default();
         self.file_loaded = false;
         self.stop_requested = false;
         self.playback_transport = if path.starts_with("http://127.0.0.1:") {
@@ -242,20 +351,25 @@ impl MpvPlayer {
         }
         .to_string();
         let result = if let Some(option) = file_options.as_deref() {
-            self.command(&["loadfile", path, "replace", "-1", option])
+            self.load_command(&["loadfile", path, "replace", "-1", option])
         } else {
-            self.command(&["loadfile", path, "replace"])
+            self.load_command(&["loadfile", path, "replace"])
         };
-        if result.is_ok() {
-            if let Some(surface) = self.render_surface.as_mut() {
-                surface.set_playback_active(true);
+        match result {
+            Ok(entry_id) => {
+                self.expected_entry_id = Some(entry_id);
+                if let Some(surface) = self.render_surface.as_mut() {
+                    surface.set_playback_active(true);
+                }
+                Ok(())
             }
-        } else if let Err(error) = result.as_ref() {
-            self.playback_state = "error".to_string();
-            self.last_playback_event = "load-command-error".to_string();
-            self.last_playback_error = Some(error.clone());
+            Err(error) => {
+                if let Some(epoch) = self.playback_epoch {
+                    self.fail_load_attempt(epoch, &error);
+                }
+                Err(error)
+            }
         }
-        result
     }
 
     pub fn apply_engine_settings(
@@ -264,7 +378,22 @@ impl MpvPlayer {
         shader_path: Option<PathBuf>,
     ) -> Result<(), String> {
         let settings = settings.validated()?;
+        let renderer_changed = settings.video_output != self.engine_settings.video_output
+            || settings.hardware_decoder != self.engine_settings.hardware_decoder;
+        let fsr_changed = settings.fsr_mode != self.engine_settings.fsr_mode
+            || settings.fsr_sharpness != self.engine_settings.fsr_sharpness
+            || settings.fsr_denoise != self.engine_settings.fsr_denoise
+            || settings.fsr_target != self.engine_settings.fsr_target
+            || shader_path != self.fsr_shader_path;
         if self.initialized {
+            if renderer_changed {
+                self.clear_fsr_shaders()?;
+                self.color_metadata_ready = false;
+            }
+            #[cfg(target_os = "windows")]
+            if renderer_changed {
+                self.configure_windows_color_output(&settings.video_output)?;
+            }
             self.set_property("vo", &settings.video_output)?;
             self.set_property("hwdec", settings.desktop_hwdec())?;
             self.set_property("cache", settings.cache_value())?;
@@ -276,6 +405,9 @@ impl MpvPlayer {
         }
         self.fsr_shader_path = shader_path;
         self.engine_settings = settings;
+        if fsr_changed || renderer_changed {
+            self.fsr_failed_for_file = false;
+        }
         if self.initialized {
             self.apply_fsr_runtime_safely();
         } else if self.engine_settings.fsr_mode == "off" {
@@ -289,10 +421,20 @@ impl MpvPlayer {
     }
 
     pub fn playback_diagnostics(&self) -> DesktopPlaybackDiagnostics {
-        let hardware_decoder = if self.initialized {
-            self.get_property_string("hwdec-current").ok().flatten()
+        self.capture_playback_facts();
+        let end_reason = if self.playback_state == "error" {
+            Some(MpvEndReason::Error)
+        } else if self.file_loaded
+            && self.playback_state == "playing"
+            && !self.stop_requested
+            && self.last_playback_error.is_none()
+            && self.get_property_flag("vo-configured").unwrap_or(0) != 0
+            && self.get_property_flag("eof-reached").unwrap_or(0) != 0
+        {
+            // keep-open retains the file and emits no END_FILE at natural EOF.
+            Some(MpvEndReason::Eof)
         } else {
-            None
+            self.end_reason
         };
         let video_output = if self.initialized {
             self.get_property_string("current-vo")
@@ -303,28 +445,124 @@ impl MpvPlayer {
             self.engine_settings.video_output.clone()
         };
         DesktopPlaybackDiagnostics {
-            state: self.playback_state.clone(),
+            state: if end_reason == Some(MpvEndReason::Eof) {
+                "ended".to_string()
+            } else {
+                self.playback_state.clone()
+            },
+            end_reason,
+            position: self.time_pos(),
+            duration: self.duration(),
             last_event: self.last_playback_event.clone(),
             last_error: self.last_playback_error.clone(),
             file_loaded: self.file_loaded,
-            video_format: self
-                .initialized
-                .then(|| self.get_property_string("video-format").ok().flatten())
-                .flatten(),
-            audio_codec: self
-                .initialized
-                .then(|| self.get_property_string("audio-codec-name").ok().flatten())
-                .flatten(),
+            video_format: self.last_video_format.borrow().clone(),
+            audio_codec: self.last_audio_codec.borrow().clone(),
             vo_configured: self.initialized
                 && self.get_property_flag("vo-configured").unwrap_or(0) != 0,
-            hardware_decoder,
+            hardware_decoder: self.last_hardware_decoder.borrow().clone(),
             video_output,
             video_output_fallback_used: false,
             playback_transport: self.playback_transport.clone(),
             fsr_status: self.fsr_status.clone(),
             fsr_reason: self.fsr_reason.clone(),
-            logs: self.http_read_profile_diagnostic.iter().cloned().collect(),
+            color: Some(self.color_diagnostics()),
+            logs: self.native_log_snapshot(),
         }
+    }
+
+    fn source_color_metadata(&self) -> MpvColorDiagnostics {
+        if !self.initialized || !self.file_loaded || !self.color_metadata_ready {
+            return if self.playback_state == "error" || self.playback_state == "ended" {
+                self.source_color_snapshot.clone()
+            } else {
+                MpvColorDiagnostics::default()
+            };
+        }
+        let metadata =
+            |property: &str| color_metadata(self.get_property_string(property).ok().flatten());
+        MpvColorDiagnostics {
+            source_gamma: metadata("video-params/gamma"),
+            source_primaries: metadata("video-params/primaries"),
+            source_pixel_format: metadata("video-params/pixelformat"),
+            source_hardware_pixel_format: metadata("video-params/hw-pixelformat"),
+            dolby_vision_profile: self
+                .get_property_int64("current-tracks/video/dolby-vision-profile")
+                .ok()
+                .and_then(|profile| u8::try_from(profile).ok())
+                .filter(|profile| *profile > 0),
+            ..MpvColorDiagnostics::default()
+        }
+    }
+
+    fn color_diagnostics(&self) -> MpvColorDiagnostics {
+        let mut color = self.source_color_metadata();
+        if !self.initialized || !self.file_loaded || !self.color_metadata_ready {
+            color.reason = Some(
+                if self.playback_state == "error" {
+                    "保留故障前确认的片源信息；渲染目标当前不可用。"
+                } else {
+                    "等待当前片源和渲染目标的色彩信息。"
+                }
+                .to_string(),
+            );
+            return color;
+        }
+        if self.get_property_flag("vo-configured").unwrap_or(0) != 0 {
+            let metadata =
+                |property: &str| color_metadata(self.get_property_string(property).ok().flatten());
+            color.target_gamma = metadata("video-target-params/gamma");
+            color.target_primaries = metadata("video-target-params/primaries");
+            color.target_pixel_format = metadata("video-target-params/pixelformat");
+            color.output_mode = target_transfer_mode(color.target_gamma.as_deref());
+            color.gpu_context = metadata("current-gpu-context");
+        }
+        color.reason = Some(
+            if color.dolby_vision_profile.is_some() && self.engine_settings.video_output == "gpu" {
+                "当前 gpu 渲染器不能保证杜比视界元数据处理，请使用 gpu-next。"
+            } else {
+                match color.output_mode {
+                    MpvColorOutputMode::Hdr => {
+                        "渲染目标已报告 HDR；物理显示模式和输出位深尚未验证。"
+                    }
+                    MpvColorOutputMode::Sdr
+                        if color.dolby_vision_profile.is_some()
+                            || transfer_mode(color.source_gamma.as_deref())
+                                == MpvColorOutputMode::Hdr =>
+                    {
+                        "当前渲染目标为 SDR，HDR 片源由渲染器进行色调映射。"
+                    }
+                    MpvColorOutputMode::Sdr => "当前渲染目标为 SDR。",
+                    MpvColorOutputMode::Unknown => "渲染目标的色彩信息暂不可用。",
+                }
+            }
+            .to_string(),
+        );
+        color
+    }
+
+    #[cfg(target_os = "windows")]
+    fn configure_windows_color_output(&self, video_output: &str) -> Result<(), String> {
+        let context = if video_output == "gpu-next" {
+            "d3d11"
+        } else {
+            "auto"
+        };
+        for (option, value) in [
+            ("gpu-api", context),
+            ("gpu-context", context),
+            ("target-colorspace-hint", "auto"),
+            ("d3d11-output-csp", "auto"),
+            ("d3d11-output-format", "auto"),
+        ] {
+            let result = if self.initialized {
+                self.set_property(option, value)
+            } else {
+                self.set_option(option, value)
+            };
+            result.map_err(|_| "Windows D3D11 自动色彩输出配置失败。".to_string())?;
+        }
+        Ok(())
     }
 
     pub fn add_subtitle(
@@ -431,7 +669,9 @@ impl MpvPlayer {
             let video_sync = self.engine_settings.video_sync.clone();
             let configure_result = (|| -> Result<(), String> {
                 self.set_option("force-window", "no")?;
+                self.configure_windows_color_output(&video_output)?;
                 self.set_option("vo", &video_output)?;
+                self.set_option("glsl-shaders", "")?;
                 self.set_option("hwdec", &hardware_decoder)?;
                 self.set_option("cache", &cache)?;
                 self.set_option("demuxer-max-bytes", &demuxer_max_bytes)?;
@@ -455,10 +695,8 @@ impl MpvPlayer {
                     surface.mark_mpv_ready();
                     let snapshot = surface.snapshot();
                     self.render_surface = Some(surface);
-                    // Automatic mode requires the managed Windows surface to be present. Apply
-                    // FSR only after moving the successfully initialized surface into player
-                    // state; applying it inside the initialization closure would always observe
-                    // `render_surface == None` and incorrectly disable auto mode.
+                    // Initialization alone does not establish SDR source metadata. Keep the
+                    // shader detached until the current file has reported its color facts.
                     self.apply_fsr_runtime_safely();
                     self.render_state.status = RenderStatus::Ready;
                     let diagnostics = snapshot.diagnostics;
@@ -589,9 +827,24 @@ impl MpvPlayer {
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
+        self.capture_playback_facts();
+        self.logs_frozen = true;
+        let failed = self.playback_state == "error";
+        if !failed {
+            self.end_reason = Some(MpvEndReason::Stop);
+        }
         if let Some(surface) = self.render_surface.as_mut() {
             surface.set_playback_active(false);
         }
+        self.color_metadata_ready = false;
+        let clear_result = self.clear_fsr_shaders();
+        self.fsr_status = if self.engine_settings.fsr_mode == "off" {
+            "disabled"
+        } else {
+            "bypassed-unknown"
+        }
+        .to_string();
+        self.fsr_reason = None;
         if !self.initialized {
             self.playback_state = "idle".to_string();
             self.last_playback_event = "stopped".to_string();
@@ -600,12 +853,12 @@ impl MpvPlayer {
         }
         self.stop_requested = true;
         let result = self.command(&["stop"]);
-        if result.is_ok() {
+        if result.is_ok() && !failed {
             self.playback_state = "idle".to_string();
             self.last_playback_event = "stopped".to_string();
             self.file_loaded = false;
         }
-        result
+        result.and(clear_result)
     }
 
     pub fn seek(&mut self, position: f64) -> Result<(), String> {
@@ -719,11 +972,47 @@ impl MpvPlayer {
     }
 
     pub fn time_pos(&self) -> f64 {
-        self.get_property_double("time-pos").unwrap_or(0.0)
+        if self.file_loaded && self.playback_state == "playing" {
+            if let Ok(value) = self.get_property_double("time-pos") {
+                if value.is_finite() && value >= 0.0 {
+                    self.last_position.set(value);
+                }
+            }
+        }
+        self.last_position.get()
+    }
+
+    pub fn capture_playback_facts(&self) {
+        self.time_pos();
+        self.duration();
+        if !self.initialized || !self.file_loaded || self.playback_state != "playing" {
+            return;
+        }
+        for (name, cache) in [
+            ("video-format", &self.last_video_format),
+            ("audio-codec-name", &self.last_audio_codec),
+            ("hwdec-current", &self.last_hardware_decoder),
+        ] {
+            if let Some(value) = self
+                .get_property_string(name)
+                .ok()
+                .flatten()
+                .filter(|value| !value.trim().is_empty() && value != "unknown" && value != "none")
+            {
+                *cache.borrow_mut() = Some(value);
+            }
+        }
     }
 
     pub fn duration(&self) -> f64 {
-        self.get_property_double("duration").unwrap_or(0.0)
+        if self.file_loaded && self.playback_state == "playing" {
+            if let Ok(value) = self.get_property_double("duration") {
+                if value.is_finite() && value > 0.0 {
+                    self.last_duration.set(value);
+                }
+            }
+        }
+        self.last_duration.get()
     }
 
     pub fn paused(&self) -> bool {
@@ -752,27 +1041,100 @@ impl MpvPlayer {
             .map_err(|_| "播放请求头设置失败。".to_string())
     }
 
+    fn clear_fsr_shaders(&mut self) -> Result<(), String> {
+        if self.initialized {
+            self.command(&["change-list", "glsl-shaders", "clr", ""])
+                .map_err(|_| "无法停用 FSR 着色器，已阻止不安全的片源切换。".to_string())?;
+        }
+        self.fsr_applied_configuration = None;
+        Ok(())
+    }
+
+    fn prepare_color_for_load(&mut self) -> Result<(), String> {
+        self.file_loaded = false;
+        self.color_metadata_ready = false;
+        self.fsr_failed_for_file = false;
+        self.clear_fsr_shaders()?;
+        self.fsr_status = if self.engine_settings.fsr_mode == "off" {
+            "disabled"
+        } else {
+            "bypassed-unknown"
+        }
+        .to_string();
+        self.fsr_reason = (self.engine_settings.fsr_mode != "off")
+            .then(|| "等待确认当前片源为 SDR，暂不启用 FSR。".to_string());
+        Ok(())
+    }
+
+    fn bypass_fsr(&mut self, status: &str, reason: Option<&str>) {
+        if self.fsr_applied_configuration.is_some() && self.clear_fsr_shaders().is_err() {
+            self.fail_fsr_detachment();
+            return;
+        }
+        self.fsr_status = status.to_string();
+        self.fsr_reason = reason.map(str::to_string);
+    }
+
+    fn fail_fsr_detachment(&mut self) {
+        // If detaching an active shader failed, stop rather than process HDR with an SDR shader.
+        self.fsr_status = "error".to_string();
+        self.fsr_reason = Some("FSR 着色器无法安全停用，已停止播放。".to_string());
+        self.playback_state = "error".to_string();
+        self.last_playback_event = "fsr-detach-error".to_string();
+        self.last_playback_error = self.fsr_reason.clone();
+        self.end_reason = Some(MpvEndReason::Error);
+        self.file_loaded = false;
+        self.color_metadata_ready = false;
+        self.stop_requested = true;
+        let _ = self.command(&["stop"]);
+    }
+
     fn apply_fsr_runtime_safely(&mut self) {
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
-            self.fsr_status = "unsupported-platform".to_string();
-            self.fsr_reason = Some("FSR 首发仅支持 Windows 与 Android。".to_string());
+            self.bypass_fsr(
+                "unsupported-platform",
+                Some("FSR 首发仅支持 Windows 与 Android。"),
+            );
         }
 
         #[cfg(target_os = "windows")]
         {
             if self.engine_settings.fsr_mode == "off" {
-                let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
-                self.fsr_status = "disabled".to_string();
-                self.fsr_reason = None;
+                self.bypass_fsr("disabled", None);
+                return;
+            }
+
+            let source = self.source_color_metadata();
+            if source.dolby_vision_profile.is_some()
+                || transfer_mode(source.source_gamma.as_deref()) == MpvColorOutputMode::Hdr
+            {
+                self.bypass_fsr(
+                    "bypassed-hdr",
+                    Some("HDR／杜比视界片源使用原生缩放，保留已保存的 FSR 设置。"),
+                );
+                return;
+            }
+            if transfer_mode(source.source_gamma.as_deref()) != MpvColorOutputMode::Sdr {
+                self.bypass_fsr(
+                    "bypassed-unknown",
+                    Some("尚未确认当前片源为 SDR，暂不启用 FSR。"),
+                );
+                return;
+            }
+            if !self.fsr_load_hook_available {
+                self.bypass_fsr(
+                    "unavailable",
+                    Some("无法建立片源切换安全屏障，暂不启用 FSR。"),
+                );
+                return;
+            }
+            if self.fsr_failed_for_file {
                 return;
             }
 
             if self.render_surface.is_none() && self.engine_settings.fsr_mode != "force" {
-                let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
-                self.fsr_status = "unavailable".to_string();
-                self.fsr_reason = Some("当前没有可用的 Windows GPU 视频表面。".to_string());
+                self.bypass_fsr("unavailable", Some("当前没有可用的 Windows GPU 视频表面。"));
                 return;
             }
 
@@ -787,16 +1149,29 @@ impl MpvPlayer {
 
             let shader_path = shader_path.to_string_lossy().into_owned();
             let options = self.fsr_shader_options();
+            let configuration = (shader_path.clone(), options.clone());
+            if self.fsr_applied_configuration.as_ref() == Some(&configuration) {
+                return;
+            }
+            let same_shader = self
+                .fsr_applied_configuration
+                .as_ref()
+                .is_some_and(|(path, _)| *path == shader_path);
             let result = (|| -> Result<(), String> {
-                self.command(&["change-list", "glsl-shaders", "clr", ""])?;
+                if !same_shader {
+                    self.clear_fsr_shaders()?;
+                }
                 self.set_property("glsl-shader-opts", &options)?;
-                self.command(&["change-list", "glsl-shaders", "append", &shader_path])?;
+                if !same_shader {
+                    self.command(&["change-list", "glsl-shaders", "append", &shader_path])?;
+                }
                 Ok(())
             })();
 
             if result.is_err() {
                 self.record_fsr_fallback("FSR Shader 加载失败，已恢复普通缩放。")
             } else {
+                self.fsr_applied_configuration = Some(configuration);
                 self.fsr_status = if self.engine_settings.fsr_mode == "force" {
                     "armed-force"
                 } else {
@@ -809,15 +1184,8 @@ impl MpvPlayer {
     }
 
     fn refresh_fsr_target_parameters(&mut self) {
-        if !self.initialized
-            || self.engine_settings.fsr_mode == "off"
-            || !self.fsr_status.starts_with("armed")
-        {
-            return;
-        }
-        let options = self.fsr_shader_options();
-        if self.set_property("glsl-shader-opts", &options).is_err() {
-            self.record_fsr_fallback("FSR 目标分辨率更新失败，已恢复普通缩放。")
+        if self.initialized {
+            self.apply_fsr_runtime_safely();
         }
     }
 
@@ -861,7 +1229,11 @@ impl MpvPlayer {
     }
 
     fn record_fsr_fallback(&mut self, reason: &str) {
-        let _ = self.command(&["change-list", "glsl-shaders", "clr", ""]);
+        self.fsr_failed_for_file = true;
+        if self.clear_fsr_shaders().is_err() {
+            self.fail_fsr_detachment();
+            return;
+        }
         self.fsr_status = "fallback".to_string();
         self.fsr_reason = Some(reason.to_string());
     }
@@ -871,10 +1243,21 @@ impl MpvPlayer {
         if self.initialized {
             return Ok(());
         }
-        self.check_error(unsafe { mpv_initialize(self.ctx) })?;
-        self.initialized = true;
+        // Request before initialization so its first failure is not lost. Keep warn level:
+        // debug/trace would compete with playback events in the bounded event pump.
         if let Ok(level) = CString::new("warn") {
             let _ = unsafe { mpv_request_log_messages(self.ctx, level.as_ptr()) };
+        }
+        self.check_error(unsafe { mpv_initialize(self.ctx) })?;
+        self.initialized = true;
+        // A synchronous hook also covers libmpv-internal playlist and redirect loads. The
+        // existing bounded event pump must continue it after removing the previous shader.
+        if let Ok(name) = CString::new("on_load") {
+            self.fsr_load_hook_available =
+                unsafe { mpv_hook_add(self.ctx, FSR_LOAD_HOOK_ID, name.as_ptr(), 0) } >= 0;
+        }
+        if !self.fsr_load_hook_available {
+            log::warn!("mpv load safety hook unavailable; FSR remains disabled");
         }
         Ok(())
     }
@@ -904,32 +1287,166 @@ impl MpvPlayer {
         self.check_error(unsafe { mpv_command(self.ctx, raw_args.as_mut_ptr()) })
     }
 
+    fn load_command(&self, args: &[&str]) -> Result<i64, String> {
+        let c_args = args
+            .iter()
+            .map(|arg| CString::new(*arg).map_err(|err| err.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut raw_args = c_args
+            .iter()
+            .map(|arg| arg.as_ptr())
+            .chain(std::iter::once(ptr::null()))
+            .collect::<Vec<*const c_char>>();
+        let mut result = unsafe { std::mem::zeroed::<mpv_node>() };
+        let status = unsafe { mpv_command_ret(self.ctx, raw_args.as_mut_ptr(), &mut result) };
+        // The pinned runtime returns this real ID for loadfile; playlist position is not ID.
+        let entry_id = unsafe { map_i64(&result, "playlist_entry_id") };
+        unsafe { mpv_free_node_contents(&mut result) };
+        self.check_error(status)?;
+        entry_id.ok_or_else(|| "播放器未返回本次媒体的原生条目标识。".to_string())
+    }
+
+    fn current_native_entry(&self) -> bool {
+        self.expected_entry_id.is_some() && self.expected_entry_id == self.event_entry_id
+    }
+
+    fn native_log_snapshot(&self) -> Vec<String> {
+        let mut logs = self
+            .initialization_logs
+            .snapshot()
+            .into_iter()
+            .take(12)
+            .map(|line| format!("initialization: {line}"))
+            .collect::<Vec<_>>();
+        logs.extend(self.http_read_profile_diagnostic.iter().cloned());
+        logs.extend(self.playback_logs.snapshot());
+        logs
+    }
+
     pub fn drain_events(&mut self, max_events: usize) -> MpvEventBatch {
         let mut batch = MpvEventBatch::default();
+        if !self.initialized {
+            return batch;
+        }
         for index in 0..max_events {
             let event = unsafe { mpv_wait_event(self.ctx, 0.0) };
             if event.is_null() || unsafe { (*event).event_id } == mpv_event_id_MPV_EVENT_NONE {
                 break;
             }
             let event_id = unsafe { (*event).event_id };
-            if event_id == mpv_event_id_MPV_EVENT_START_FILE {
+            if event_id == mpv_event_id_MPV_EVENT_HOOK {
+                let hook = unsafe { (*event).data.cast::<mpv_event_hook>().as_ref() };
+                if let Some(hook) = hook {
+                    // Copy the id before commands; libmpv owns the event data. Every hook
+                    // must be continued exactly once, including a failed safety cleanup.
+                    let hook_id = hook.id;
+                    if unsafe { (*event).reply_userdata } == FSR_LOAD_HOOK_ID
+                        && self.prepare_color_for_load().is_err()
+                    {
+                        self.fail_fsr_detachment();
+                    }
+                    if self
+                        .check_error(unsafe { mpv_hook_continue(self.ctx, hook_id) })
+                        .is_err()
+                    {
+                        self.playback_state = "error".to_string();
+                        self.last_playback_event = "load-safety-hook-error".to_string();
+                        self.last_playback_error =
+                            Some("播放器未能继续安全的片源加载。".to_string());
+                        self.end_reason = Some(MpvEndReason::Error);
+                        self.color_metadata_ready = false;
+                        self.file_loaded = false;
+                        let _ = self.command(&["stop"]);
+                    }
+                }
+            } else if event_id == mpv_event_id_MPV_EVENT_START_FILE {
+                self.event_entry_id =
+                    unsafe { (*event).data.cast::<mpv_event_start_file>().as_ref() }
+                        .map(|value| value.playlist_entry_id);
+                if !self.current_native_entry() {
+                    continue;
+                }
+                if self.playback_state == "error" || self.stop_requested {
+                    continue;
+                }
+                self.logs_frozen = false;
+                self.end_reason = None;
                 self.playback_state = "loading".to_string();
                 self.last_playback_event = "start-file".to_string();
                 self.last_playback_error = None;
                 self.file_loaded = false;
                 self.stop_requested = false;
+                // The load hook remains the before-render barrier. Clearing here also
+                // prevents old color facts from leaking while the hook is still queued.
+                self.color_metadata_ready = false;
             } else if event_id == mpv_event_id_MPV_EVENT_FILE_LOADED {
+                if !self.current_native_entry()
+                    || self.playback_state == "error"
+                    || self.stop_requested
+                {
+                    continue;
+                }
+                self.playback_logs.finish_startup();
                 self.playback_state = "playing".to_string();
                 self.last_playback_event = "file-loaded".to_string();
                 self.last_playback_error = None;
                 self.file_loaded = true;
+                self.color_metadata_ready = !self.stop_requested;
+                self.source_color_snapshot = self.source_color_metadata();
+                self.capture_playback_facts();
+                self.apply_fsr_runtime_safely();
             } else if event_id == mpv_event_id_MPV_EVENT_VIDEO_RECONFIG {
+                if !self.current_native_entry()
+                    || self.playback_state == "error"
+                    || self.stop_requested
+                {
+                    continue;
+                }
                 self.last_playback_event = "video-reconfig".to_string();
+                self.color_metadata_ready = self.file_loaded && !self.stop_requested;
+                if self.color_metadata_ready {
+                    self.source_color_snapshot = self.source_color_metadata();
+                }
+                self.capture_playback_facts();
+                self.apply_fsr_runtime_safely();
+            } else if event_id == mpv_event_id_MPV_EVENT_PLAYBACK_RESTART {
+                if !self.current_native_entry()
+                    || self.playback_state == "error"
+                    || self.stop_requested
+                {
+                    continue;
+                }
+                self.color_metadata_ready = self.file_loaded && !self.stop_requested;
+                self.apply_fsr_runtime_safely();
             } else if event_id == mpv_event_id_MPV_EVENT_END_FILE {
                 let end_file = unsafe { (*event).data.cast::<mpv_event_end_file>().as_ref() };
+                if end_file.map(|value| value.playlist_entry_id) != self.expected_entry_id
+                    || !self.current_native_entry()
+                {
+                    // A replacement load may be submitted before the previous END_FILE is
+                    // drained. That terminal event cannot fail/complete the new media.
+                    continue;
+                }
                 let reason = end_file.map(|value| value.reason).unwrap_or(-1);
                 let error_code = end_file.map(|value| value.error).unwrap_or(0);
-                match end_file_disposition(reason, self.file_loaded, self.stop_requested) {
+                let already_failed = self.playback_state == "error";
+                let disposition = if already_failed {
+                    EndFileDisposition::Failed
+                } else {
+                    end_file_disposition(reason, error_code, self.file_loaded, self.stop_requested)
+                };
+                self.end_reason = Some(match disposition {
+                    EndFileDisposition::Stopped
+                        if reason == mpv_end_file_reason_MPV_END_FILE_REASON_QUIT as i32 =>
+                    {
+                        MpvEndReason::Quit
+                    }
+                    EndFileDisposition::Stopped => MpvEndReason::Stop,
+                    EndFileDisposition::Redirecting => MpvEndReason::Redirect,
+                    EndFileDisposition::Ended => MpvEndReason::Eof,
+                    EndFileDisposition::Failed => MpvEndReason::Error,
+                });
+                match disposition {
                     EndFileDisposition::Stopped => {
                         self.playback_state = "idle".to_string();
                         self.last_playback_event = "stopped".to_string();
@@ -940,6 +1457,9 @@ impl MpvPlayer {
                         self.playback_state = "loading".to_string();
                         self.last_playback_event = "playlist-redirect".to_string();
                         self.last_playback_error = None;
+                        self.expected_entry_id = end_file
+                            .filter(|value| value.playlist_insert_num_entries > 0)
+                            .map(|value| value.playlist_insert_id);
                     }
                     EndFileDisposition::Ended => {
                         self.playback_state = "ended".to_string();
@@ -947,24 +1467,33 @@ impl MpvPlayer {
                         self.last_playback_error = None;
                     }
                     EndFileDisposition::Failed => {
+                        self.end_reason = Some(MpvEndReason::Error);
                         self.playback_state = "error".to_string();
                         self.last_playback_event = "end-file-error".to_string();
-                        self.last_playback_error = Some(
-                            if reason == mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32
-                                && error_code < 0
-                            {
-                                let detail =
-                                    unsafe { CStr::from_ptr(mpv_error_string(error_code)) }
-                                        .to_string_lossy();
-                                format!("媒体加载失败（mpv {error_code}: {detail}）。")
-                            } else {
-                                format!("媒体文件未能完成加载（mpv 结束原因 {reason}）。")
-                            },
-                        );
+                        if !already_failed {
+                            self.last_playback_error = Some(
+                                if reason == mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32
+                                    && error_code < 0
+                                {
+                                    let detail =
+                                        unsafe { CStr::from_ptr(mpv_error_string(error_code)) }
+                                            .to_string_lossy();
+                                    format!("媒体加载失败（mpv {error_code}: {detail}）。")
+                                } else {
+                                    format!("媒体文件未能完成加载（mpv 结束原因 {reason}）。")
+                                },
+                            );
+                        }
                     }
                 }
                 self.stop_requested = false;
+                self.logs_frozen = true;
+                self.event_entry_id = None;
                 self.file_loaded = false;
+                self.color_metadata_ready = false;
+                if self.fsr_applied_configuration.is_some() {
+                    self.bypass_fsr("bypassed-unknown", None);
+                }
             }
             if event_id == mpv_event_id_MPV_EVENT_LOG_MESSAGE {
                 let data = unsafe { (*event).data };
@@ -972,7 +1501,17 @@ impl MpvPlayer {
                     let message = unsafe { &*(data.cast::<mpv_event_log_message>()) };
                     let prefix = unsafe { optional_c_string(message.prefix) };
                     let text = unsafe { optional_c_string(message.text) };
-                    if self.handle_fsr_log_message(&prefix, &text) {
+                    if self.playback_epoch.is_none() {
+                        self.initialization_logs
+                            .record(&prefix, &text, message.log_level <= 20);
+                    } else if !self.logs_frozen && self.current_native_entry() {
+                        self.playback_logs
+                            .record(&prefix, &text, message.log_level <= 20);
+                    }
+                    if self.current_native_entry()
+                        && !self.logs_frozen
+                        && self.handle_fsr_log_message(&prefix, &text)
+                    {
                         batch.fsr_fallback = true;
                     }
                 }
@@ -1230,6 +1769,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_REDIRECT as i32,
+                0,
                 false,
                 false
             ),
@@ -1238,6 +1778,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_STOP as i32,
+                0,
                 false,
                 false
             ),
@@ -1246,6 +1787,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32,
+                -1,
                 false,
                 true
             ),
@@ -1258,6 +1800,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_ERROR as i32,
+                -1,
                 true,
                 false
             ),
@@ -1266,6 +1809,7 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32,
+                0,
                 false,
                 false
             ),
@@ -1274,10 +1818,20 @@ mod end_file_tests {
         assert_eq!(
             end_file_disposition(
                 mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32,
+                0,
                 true,
                 false
             ),
             EndFileDisposition::Ended,
+        );
+        assert_eq!(
+            end_file_disposition(
+                mpv_end_file_reason_MPV_END_FILE_REASON_EOF as i32,
+                -1,
+                true,
+                false
+            ),
+            EndFileDisposition::Failed,
         );
     }
 }

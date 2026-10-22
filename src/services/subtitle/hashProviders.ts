@@ -1,6 +1,7 @@
 import type { LocalSubtitleDownloadResult, LocalSubtitleSearchInput, SubtitleCacheOwner, SubtitleProvider } from './types'
 import type { SubtitleSearchResult } from '@/services/datasource/types'
 import { invoke } from '@tauri-apps/api/core'
+import { subtitleKeywordUsesMediaIdentity } from './mediaContext'
 
 type HashSubtitleProviderId = 'shooter' | 'xunlei'
 
@@ -24,18 +25,19 @@ export class HashSubtitleProvider implements SubtitleProvider {
     if (this.id === 'xunlei' && !query)
       return []
 
+    const useMediaIdentity = subtitleKeywordUsesMediaIdentity(input.keywordMode)
     return invoke<SubtitleSearchResult[]>('subtitle_search_hash_provider', {
       request: {
         provider: this.id,
         query: query ?? null,
-        originalTitle: input.originalTitle ?? null,
+        originalTitle: useMediaIdentity ? input.originalTitle ?? null : null,
         seriesName: input.seriesName ?? null,
-        durationSeconds: input.duration ?? null,
+        durationSeconds: useMediaIdentity ? input.duration ?? null : null,
         keywordMode: input.keywordMode ?? null,
-        year: input.year ?? null,
+        year: useMediaIdentity ? input.year ?? null : null,
         mediaType: input.mediaType ?? null,
-        seasonNumber: input.seasonNumber ?? null,
-        episodeNumber: input.episodeNumber ?? null,
+        seasonNumber: useMediaIdentity ? input.seasonNumber ?? null : null,
+        episodeNumber: useMediaIdentity ? input.episodeNumber ?? null : null,
         filePath: input.localFilePath ?? null,
         remoteUrl: input.remoteMediaUrl ?? null,
         headers: toHeaderPayload(input.remoteMediaHeaders),

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ServerAcquisitionStatus, ServerCoverageSummary, ServerDiscoveryDetail, ServerDiscoveryTypePolicy, ServerFollowDefaults, ServerFollowRoutePreview, ServerLibraryOption, ServerResourceGroup, ServerResourceItem, ServerRouteRecommendation, ServerSearchProgress, ServerSearchSite } from '@/services/serverDiscovery'
+import type { ServerAcquisitionStatus, ServerCoverageSummary, ServerDiscoveryDetail, ServerDiscoveryTypePolicy, ServerFollowDefaults, ServerFollowRoutePreview, ServerLibraryOption, ServerResourceItem, ServerResourceSearchInput, ServerRouteRecommendation, ServerSearchSite } from '@/services/serverDiscovery'
 import type { ServerShareSelection } from '@/services/serverSharePreview'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -11,6 +11,7 @@ import { ServerDataSource } from '@/services/datasource/server'
 import { registerLayoutBackHandler } from '@/services/layoutBackNavigation'
 import { publishFeedback } from '@/services/mediaActions'
 import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerFollowDefaults, getServerFollowRoutePreview, getServerResourceLink, getServerRouteRecommendation, getServerSearchSites, streamServerResources } from '@/services/serverDiscovery'
+import { beginResourceSearch, emptyResourceSearch, finishResourceSearch, reduceResourceSearch, resourceGroupRetryPage, ResourceSearchController } from '@/services/serverDiscoverySearch'
 import { previewServerShare } from '@/services/serverSharePreview'
 import { useAcquisitionWorkspaceStore } from '@/stores/acquisitionWorkspace'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -26,13 +27,12 @@ const coverage = ref<ServerCoverageSummary | null>(null)
 const acquisition = ref<ServerAcquisitionStatus | null>(null)
 const sites = ref<ServerSearchSite[]>([])
 const selectedSiteIds = ref<number[]>([])
-const groups = ref<ServerResourceGroup[]>([])
+const searchState = ref(emptyResourceSearch())
 const activeSiteId = ref<number>()
 const libraries = ref<ServerLibraryOption[]>([])
 const routeRecommendation = ref<ServerRouteRecommendation | null>(null)
 const routeError = ref('')
 const loading = ref(true)
-const searching = ref(false)
 const loadingSites = ref(false)
 const loadingTargets = ref(false)
 const submitting = ref(false)
@@ -42,8 +42,6 @@ const capabilities = ref(new Set<string>())
 const discoveryTypePolicy = ref<'default' | ServerDiscoveryTypePolicy>('default')
 const discoveryCloudTypes = ref<string[]>(['115', 'quark', 'magnet'])
 const copyingToken = ref('')
-let appliedTypePolicy: ServerDiscoveryTypePolicy | undefined
-let appliedCloudTypes: string[] | undefined
 let activeSearchScope: number[] = []
 let copyGeneration = 0
 const sitePickerOpen = ref(false)
@@ -61,17 +59,16 @@ const followForm = ref({ seasons: [] as number[], siteIds: [] as number[], libra
 const pendingSearchMode = ref<'aggregate' | 'direct'>('aggregate')
 const directKind = ref<'title' | 'tmdb'>('title')
 const directQuery = ref('')
-const searchProgress = ref<ServerSearchProgress>(emptyProgress())
+const searchController = new ResourceSearchController()
 const backOwner = Symbol('server-discovery-detail')
 let unregisterBack: (() => void) | undefined
-let searchGeneration = 0
 let detailGeneration = 0
 let siteGeneration = 0
 let routeGeneration = 0
 let followRouteGeneration = 0
 let statusGeneration = 0
 let statusTimer: number | undefined
-let activeSearch: Awaited<ReturnType<typeof streamServerResources>> | null = null
+let submittedSearchInput: ServerResourceSearchInput | undefined
 
 const sourceId = computed(() => String(route.params.sourceId))
 const provider = computed(() => route.params.provider === 'douban' ? 'douban' : 'tmdb')
@@ -128,7 +125,8 @@ async function load() {
   coverage.value = null
   acquisition.value = null
   capabilities.value = new Set()
-  groups.value = []
+  searchState.value = emptyResourceSearch()
+  submittedSearchInput = undefined
   activeSiteId.value = undefined
   try {
     source = await resolveSource(origin.id)
@@ -192,7 +190,7 @@ async function chooseSearch(mode: 'aggregate' | 'direct') {
     sites.value = result
     const available = result.filter(site => site.searchable).map(site => site.id)
     selectedSiteIds.value = first ? available : selectedSiteIds.value.filter(id => available.includes(id))
-    groups.value = groups.value.map(group => ({ ...group, unavailableReason: result.find(site => site.id === group.siteId)?.searchable ? undefined : result.find(site => site.id === group.siteId)?.reason || '来源已停用或不再可访问，历史结果保留。' }))
+    searchState.value.groups = searchState.value.groups.map(group => ({ ...group, unavailableReason: result.find(site => site.id === group.siteId)?.searchable ? undefined : result.find(site => site.id === group.siteId)?.reason || '来源已停用或不再可访问，历史结果保留。' }))
   }
   catch (reason) {
     if (current())
@@ -220,95 +218,79 @@ async function runSearch(siteIds = selectedSiteIds.value, replaceAll = true, pag
     return
   }
   const tmdbId = detail.value.work.tmdbId
-  if (pendingSearchMode.value === 'aggregate' && !tmdbId) {
+  const useTMDB = pendingSearchMode.value === 'direct' && directKind.value === 'tmdb'
+  const draftInput: ServerResourceSearchInput = {
+    mediaType: mediaType.value,
+    tmdbId: pendingSearchMode.value === 'aggregate' || useTMDB ? tmdbId : undefined,
+    title: pendingSearchMode.value === 'direct' && !useTMDB ? directQuery.value : undefined,
+    direct: pendingSearchMode.value === 'direct',
+    siteIds: [...siteIds],
+    page,
+    typePolicy: discoveryTypePolicy.value === 'default' ? undefined : discoveryTypePolicy.value,
+    cloudTypes: discoveryTypePolicy.value === 'manual' ? [...discoveryCloudTypes.value] : undefined,
+  }
+  const input: ServerResourceSearchInput = {
+    ...(!replaceAll && submittedSearchInput ? submittedSearchInput : draftInput),
+    siteIds: [...siteIds],
+    page,
+    snapshotId: intent === 'page' && siteIds.length === 1 ? searchState.value.groups.find(group => group.siteId === siteIds[0])?.snapshotId : undefined,
+    refresh: intent === 'search' && page === 1,
+  }
+  if (!input.direct && !input.tmdbId) {
     publishFeedback({ id: Date.now(), kind: 'error', message: '该作品还没有可验证的 TMDB ID，请使用直接搜索。' })
     return
   }
-  const generation = ++searchGeneration
-  await activeSearch?.cancel()
-  if (generation !== searchGeneration)
-    return
-  activeSearch = null
-  searching.value = true
-  error.value = ''
-  searchProgress.value = emptyProgress(siteIds.length)
-  const snapshotId = intent === 'page' && siteIds.length === 1 ? groups.value.find(group => group.siteId === siteIds[0])?.snapshotId : undefined
   if (replaceAll) {
     activeSearchScope = [...siteIds]
-    appliedTypePolicy = discoveryTypePolicy.value === 'default' ? undefined : discoveryTypePolicy.value
-    appliedCloudTypes = discoveryTypePolicy.value === 'manual' ? [...discoveryCloudTypes.value] : undefined
-    groups.value = []
-    activeSiteId.value = undefined
+    submittedSearchInput = { ...input, siteIds: [...input.siteIds] }
   }
-  sitePickerOpen.value = false
-  resultWorkspaceOpen.value = true
-  try {
+  await searchController.run(async (onEvent, isCurrent) => {
     const source = await resolveSource()
-    if (generation !== searchGeneration)
+    if (!isCurrent())
       return
-    const useTMDB = pendingSearchMode.value === 'direct' && directKind.value === 'tmdb'
-    const handle = await streamServerResources(source, {
-      mediaType: mediaType.value,
-      tmdbId: pendingSearchMode.value === 'aggregate' || useTMDB ? tmdbId : undefined,
-      title: pendingSearchMode.value === 'direct' && !useTMDB ? directQuery.value : undefined,
-      direct: pendingSearchMode.value === 'direct',
-      siteIds,
-      page,
-      typePolicy: appliedTypePolicy,
-      cloudTypes: appliedCloudTypes,
-      snapshotId,
-      refresh: intent === 'search',
-    }, (event) => {
-      if (generation !== searchGeneration)
-        return
-      if (event.type === 'progress' || event.type === 'done') {
-        searchProgress.value = event.progress
-        return
-      }
+    return streamServerResources(source, input, onEvent)
+  }, {
+    start: () => {
+      error.value = ''
+      searchState.value = beginResourceSearch(searchState.value, { sites: sites.value, siteIds: input.siteIds, replaceAll, page })
+      if (replaceAll)
+        activeSiteId.value = undefined
+      sitePickerOpen.value = false
+      resultWorkspaceOpen.value = true
+    },
+    event: (event) => {
+      searchState.value = reduceResourceSearch(searchState.value, event, sites.value)
       if (event.type === 'site') {
-        const previous = groups.value.find(group => group.siteId === event.group.siteId)
-        const incoming = event.group.status !== 'success' && previous?.items.length && !event.group.items.length ? { ...event.group, items: previous.items, partial: true } : event.group
-        groups.value = [...groups.value.filter(group => group.siteId !== event.group.siteId), incoming]
-          .sort((left, right) => siteOrder(left.siteId) - siteOrder(right.siteId) || left.siteId - right.siteId)
-        if (event.group.items.length > 0 && !groups.value.some(group => group.siteId === activeSiteId.value && group.items.length > 0))
+        if (activeSiteId.value == null && searchState.value.groups.some(group => group.siteId === event.group.siteId && group.items.length > 0))
           activeSiteId.value = event.group.siteId
         return
       }
-      error.value = event.message
-      publishFeedback({ id: Date.now(), kind: 'error', message: event.message })
-    })
-    if (generation !== searchGeneration) {
-      await handle.cancel()
-      return
-    }
-    activeSearch = handle
-    await handle.done
-  }
-  catch (reason) {
-    if (generation === searchGeneration) {
+      if (event.type === 'error') {
+        error.value = event.message
+        publishFeedback({ id: Date.now(), kind: 'error', message: event.message })
+      }
+    },
+    complete: () => {
+      // Valid done/error events already finalized the reducer. A rejected or stale
+      // terminal envelope must not be turned into a successful empty search here.
+      searchState.value = finishResourceSearch(searchState.value, 'failed', '未收到有效的搜索完成确认，已保留收到的结果。')
+    },
+    error: (reason) => {
       error.value = message(reason)
+      searchState.value = finishResourceSearch(searchState.value, 'failed', error.value)
       publishFeedback({ id: Date.now(), kind: 'error', message: error.value })
-    }
-  }
-  finally {
-    if (generation === searchGeneration) {
-      searching.value = false
-      activeSearch = null
-    }
-  }
+    },
+  })
 }
 
 async function cancelSearch() {
-  searchGeneration++
-  const handle = activeSearch
-  activeSearch = null
-  searching.value = false
-  await handle?.cancel()
+  searchState.value = finishResourceSearch(searchState.value, 'cancelled')
+  await searchController.cancel()
 }
 
-function siteOrder(siteId: number) {
-  const index = sites.value.findIndex(site => site.id === siteId)
-  return index < 0 ? Number.MAX_SAFE_INTEGER : index
+async function retrySite(siteId: number) {
+  const group = searchState.value.groups.find(group => group.siteId === siteId)
+  await runSearch([siteId], false, group?.snapshotId ? 1 : resourceGroupRetryPage(searchState.value, siteId))
 }
 
 async function changeSitePage(siteId: number, page: number) {
@@ -317,7 +299,7 @@ async function changeSitePage(siteId: number, page: number) {
 }
 
 async function openAcquisition(item: ServerResourceItem) {
-  const group = groups.value.find(group => group.items.some(value => value.token === item.token))
+  const group = searchState.value.groups.find(group => group.items.some(value => value.token === item.token))
   if (item.acquisitionAvailable === false || group?.unavailableReason) {
     publishFeedback({ id: Date.now(), kind: 'error', message: group?.unavailableReason || item.acquisitionReason || '当前类型只支持查看链接，尚不支持自动入库。' })
     return
@@ -624,10 +606,6 @@ function message(reason: unknown) {
   return reason instanceof Error ? reason.message : '操作失败'
 }
 
-function emptyProgress(total = 0): ServerSearchProgress {
-  return { total, pending: total, running: 0, completed: 0, succeeded: 0, failed: 0, resultCount: 0 }
-}
-
 onMounted(() => {
   unregisterBack = registerLayoutBackHandler(backOwner, handleLayoutBack)
   void load()
@@ -710,7 +688,7 @@ onBeforeUnmount(() => {
       </section>
 
       <DiscoverySitePickerDialog :open="sitePickerOpen" :sites="sites" :selected-site-ids="selectedSiteIds" :loading="loadingSites" :mode="pendingSearchMode" :direct-kind="directKind" :direct-query="directQuery" :tmdb-id="detail.work.tmdbId" @close="sitePickerOpen = false" @search="runSearch()" @toggle-site="toggleSite" @toggle-all="toggleAllSites" @update-direct-kind="directKind = $event" @update-direct-query="directQuery = $event" />
-      <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :groups="groups" :active-site-id="activeSiteId" :searching="searching" :progress="searchProgress" :can-acquire="canAcquire" :busy-token="busyToken" :mixed-supported="mixedSupported" :type-policy="discoveryTypePolicy" :cloud-types="discoveryCloudTypes" :copying-token="copyingToken" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="runSearch([$event], false)" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" @copy-resource="copyResourceLink" @update-type-policy="discoveryTypePolicy = $event" @update-cloud-types="discoveryCloudTypes = $event" @refresh="refreshResourceTypes" />
+      <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :state="searchState" :active-site-id="activeSiteId" :can-acquire="canAcquire" :busy-token="busyToken" :mixed-supported="mixedSupported" :type-policy="discoveryTypePolicy" :cloud-types="discoveryCloudTypes" :copying-token="copyingToken" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="retrySite" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" @copy-resource="copyResourceLink" @update-type-policy="discoveryTypePolicy = $event" @update-cloud-types="discoveryCloudTypes = $event" @refresh="refreshResourceTypes" />
       <DiscoveryAcquisitionDialog :key="sourceId" :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" :load-share-preview="loadAcquisitionSharePreview" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" />
 
       <div v-if="followOpen" class="follow-layer fixed inset-0 z-[1210] grid place-items-center p-4" @click.self="!subscribing && (followOpen = false)">

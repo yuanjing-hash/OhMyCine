@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import Detail from '../src/views/ServerDiscoveryDetailView.vue'
 import Picker from '../src/components/server/DiscoverySitePickerDialog.vue'
 import Workspace from '../src/components/server/DiscoverySearchWorkspace.vue'
+import { beginResourceSearch, emptyResourceSearch, reduceResourceSearch } from '../src/services/serverDiscoverySearch'
 
 const calls = vi.hoisted(() => [] as Array<Record<string, unknown>>)
 const details = vi.hoisted(() => vi.fn())
@@ -35,6 +36,7 @@ vi.mock('@/services/serverDiscovery', async original => ({
   streamServerResources: async (_source: unknown, input: Record<string, unknown>, event: (value: unknown) => void) => {
     calls.push(input)
     event({ type: 'site', group: { siteId: 8, siteName: 'PanSou', status: 'success', page: input.page, hasNext: input.page === 1, skipped: 0, snapshotId: 'owned-snapshot', items: [{ token: 'fixture-token', title: 'Fixture result', resultType: 'magnet' }] } })
+    event({ type: 'done', progress: { total: 1, pending: 0, running: 0, completed: 1, succeeded: 1, failed: 0, resultCount: 1 } })
     return { done: Promise.resolve(), cancel: vi.fn() }
   },
 }))
@@ -154,4 +156,44 @@ it('does not begin coverage or acquisition requests after unmount', async () => 
   await flushPromises()
   expect(coverage).not.toHaveBeenCalled()
   expect(acquisition).not.toHaveBeenCalled()
+})
+
+it('shows a mixed partial batch immediately and retains its claims after a later upstream failure', async () => {
+  const sites = [{ id: 8, name: 'PanSou', kind: 'pansou_tg', siteType: 'cloud_share', searchable: true }]
+  const firstBatch = {
+    siteId: 8, siteName: 'PanSou', siteType: 'cloud_share', status: 'success', page: 1, skipped: 0,
+    hasNext: true, snapshotId: 'owned-partial-snapshot', complete: false, revision: 1, completion: 'received',
+    items: [
+      { token: 'quark-partial', title: 'Already received episode', sourceKind: 'quark_share', resultType: 'quark', acquisitionAvailable: true, origins: [{ kind: 'plugin' as const, name: 'Fixture plugin' }] },
+      { token: 'view-only-partial', title: 'View-only result', resultType: 'aliyun', acquisitionAvailable: false, acquisitionReason: '尚未支持此类型的自动入库。' },
+    ],
+  }
+  let state = beginResourceSearch(emptyResourceSearch(), { sites, siteIds: [8], replaceAll: true, page: 1 })
+  state = reduceResourceSearch(state, { type: 'site', group: firstBatch }, sites)
+  const wrapper = mount(Workspace, {
+    props: { open: true, title: 'Fixture', state, canAcquire: true, mixedSupported: true },
+    global: { stubs: { teleport: true, transition: false } },
+  })
+  try {
+    expect(wrapper.text()).toContain('正在搜索 1 个站点 · 已显示 2 条结果')
+    expect(wrapper.text()).toContain('Already received episode')
+    expect(wrapper.text()).toContain('PanSou · 插件 · Fixture plugin')
+    expect(wrapper.findAll('button').find(button => button.text() === '下一页')!.attributes('disabled')).toBeDefined()
+    const viewOnly = wrapper.findAll('article').find(article => article.text().includes('View-only result'))!
+    expect(viewOnly.get('.select-button').attributes('disabled')).toBeDefined()
+    expect(viewOnly.findAll('button').find(button => button.text() === '复制链接')!.attributes('disabled')).toBeUndefined()
+
+    state = reduceResourceSearch(state, { type: 'site', group: { ...firstBatch, status: 'error', complete: true, revision: 2, partial: true, errorCode: 'site_unavailable', incompleteReason: 'site_unavailable', items: [] } }, sites)
+    state = reduceResourceSearch(state, { type: 'done', progress: { total: 1, pending: 0, running: 0, completed: 1, succeeded: 0, failed: 1, resultCount: 2 } }, sites)
+    await wrapper.setProps({ state })
+    expect(wrapper.text()).toContain('搜索尚未完整完成 · 已保留 2 条结果')
+    expect(wrapper.text()).toContain('站点暂时不可用')
+    expect(wrapper.text()).toContain('上游尚未确认全部来源完成')
+    expect(wrapper.text()).toContain('Already received episode')
+    expect(wrapper.text()).toContain('PanSou · 插件 · Fixture plugin')
+    await wrapper.findAll('button').find(button => button.text() === '转存入库')!.trigger('click')
+    expect(wrapper.emitted('selectResource')?.[0]?.[0]).toMatchObject({ token: 'quark-partial', sourceKind: 'quark_share' })
+    expect(state.groups[0].snapshotId).toBe('owned-partial-snapshot')
+  }
+  finally { wrapper.unmount() }
 })

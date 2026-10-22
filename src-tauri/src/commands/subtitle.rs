@@ -13,8 +13,8 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -35,6 +35,10 @@ const DOWNLOAD_REFERENCE_TTL: Duration = Duration::from_secs(30 * 60);
 const OPENSUBTITLES_SESSION_TTL: Duration = Duration::from_secs(23 * 60 * 60);
 const MAX_PENDING_DOWNLOADS: usize = 256;
 const MIN_HASHABLE_FILE_SIZE: u64 = 0xF000;
+const MAX_CACHED_SUBTITLE_ENTRIES: usize = 512;
+const MAX_SUBTITLE_METADATA_BYTES: u64 = 8 * 1024;
+const SUBTITLE_METADATA_SUFFIX: &str = ".subtitle.json";
+static SUBTITLE_CACHE_METADATA_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 pub struct OpenSubtitlesSessionState(tokio::sync::Mutex<Option<OpenSubtitlesSession>>);
@@ -197,9 +201,34 @@ pub struct LocalSubtitleImportRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SubtitleCacheOwner {
+pub struct SubtitleCacheOwner {
     source_id: String,
     media_identity: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleCacheRecordRequest {
+    owner: SubtitleCacheOwner,
+    subtitle: CachedSubtitle,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedSubtitle {
+    path: String,
+    title: String,
+    language: String,
+    format: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubtitleCacheMetadata {
+    version: u8,
+    file_name: String,
+    title: String,
+    language: String,
 }
 
 #[derive(Serialize)]
@@ -528,6 +557,27 @@ pub fn subtitle_import_local(
         content,
         request.cache_owner.as_ref(),
     )
+}
+
+#[tauri::command]
+pub fn subtitle_list_cached(
+    app: AppHandle,
+    owner: SubtitleCacheOwner,
+) -> Result<Vec<CachedSubtitle>, String> {
+    let layout = crate::storage::initialize(&app)?;
+    list_cached_subtitles(&layout.cache_dir, &owner)
+}
+
+#[tauri::command]
+pub fn subtitle_record_cached(
+    app: AppHandle,
+    request: SubtitleCacheRecordRequest,
+) -> Result<CachedSubtitle, String> {
+    let layout = crate::storage::initialize(&app)?;
+    let directory =
+        managed_subtitle_cache_directory(&layout.cache_dir, Some(&request.owner), false)?
+            .ok_or_else(|| "字幕缓存目录不存在。".to_string())?;
+    record_cached_subtitle(&directory, &request.subtitle)
 }
 
 async fn ensure_opensubtitles_account_token(
@@ -1069,11 +1119,15 @@ fn assess_xunlei_match(
             label: "CID 精确匹配",
         });
     }
-    if request.keyword_mode.as_deref() == Some("custom") {
+    if let Some(mode @ ("custom" | "episodeTitle")) = request.keyword_mode.as_deref() {
         return Some(XunleiMatchAssessment {
             score: record.score.max(0),
             is_hash_match: false,
-            label: "自定义关键词匹配",
+            label: if mode == "episodeTitle" {
+                "剧名与本集名称匹配"
+            } else {
+                "自定义关键词匹配"
+            },
         });
     }
 
@@ -1881,13 +1935,273 @@ fn write_subtitle_cache(
     let extension = normalized_subtitle_extension(extension)
         .ok_or_else(|| "字幕文件扩展名不受支持。".to_string())?;
     let layout = crate::storage::initialize(app)?;
-    let subtitle_dir = subtitle_cache_owner_directory(&layout.cache_dir, cache_owner)?;
-    fs::create_dir_all(&subtitle_dir).map_err(|_| "无法创建字幕缓存目录。".to_string())?;
+    let subtitle_dir = managed_subtitle_cache_directory(&layout.cache_dir, cache_owner, true)?
+        .ok_or_else(|| "无法创建字幕缓存目录。".to_string())?;
     let target = subtitle_cache_path(&subtitle_dir, provider, identity, extension);
-    fs::write(&target, content).map_err(|_| "无法写入字幕缓存文件。".to_string())?;
+    write_subtitle_cache_file(&subtitle_dir, &target, &content)?;
+    if cache_owner.is_some() && !subtitle_metadata_path(&target).exists() {
+        record_cached_subtitle(
+            &subtitle_dir,
+            &CachedSubtitle {
+                path: target.to_string_lossy().to_string(),
+                title: cached_subtitle_fallback_title(&target, extension),
+                language: "unknown".to_string(),
+                format: Some(extension.to_string()),
+            },
+        )?;
+    }
     Ok(DownloadedSubtitle {
         path: target.to_string_lossy().to_string(),
     })
+}
+
+fn managed_subtitle_cache_directory(
+    cache_dir: &Path,
+    owner: Option<&SubtitleCacheOwner>,
+    create: bool,
+) -> Result<Option<PathBuf>, String> {
+    let expected = subtitle_cache_owner_directory(cache_dir, owner)?;
+    let relative = expected
+        .strip_prefix(cache_dir)
+        .map_err(|_| "字幕缓存目录无效。".to_string())?;
+    let mut directory =
+        fs::canonicalize(cache_dir).map_err(|_| "无法读取字幕缓存目录。".to_string())?;
+    for component in relative.components() {
+        let candidate = directory.join(component);
+        match fs::symlink_metadata(&candidate) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err("字幕缓存目录无效。".to_string());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !create {
+                    return Ok(None);
+                }
+                if let Err(error) = fs::create_dir(&candidate) {
+                    if error.kind() != std::io::ErrorKind::AlreadyExists {
+                        return Err("无法创建字幕缓存目录。".to_string());
+                    }
+                }
+            }
+            Err(_) => return Err("无法读取字幕缓存目录。".to_string()),
+        }
+        let canonical =
+            fs::canonicalize(&candidate).map_err(|_| "无法读取字幕缓存目录。".to_string())?;
+        if canonical != candidate {
+            return Err("字幕缓存目录归属不匹配。".to_string());
+        }
+        directory = canonical;
+    }
+    Ok(Some(directory))
+}
+
+fn validate_cached_subtitle_file(
+    directory: &Path,
+    path: &Path,
+) -> Result<(PathBuf, String), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "字幕缓存文件无效。".to_string())?;
+    let extension = managed_subtitle_extension(file_name)
+        .ok_or_else(|| "字幕缓存文件标识或格式无效。".to_string())?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| "字幕缓存文件不存在。".to_string())?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() == 0
+        || metadata.len() > MAX_DOWNLOAD_RESPONSE_BYTES as u64
+    {
+        return Err("字幕缓存文件无效。".to_string());
+    }
+    let canonical = fs::canonicalize(path).map_err(|_| "字幕缓存文件不存在。".to_string())?;
+    if canonical.parent() != Some(directory) || canonical != directory.join(file_name) {
+        return Err("字幕缓存文件归属不匹配。".to_string());
+    }
+    Ok((canonical, extension.to_string()))
+}
+
+fn managed_subtitle_extension(file_name: &str) -> Option<&'static str> {
+    let stem = Path::new(file_name).file_stem()?.to_str()?;
+    if stem.len() != 64 || !stem.bytes().all(|value| value.is_ascii_hexdigit()) {
+        return None;
+    }
+    safe_subtitle_extension(Some(file_name))
+}
+
+fn subtitle_metadata_path(subtitle: &Path) -> PathBuf {
+    subtitle.with_file_name(format!(
+        "{}{SUBTITLE_METADATA_SUFFIX}",
+        subtitle.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+fn subtitle_display_text(value: &str, max_length: usize) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > max_length
+        || value.chars().any(char::is_control)
+        || value.contains("://")
+        || value.starts_with(['/', '\\'])
+        || (value.as_bytes().get(1) == Some(&b':')
+            && value
+                .as_bytes()
+                .get(2)
+                .is_some_and(|value| matches!(value, b'/' | b'\\')))
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn cached_subtitle_fallback_title(path: &Path, extension: &str) -> String {
+    let identity = path.file_stem().unwrap_or_default().to_string_lossy();
+    format!(
+        "已下载字幕 {} · {}",
+        identity.chars().take(8).collect::<String>(),
+        extension.to_ascii_uppercase()
+    )
+}
+
+fn write_subtitle_cache_file(directory: &Path, target: &Path, bytes: &[u8]) -> Result<(), String> {
+    if target.parent() != Some(directory) {
+        return Err("字幕缓存文件归属不匹配。".to_string());
+    }
+    match fs::symlink_metadata(target) {
+        Ok(metadata) => {
+            if !metadata.is_file()
+                || metadata.file_type().is_symlink()
+                || fs::canonicalize(target).ok().as_deref() != Some(target)
+            {
+                return Err("字幕缓存文件无效。".to_string());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("无法读取字幕缓存文件。".to_string()),
+    }
+    let mut random = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut random);
+    let temporary = directory.join(format!(".{}.tmp", URL_SAFE_NO_PAD.encode(random)));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|_| "无法写入字幕缓存文件。".to_string())?;
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "无法写入字幕缓存文件。".to_string())?;
+        drop(file);
+        fs::rename(&temporary, target).map_err(|_| "无法保存字幕缓存文件。".to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn record_cached_subtitle(
+    directory: &Path,
+    subtitle: &CachedSubtitle,
+) -> Result<CachedSubtitle, String> {
+    let (path, extension) = validate_cached_subtitle_file(directory, Path::new(&subtitle.path))?;
+    let title = subtitle_display_text(&subtitle.title, 2048)
+        .unwrap_or_else(|| cached_subtitle_fallback_title(&path, &extension));
+    let language =
+        subtitle_display_text(&subtitle.language, 64).unwrap_or_else(|| "unknown".to_string());
+    let metadata = SubtitleCacheMetadata {
+        version: 1,
+        file_name: path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        title: title.clone(),
+        language: language.clone(),
+    };
+    let bytes = serde_json::to_vec(&metadata).map_err(|_| "无法保存字幕缓存信息。".to_string())?;
+    let _guard = SUBTITLE_CACHE_METADATA_LOCK
+        .lock()
+        .map_err(|_| "无法保存字幕缓存信息。".to_string())?;
+    let target = subtitle_metadata_path(&path);
+    write_subtitle_cache_file(directory, &target, &bytes)?;
+    Ok(CachedSubtitle {
+        path: path.to_string_lossy().to_string(),
+        title,
+        language,
+        format: Some(extension),
+    })
+}
+
+fn list_cached_subtitles(
+    cache_dir: &Path,
+    owner: &SubtitleCacheOwner,
+) -> Result<Vec<CachedSubtitle>, String> {
+    let Some(directory) = managed_subtitle_cache_directory(cache_dir, Some(owner), false)? else {
+        return Ok(Vec::new());
+    };
+    let _guard = SUBTITLE_CACHE_METADATA_LOCK
+        .lock()
+        .map_err(|_| "无法读取字幕缓存信息。".to_string())?;
+    let mut entries = fs::read_dir(&directory)
+        .map_err(|_| "无法读取字幕缓存信息。".to_string())?
+        .filter_map(Result::ok)
+        .filter(|entry| managed_subtitle_extension(&entry.file_name().to_string_lossy()).is_some())
+        .take(MAX_CACHED_SUBTITLE_ENTRIES * 4)
+        .filter_map(|entry| {
+            entry
+                .metadata()
+                .ok()
+                .map(|metadata| (entry.path(), metadata.modified().ok()))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(path, modified)| (Reverse(*modified), path.clone()));
+    let mut results = Vec::new();
+    for (path, _) in entries.into_iter().take(MAX_CACHED_SUBTITLE_ENTRIES) {
+        let Ok((subtitle_path, extension)) = validate_cached_subtitle_file(&directory, &path)
+        else {
+            continue;
+        };
+        let metadata_path = subtitle_metadata_path(&subtitle_path);
+        let read_metadata = || -> Option<SubtitleCacheMetadata> {
+            let stat = fs::symlink_metadata(&metadata_path).ok()?;
+            if !stat.is_file()
+                || stat.file_type().is_symlink()
+                || stat.len() > MAX_SUBTITLE_METADATA_BYTES
+            {
+                return None;
+            }
+            let mut bytes = Vec::new();
+            File::open(&metadata_path)
+                .ok()?
+                .take(MAX_SUBTITLE_METADATA_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            if bytes.len() > MAX_SUBTITLE_METADATA_BYTES as usize {
+                return None;
+            }
+            let metadata: SubtitleCacheMetadata = serde_json::from_slice(&bytes).ok()?;
+            if metadata.version != 1
+                || Some(metadata.file_name.as_str()) != subtitle_path.file_name()?.to_str()
+            {
+                return None;
+            }
+            Some(metadata)
+        };
+        let metadata = read_metadata();
+        results.push(CachedSubtitle {
+            path: subtitle_path.to_string_lossy().to_string(),
+            title: metadata
+                .as_ref()
+                .and_then(|value| subtitle_display_text(&value.title, 2048))
+                .unwrap_or_else(|| cached_subtitle_fallback_title(&subtitle_path, &extension)),
+            language: metadata
+                .as_ref()
+                .and_then(|value| subtitle_display_text(&value.language, 64))
+                .unwrap_or_else(|| "unknown".to_string()),
+            format: Some(extension),
+        });
+    }
+    Ok(results)
 }
 
 fn subtitle_cache_owner_directory(
@@ -2163,17 +2477,19 @@ mod tests {
     use super::{
         assess_xunlei_match, build_opensubtitles_xmlrpc_search_body, build_xunlei_name_search_url,
         compute_shooter_hash, compute_shooter_media_hash, compute_xunlei_cid,
-        compute_xunlei_media_cid, normalize_xunlei_download_url, normalize_xunlei_languages,
-        parse_episode_marker, parse_xmlrpc_response, resolve_hash_media_source,
-        safe_subtitle_extension, subtitle_cache_owner_directory,
-        validate_opensubtitles_download_url, validate_shooter_download_url,
-        validate_xunlei_download_url, xmlrpc_string_member, xmlrpc_struct, HashSubtitleProvider,
-        HashSubtitleSearchRequest, OpenSubtitlesAuthMode, OpenSubtitlesSearchRequest,
-        RemoteMediaHeader, SubtitleCacheOwner, XunleiNameSearchRecord,
+        compute_xunlei_media_cid, list_cached_subtitles, managed_subtitle_cache_directory,
+        normalize_xunlei_download_url, normalize_xunlei_languages, parse_episode_marker,
+        parse_xmlrpc_response, record_cached_subtitle, resolve_hash_media_source,
+        safe_subtitle_extension, subtitle_cache_owner_directory, subtitle_cache_path,
+        subtitle_metadata_path, validate_opensubtitles_download_url, validate_shooter_download_url,
+        validate_xunlei_download_url, xmlrpc_string_member, xmlrpc_struct, CachedSubtitle,
+        HashSubtitleProvider, HashSubtitleSearchRequest, OpenSubtitlesAuthMode,
+        OpenSubtitlesSearchRequest, RemoteMediaHeader, SubtitleCacheOwner, XunleiNameSearchRecord,
     };
-    use std::fs;
+    use std::fs::{self, File};
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::path::Path;
     use std::thread;
 
     #[test]
@@ -2190,6 +2506,105 @@ mod tests {
         assert!(directory.starts_with(root.join("subtitles")));
         assert!(!display.contains("emby-private"));
         assert!(!display.contains("episode-secret"));
+
+        let temporary = std::env::temp_dir().join(format!(
+            "ohmycine-subtitle-owned-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&temporary).unwrap();
+        let directory = managed_subtitle_cache_directory(&temporary, Some(&owner), true)
+            .unwrap()
+            .unwrap();
+        let other_owner = SubtitleCacheOwner {
+            source_id: owner.source_id.clone(),
+            media_identity: "another-episode".to_string(),
+        };
+        for index in 0..5 {
+            let path = subtitle_cache_path(&directory, "fixture", &index.to_string(), "ass");
+            fs::write(&path, b"[Script Info]\nTitle: controlled subtitle").unwrap();
+            let cached = record_cached_subtitle(
+                &directory,
+                &CachedSubtitle {
+                    path: path.to_string_lossy().to_string(),
+                    title: format!("Dragon Ball Super EP008 release {index}"),
+                    language: "zh-CN".to_string(),
+                    format: Some("wrong-client-format".to_string()),
+                },
+            )
+            .unwrap();
+            assert_eq!(cached.format.as_deref(), Some("ass"));
+        }
+        let existing_path = subtitle_cache_path(&directory, "fixture", "without-metadata", "srt");
+        fs::write(
+            &existing_path,
+            b"1\n00:00:00,000 --> 00:00:01,000\nExisting subtitle\n",
+        )
+        .unwrap();
+        let cached = list_cached_subtitles(&temporary, &owner).unwrap();
+        assert_eq!(cached.len(), 6);
+        let existing = cached
+            .iter()
+            .find(|item| Path::new(&item.path) == existing_path)
+            .unwrap();
+        assert!(existing.title.starts_with("已下载字幕 "));
+        assert_eq!(existing.format.as_deref(), Some("srt"));
+        assert!(list_cached_subtitles(&temporary, &other_owner)
+            .unwrap()
+            .is_empty());
+        let other_directory =
+            managed_subtitle_cache_directory(&temporary, Some(&other_owner), true)
+                .unwrap()
+                .unwrap();
+        assert!(record_cached_subtitle(&other_directory, &cached[0]).is_err());
+        let updated = record_cached_subtitle(
+            &directory,
+            &CachedSubtitle {
+                path: cached[0].path.clone(),
+                title: "Updated subtitle label".to_string(),
+                language: "en".to_string(),
+                format: None,
+            },
+        )
+        .unwrap();
+        let reopened = list_cached_subtitles(&temporary, &owner).unwrap();
+        assert_eq!(reopened.len(), 6);
+        assert_eq!(
+            reopened
+                .iter()
+                .find(|item| item.path == updated.path)
+                .unwrap()
+                .title,
+            updated.title
+        );
+
+        // Invalid metadata cannot enumerate a different owner or resurrect missing,
+        // empty/oversized subtitle files. Other alternatives remain on disk.
+        fs::remove_file(&cached[1].path).unwrap();
+        fs::write(&cached[2].path, b"").unwrap();
+        fs::write(
+            subtitle_metadata_path(Path::new(&cached[3].path)),
+            b"{invalid",
+        )
+        .unwrap();
+        let remaining = list_cached_subtitles(&temporary, &owner).unwrap();
+        assert_eq!(remaining.len(), 4);
+        assert!(Path::new(&cached[4].path).is_file());
+        assert!(
+            !fs::read_to_string(subtitle_metadata_path(Path::new(&updated.path)))
+                .unwrap()
+                .contains("episode-secret")
+        );
+        let oversized = File::options().write(true).open(&cached[4].path).unwrap();
+        oversized
+            .set_len(super::MAX_DOWNLOAD_RESPONSE_BYTES as u64 + 1)
+            .unwrap();
+        drop(oversized);
+        assert_eq!(list_cached_subtitles(&temporary, &owner).unwrap().len(), 3);
+
+        let canonical = fs::canonicalize(&temporary).unwrap();
+        assert!(canonical.starts_with(fs::canonicalize(std::env::temp_dir()).unwrap()));
+        fs::remove_dir_all(canonical).unwrap();
     }
 
     fn xunlei_request(media_type: Option<&str>) -> HashSubtitleSearchRequest {
@@ -2346,6 +2761,12 @@ mod tests {
         let result = xunlei_record("Supergirl.S01E01.1080p.WEB-DL.Chs.srt", 2_540_000);
         let assessment = assess_xunlei_match(&result, &request, None).unwrap();
         assert_eq!(assessment.label, "自定义关键词匹配");
+        request.keyword_mode = Some("episodeTitle".to_string());
+        request.duration_seconds = Some(1386.0);
+        request.season_number = Some(1);
+        request.episode_number = Some(8);
+        let assessment = assess_xunlei_match(&result, &request, None).unwrap();
+        assert_eq!(assessment.label, "剧名与本集名称匹配");
     }
 
     #[test]

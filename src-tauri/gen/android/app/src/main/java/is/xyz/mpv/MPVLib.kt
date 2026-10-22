@@ -19,6 +19,12 @@ object MPVLib {
     external fun attachSurface(surface: Surface)
     external fun detachSurface()
     external fun command(cmd: Array<out String>)
+    external fun commandChecked(cmd: Array<out String>): Int
+    // Positive immutable playlist entry ID, or the negative native command error.
+    external fun loadFileChecked(cmd: Array<out String>): Long
+    external fun addLoadHook(): Int
+    external fun continueHook(id: Long): Int
+    external fun stopAsync(): Int
     external fun setOptionString(name: String, value: String): Int
     external fun grabThumbnail(dimension: Int): Bitmap?
     external fun getPropertyInt(property: String): Int?
@@ -29,10 +35,13 @@ object MPVLib {
     external fun setPropertyBoolean(property: String, value: Boolean)
     external fun getPropertyString(property: String): String?
     external fun setPropertyString(property: String, value: String)
+    external fun setPropertyStringChecked(property: String, value: String): Int
     external fun observeProperty(property: String, format: Int)
 
     private val observers = mutableListOf<EventObserver>()
     private val logObservers = mutableListOf<LogObserver>()
+    @Volatile
+    private var activeEntryId = -1L
 
     @JvmStatic
     fun addObserver(observer: EventObserver) = synchronized(observers) { observers.add(observer) }
@@ -42,32 +51,51 @@ object MPVLib {
 
     @JvmStatic
     fun eventProperty(property: String, value: Long) = synchronized(observers) {
-        observers.forEach { it.eventProperty(property, value) }
+        observers.forEach { it.eventProperty(property, value, activeEntryId) }
     }
 
     @JvmStatic
     fun eventProperty(property: String, value: Boolean) = synchronized(observers) {
-        observers.forEach { it.eventProperty(property, value) }
+        observers.forEach { it.eventProperty(property, value, activeEntryId) }
     }
 
     @JvmStatic
     fun eventProperty(property: String, value: Double) = synchronized(observers) {
-        observers.forEach { it.eventProperty(property, value) }
+        observers.forEach { it.eventProperty(property, value, activeEntryId) }
     }
 
     @JvmStatic
     fun eventProperty(property: String, value: String) = synchronized(observers) {
-        observers.forEach { it.eventProperty(property, value) }
+        observers.forEach { it.eventProperty(property, value, activeEntryId) }
     }
 
     @JvmStatic
     fun eventProperty(property: String) = synchronized(observers) {
-        observers.forEach { it.eventProperty(property) }
+        observers.forEach { it.eventProperty(property, activeEntryId) }
     }
 
     @JvmStatic
     fun event(eventId: Int) = synchronized(observers) {
-        observers.forEach { it.event(eventId) }
+        observers.forEach { it.event(eventId, activeEntryId) }
+    }
+
+    @JvmStatic
+    fun eventStartFile(entryId: Long) = synchronized(observers) {
+        // The native event thread delivers START before file properties/hooks.
+        // Tag callbacks at receipt, even if their consumer temporarily buffers.
+        activeEntryId = entryId
+        observers.forEach { it.event(MpvEvent.START_FILE, entryId) }
+    }
+
+    @JvmStatic
+    fun eventEndFile(reason: Int, error: Int, entryId: Long, insertId: Long, insertCount: Int) = synchronized(observers) {
+        observers.forEach { it.eventEndFile(reason, error, entryId, insertId, insertCount) }
+        if (activeEntryId == entryId) activeEntryId = -1L
+    }
+
+    @JvmStatic
+    fun eventHook(id: Long) = synchronized(observers) {
+        observers.forEach { it.eventHook(id, activeEntryId) }
     }
 
     @JvmStatic
@@ -78,20 +106,22 @@ object MPVLib {
 
     @JvmStatic
     fun logMessage(prefix: String, level: Int, text: String) = synchronized(logObservers) {
-        logObservers.forEach { it.logMessage(prefix, level, text) }
+        logObservers.forEach { it.logMessage(prefix, level, text, activeEntryId) }
     }
 
     interface EventObserver {
-        fun eventProperty(property: String)
-        fun eventProperty(property: String, value: Long)
-        fun eventProperty(property: String, value: Boolean)
-        fun eventProperty(property: String, value: String)
-        fun eventProperty(property: String, value: Double)
-        fun event(eventId: Int)
+        fun eventProperty(property: String, entryId: Long)
+        fun eventProperty(property: String, value: Long, entryId: Long)
+        fun eventProperty(property: String, value: Boolean, entryId: Long)
+        fun eventProperty(property: String, value: String, entryId: Long)
+        fun eventProperty(property: String, value: Double, entryId: Long)
+        fun event(eventId: Int, entryId: Long)
+        fun eventEndFile(reason: Int, error: Int, entryId: Long, insertId: Long, insertCount: Int) = Unit
+        fun eventHook(id: Long, entryId: Long) = Unit
     }
 
     interface LogObserver {
-        fun logMessage(prefix: String, level: Int, text: String)
+        fun logMessage(prefix: String, level: Int, text: String, entryId: Long)
     }
 
     object MpvFormat {
@@ -109,5 +139,13 @@ object MPVLib {
         const val VIDEO_RECONFIG = 17
         const val AUDIO_RECONFIG = 18
         const val PLAYBACK_RESTART = 21
+    }
+
+    object MpvEndReason {
+        const val EOF = 0
+        const val STOP = 2
+        const val QUIT = 3
+        const val ERROR = 4
+        const val REDIRECT = 5
     }
 }

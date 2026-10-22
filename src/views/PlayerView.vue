@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import type { KnownSubtitleTrackInput, MpvOrientationMode, MpvZOrderStrategy, RenderSurfaceBounds, SubtitleTrackOption, Track, VideoAspectMode, VideoFitMode } from '@/composables/useMpv'
 import type { DanmakuSearchAnime, DanmakuSearchEpisode } from '@/services/danmaku/types'
-import type { SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, PlaybackSubtitleTrack, ProviderPlaybackProgressEvent, ProviderPlaybackSyncDiagnostic, StreamVariant, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
+import type { DataSource, SubtitleTrack as DataSourceSubtitleTrack, MediaItem, MediaStreamRequest, PlaybackRequest, PlaybackSubtitleTrack, ProviderPlaybackProgressEvent, ProviderPlaybackProgressInput, ProviderPlaybackSyncDiagnostic, StreamVariant, SubtitleSearchOrigin, SubtitleSearchResult } from '@/services/datasource/types'
 import type { MediaPlaybackPreference, MediaPlaybackPreferenceIdentity, MediaSubtitlePreference, MediaTrackPreference } from '@/services/mediaPlaybackPreferences'
-import type { PlaybackQueueState } from '@/services/playbackContext'
+import type { PlaybackQueueItem, PlaybackQueueState } from '@/services/playbackContext'
 import type { PlaybackHistoryEntry, PlaybackProgressUpsert } from '@/services/playbackHistory'
-import type { PlayerFsrSettings, PlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import type { PlayerFsrSettings, PlayerHardwareDecoder, PlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import type { PlayerShortcutBindings, PlayerShortcutTarget } from '@/services/playerShortcuts'
 import type { SubtitleKeywordMode, SubtitleLanguage, SubtitleSearchMediaContext } from '@/services/subtitle'
 import { LogicalSize } from '@tauri-apps/api/dpi'
@@ -30,8 +30,8 @@ import { resolveCompletedDownload } from '@/services/downloads'
 import { artworkCacheKey } from '@/services/imageCache'
 import { isLocalVideoFileName } from '@/services/localPlaylist'
 import { getMediaPlaybackPreference, saveMediaPlaybackPreference } from '@/services/mediaPlaybackPreferences'
-import { getPlaybackMediaContext } from '@/services/playbackContext'
-import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
+import { createPlaybackQueueItem, getPlaybackMediaContext } from '@/services/playbackContext'
+import { createSafeStreamIdentity, getPlaybackProgress, isCompletedPosition, playbackHistoryOwnerScope, savePlaybackProgress, shouldResumePlayback } from '@/services/playbackHistory'
 import { createPlaybackRouteQuery } from '@/services/playbackRoute'
 import { loadPlayerInteractionSettings, normalizePlayerInteractionSettings, PLAYBACK_SPEED_OPTIONS, savePlayerInteractionSettings } from '@/services/playerInteractionSettings'
 import { videoAspectRatioValue as aspectRatioValue, compactPlayerTrackLabel as compactTrackLabel, formatPlaybackTime, playerRenderBackendLabel as renderBackendLabel, playerRenderStatusLabel as renderStatusLabel, safePlayerMenuText as safeMenuText, playerVideoAspectLabel as videoAspectLabel, playerVideoFitLabel as videoFitLabel } from '@/services/playerPresentation'
@@ -41,7 +41,8 @@ import { matchPlaybackTrackPreference } from '@/services/playerTrackPreferences'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { captureVideoFrame, notifyScreenshotSaved } from '@/services/screenshotSettings'
 import { usableStreamVariants } from '@/services/streamVariants'
-import { describeLocalSubtitleSearchProviders, downloadLocalSubtitle, importLocalSubtitle, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
+import { describeLocalSubtitleSearchProviders, downloadLocalSubtitle, importLocalSubtitle, listCachedSubtitles, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
+import { subtitleEpisodeSearchKeywords, subtitleKeywordUsesMediaIdentity, subtitleMediaSearchTitle } from '@/services/subtitle/mediaContext'
 import { useDataSourceStore } from '@/stores/datasource'
 import { usePlayerChromeStore } from '@/stores/playerChrome'
 
@@ -71,6 +72,15 @@ interface ContextMenuPosition {
 interface PlaybackContextMenuDetail {
   label: string
   value: string
+}
+
+interface PlaybackProgressSnapshot {
+  generation: number
+  payload: PlaybackProgressUpsert
+  event: ProviderPlaybackProgressEvent
+  source: DataSource | undefined
+  providerInput: ProviderPlaybackProgressInput
+  reportProvider: boolean
 }
 
 type TouchGestureMode = 'pending' | 'seek' | 'brightness' | 'volume'
@@ -126,7 +136,12 @@ const playbackQueue = ref<PlaybackQueueState | null>(null)
 const playbackContextId = ref('')
 const queueSwitchError = ref<string | null>(null)
 const isQueueSwitching = ref(false)
-let autoAdvancedLocalQueueItem = ''
+const activePlaybackItem = ref<PlaybackQueueItem>()
+let playbackSessionGeneration = 0
+let loadedPlaybackGeneration = 0
+let loadedPreferenceIdentity: MediaPlaybackPreferenceIdentity | null = null
+let eofTransition: { generation: number, promise: Promise<void> } | null = null
+let subtitleInventoryGeneration = 0
 const displayMediaPath = computed(() => redactSensitiveText(mediaPath.value))
 const chromeVisible = ref(true)
 const cursorVisible = ref(true)
@@ -167,6 +182,9 @@ const subtitleSearchDefaultLanguage = ref<SubtitleLanguage>(loadSubtitleSearchSe
 const contextMenuPosition = ref<ContextMenuPosition>({ x: CONTEXT_MENU_MARGIN, y: CONTEXT_MENU_MARGIN })
 const pictureSettingsError = ref<string | null>(null)
 const initialInteractionSettings = loadPlayerInteractionSettings()
+const hardwareDecoder = ref<PlayerHardwareDecoder>(initialInteractionSettings.hardwareDecoder)
+const decoderSettingsPending = ref(false)
+const decoderSettingsError = ref<string | null>(null)
 const fsrSettings = ref<PlayerFsrSettings>(pickFsrSettings(initialInteractionSettings))
 const fsrSettingsError = ref<string | null>(null)
 const providerSyncError = ref<string | null>(null)
@@ -194,6 +212,14 @@ let homeRefreshTimer: number | undefined
 let lastSavedPosition = -1
 let playbackStartPosition = 0
 let playbackProgressReady = false
+let playbackHistoryStarted = false
+let activeHistoryOwnerScope: string | null | undefined
+let savedHistoryDuration: number | undefined
+let sessionWatched = false
+let sessionWatchedHomeRefreshed = false
+let terminalProviderEventSent = false
+let failedProgressGeneration = -1
+let historyWriteQueue: Promise<void> = Promise.resolve()
 const resumeSeekTimers = new Set<number>()
 let pendingResumeSeek: { path: string, position: number } | null = null
 let activeCachedSubtitlePath: string | null = null
@@ -201,6 +227,10 @@ let mediaPreferenceSaveTimer: number | undefined
 let mediaPreferenceRestoreGeneration = 0
 let restoringMediaPreference = false
 let persistedSubtitlePreference: MediaSubtitlePreference | null | undefined
+const subtitleAutomatic = ref(true)
+let subtitleIntentReady = false
+let autoSubtitleSelectionInFlight = false
+let subtitleSearchGeneration = 0
 let persistedAudioPreference: MediaTrackPreference | null | undefined
 let pendingTrackPreference: {
   preference: MediaPlaybackPreference
@@ -234,6 +264,9 @@ const {
   isPlaying,
   currentTime,
   duration,
+  lastConfirmedTime,
+  lastConfirmedDuration,
+  playbackEndReason,
   volume,
   videoBrightness,
   displayBrightness,
@@ -253,11 +286,13 @@ const {
   renderDiagnostics,
   playbackDiagnostics,
   videoReady,
+  fileLoaded,
   isBuffering,
   bufferSpeedBytesPerSecond,
   orientationSupported,
   orientationMode,
   videoDynamicRange,
+  videoTargetDynamicRange,
   trackError,
   applyEngineSettings,
   refreshPlaybackDiagnostics,
@@ -266,6 +301,7 @@ const {
   setRenderStrategy,
   setOrientationMode,
   setKnownSubtitleTracks,
+  setDownloadedSubtitleTracks,
   load,
   togglePause,
   seek: seekMpv,
@@ -278,6 +314,7 @@ const {
   applySubtitleDelay,
   setSubtitleDelay,
   setSubtitle,
+  setSubtitleAutomatic,
   addExternalSubtitle,
   setAudio,
   setVideoAspect,
@@ -305,6 +342,8 @@ const currentQueueItem = computed(() => {
   const queue = playbackQueue.value
   return queue ? queue.items[queue.currentIndex] : null
 })
+const subtitleSearchIsEpisode = computed(() => currentSubtitleMediaItem().type === 'episode')
+const subtitleEpisodeKeywords = computed(() => subtitleEpisodeSearchKeywords(currentSubtitleMediaItem()))
 const currentArtworkSourceId = computed(() => activeSourceId.value || currentQueueItem.value?.sourceId || LOCAL_FILE_SOURCE_ID)
 const currentArtworkItemId = computed(() => activeItemId.value || currentQueueItem.value?.id || 'current')
 const currentTitleLogoUrl = computed(() => {
@@ -325,7 +364,8 @@ const contextMenuDetails = computed<PlaybackContextMenuDetail[]>(() => [
   { label: '状态 / 速度', value: `${isPlaying.value ? 'Playing' : 'Paused'} · ${playbackSpeed.value.toFixed(2)}x` },
   { label: '播放位置', value: playbackStatsHeadline.value },
   { label: '音量', value: `${Math.round(volume.value)}%` },
-  { label: '动态范围', value: `${videoDynamicRange.value.label} · ${videoDynamicRange.value.details}` },
+  { label: '片源动态范围', value: `${videoDynamicRange.value.label} · ${videoDynamicRange.value.details}` },
+  { label: '渲染目标', value: `${videoTargetDynamicRange.value.label} · ${videoTargetDynamicRange.value.details}` },
   { label: '音轨', value: selectedAudioTrackLabel() },
   { label: '字幕', value: selectedSubtitleTrackLabel() },
   { label: '画面模式', value: `${videoAspectLabel(videoAspectMode.value)} / ${videoFitLabel(videoFitMode.value)}` },
@@ -490,7 +530,7 @@ async function flushTouchLevelUpdates() {
 }
 
 function isTouchGestureTarget(target: EventTarget | null): boolean {
-  return !(target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
+  return !(target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore], [data-player-scroll-region]'))
 }
 
 function isProtectedSystemGestureStart(event: PointerEvent, bounds: DOMRect): boolean {
@@ -669,14 +709,15 @@ function handleVisibilityChange() {
 }
 
 function toggleChromeFromTouch() {
-  chromeManuallyHidden.value = false
-  if (chromeVisible.value) {
+  if (shouldShowChrome.value) {
     clearHideTimer()
+    chromeManuallyHidden.value = true
     playerControlsRef.value?.dismissTransientUi()
     controlsInteracting.value = false
     chromeVisible.value = false
     return
   }
+  chromeManuallyHidden.value = false
   chromeVisible.value = true
   scheduleChromeHide()
 }
@@ -798,7 +839,24 @@ function currentPlaybackContext() {
 }
 
 function currentPlaybackItem() {
-  return currentQueueItem.value ?? currentPlaybackContext()?.currentItem
+  return activePlaybackItem.value
+}
+
+function isCurrentPlaybackSession(generation: number): boolean {
+  return generation === playbackSessionGeneration && !playbackCleanupStarted && !playerViewDisposed
+}
+
+function beginPlaybackSession(): number {
+  playbackSessionGeneration += 1
+  subtitleInventoryGeneration += 1
+  cancelPendingTrackPreferenceRestore()
+  subtitleIntentReady = false
+  subtitleSearchGeneration += 1
+  subtitleSearchOpen.value = false
+  subtitleSearchLoading.value = false
+  subtitleDownloadingId.value = null
+  subtitleSearchResults.value = []
+  return playbackSessionGeneration
 }
 
 function currentDisplaySourceId(): string {
@@ -823,6 +881,8 @@ function selectedAudioTrackLabel(): string {
 }
 
 function selectedSubtitleTrackLabel(): string {
+  if (subtitleAutomatic.value)
+    return '自动'
   if (!currentSubtitle.value)
     return '关闭'
 
@@ -850,7 +910,18 @@ function playbackQueuePositionLabel(): string {
 
 function syncActiveMediaMetadataFromRoute() {
   const context = currentPlaybackContext()
-  const item = currentPlaybackItem()
+  const queueItem = currentQueueItem.value
+  const singleItem = context?.currentItem?.id === queryStringValue(route.query.itemId) ? context.currentItem : undefined
+  // History cards can use a series display name. Keep the matching queue's
+  // exact episode names while retaining the card's resume/history selection.
+  const singleMetadata: Partial<PlaybackQueueItem> = singleItem
+    ? Object.fromEntries(Object.entries(singleItem).filter(([, value]) => value !== undefined))
+    : {}
+  const exactEpisodeNames = queueItem?.type === 'episode' && queueItem.id === singleItem?.id && queueItem.sourceId === singleItem.sourceId
+    ? { name: queueItem.name, title: queueItem.title || queueItem.name }
+    : {}
+  const item = queueItem && singleItem ? { ...queueItem, ...singleMetadata, ...exactEpisodeNames } : queueItem ?? singleItem
+  activePlaybackItem.value = item ? { ...item } : undefined
   activeSourceId.value = queryStringValue(route.query.sourceId) || item?.sourceId || context?.sourceId || ''
   activeItemId.value = queryStringValue(route.query.itemId) || item?.id || context?.itemId || ''
   activeLibraryId.value = item?.libraryId ?? ''
@@ -859,30 +930,35 @@ function syncActiveMediaMetadataFromRoute() {
   activeBackdropUrl.value = item?.backdropUrl ?? ''
   activeTitleLogoUrl.value = item?.titleLogoUrl ?? ''
   mediaTitle.value = item?.title || item?.name || context?.title || '未命名影片'
+  activeResolvedMediaSourceId.value = queryStringValue(route.query.mediaSourceId)
+    || (context?.itemId === activeItemId.value ? context.mediaSourceId : '') || ''
 }
 
 async function resolvePlaybackLoadRequest(variantId?: string): Promise<MediaStreamRequest> {
   const context = currentPlaybackContext()
   const sourceId = queryStringValue(route.query.sourceId) || context?.sourceId || ''
-  const itemId = queryStringValue(route.query.itemId) || context?.itemId || ''
+  const itemId = (variantId ? activeStreamRequest?.itemId : undefined) || queryStringValue(route.query.itemId) || context?.itemId || ''
   const locator = context?.locator
+  const mediaSourceId = currentMediaSourceId()
+  const localPath = sourceId === LOCAL_FILE_SOURCE_ID && currentQueueItem.value?.id === itemId
+    ? currentQueueItem.value.path
+    : locator?.kind === 'localPath' && context?.sourceId === sourceId && context.itemId === itemId
+      ? locator.path
+      : undefined
 
   if (sourceId && itemId && sourceId !== 'local-file') {
     const localDownload = await resolveCompletedDownload({
       sourceId,
       itemId,
-      mediaSourceId: currentMediaSourceId(),
+      mediaSourceId,
       variantId,
     }).catch(() => undefined)
     if (localDownload)
-      return { url: localDownload, mediaSourceId: currentMediaSourceId(), variantId }
+      return { url: localDownload, mediaSourceId, variantId }
   }
 
-  if (sourceId === LOCAL_FILE_SOURCE_ID && currentQueueItem.value?.id === itemId)
-    return { url: currentQueueItem.value.path }
-
-  if (locator?.kind === 'localPath' && context?.sourceId === sourceId && context.itemId === itemId)
-    return { url: locator.path }
+  if (localPath)
+    return { url: localPath }
 
   if (!sourceId || !itemId)
     throw new Error('缺少可解析的播放上下文。')
@@ -895,7 +971,7 @@ async function resolvePlaybackLoadRequest(variantId?: string): Promise<MediaStre
 
   const request: PlaybackRequest = {
     itemId,
-    mediaSourceId: currentMediaSourceId(),
+    mediaSourceId,
     variantId,
   }
   return source.getStreamRequest
@@ -903,30 +979,29 @@ async function resolvePlaybackLoadRequest(variantId?: string): Promise<MediaStre
     : { url: await source.getStreamURL(request.itemId) }
 }
 
-function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'mediaIdentity'> | null {
+function currentHistoryIdentity(): Pick<PlaybackProgressUpsert, 'sourceId' | 'mediaIdentity' | 'ownerScope'> | null {
   if (!mediaPath.value)
     return null
 
-  const context = currentPlaybackContext()
   const playbackItem = currentPlaybackItem()
-  const sourceId = playbackItem?.offlineOriginSourceId || activeSourceId.value || context?.sourceId || currentQueueItem.value?.sourceId || LOCAL_FILE_SOURCE_ID
+  const sourceId = playbackItem?.offlineOriginSourceId || activeSourceId.value || LOCAL_FILE_SOURCE_ID
   const itemId = currentOriginItemId()
-  const mediaIdentity = playbackItem?.historyIdentity || itemId || createSafeStreamIdentity(sourceId, undefined, mediaPath.value)
+  const mediaIdentity = (playbackItem?.offlineOriginItemId ? playbackItem.historyIdentity : activeStreamRequest?.historyIdentity)
+    || playbackItem?.historyIdentity || itemId || createSafeStreamIdentity(sourceId, undefined, mediaPath.value)
 
   if (!sourceId || !mediaIdentity)
     return null
 
-  return { sourceId, mediaIdentity }
+  return { sourceId, mediaIdentity, ownerScope: activeHistoryOwnerScope }
 }
 
 function currentOriginItemId(): string {
-  const context = currentPlaybackContext()
   const playbackItem = currentPlaybackItem()
-  return playbackItem?.offlineOriginItemId || activeItemId.value || context?.itemId || currentQueueItem.value?.id || ''
+  return playbackItem?.offlineOriginItemId || activeStreamRequest?.itemId || activeItemId.value || ''
 }
 
 function currentMediaPreferenceIdentity(): MediaPlaybackPreferenceIdentity | null {
-  return currentHistoryIdentity()
+  return loadedPreferenceIdentity
 }
 
 function trackPreference(track: Track | SubtitleTrackOption | undefined): MediaTrackPreference | null {
@@ -986,11 +1061,8 @@ async function saveMediaPreferenceNow(identity = currentMediaPreferenceIdentity(
   clearMediaPreferenceSaveTimer()
   if (!identity || (restoringMediaPreference && !force))
     return false
-  const subtitlePreference = persistedSubtitlePreference !== undefined
-    ? persistedSubtitlePreference
-    : trackStateReady.value
-      ? currentSubtitlePreference()
-      : null
+  const generation = playbackSessionGeneration
+  const subtitlePreference = persistedSubtitlePreference ?? null
   const audioPreference = persistedAudioPreference !== undefined
     ? persistedAudioPreference
     : trackStateReady.value
@@ -1006,7 +1078,7 @@ async function saveMediaPreferenceNow(identity = currentMediaPreferenceIdentity(
     aspectMode: videoAspectMode.value,
     fitMode: videoFitMode.value,
   })
-  if (saved) {
+  if (saved && generation === playbackSessionGeneration) {
     persistedSubtitlePreference = subtitlePreference
     persistedAudioPreference = audioPreference
   }
@@ -1019,18 +1091,34 @@ async function restoreMediaPlaybackPreference() {
     return
   const generation = ++mediaPreferenceRestoreGeneration
   const preference = await getMediaPlaybackPreference(identity)
-  if (!preference || generation !== mediaPreferenceRestoreGeneration || playbackCleanupStarted)
+  if (generation !== mediaPreferenceRestoreGeneration || playbackCleanupStarted)
     return
 
-  persistedSubtitlePreference = preference.subtitle ?? null
-  persistedAudioPreference = preference.audio ?? null
+  persistedSubtitlePreference = preference?.subtitle ?? null
+  persistedAudioPreference = preference?.audio ?? null
+  subtitleAutomatic.value = persistedSubtitlePreference == null
+  subtitleIntentReady = true
+  if (!preference) {
+    await applyAutomaticSubtitleSelection()
+    return
+  }
   restoringMediaPreference = true
   try {
     await applyPlaybackSpeed(preference.playbackSpeed)
+    if (generation !== mediaPreferenceRestoreGeneration)
+      return
     await applySubtitleDelay(preference.subtitleDelay)
+    if (generation !== mediaPreferenceRestoreGeneration)
+      return
     await setVideoBrightness(preference.videoBrightness)
+    if (generation !== mediaPreferenceRestoreGeneration)
+      return
     await setVideoAspect(preference.aspectMode)
+    if (generation !== mediaPreferenceRestoreGeneration)
+      return
     await setVideoFit(preference.fitMode)
+    if (generation !== mediaPreferenceRestoreGeneration)
+      return
     pendingTrackPreference = {
       preference,
       generation,
@@ -1038,10 +1126,12 @@ async function restoreMediaPlaybackPreference() {
       subtitleRestored: preference.subtitle == null,
     }
     await restorePendingTrackPreference()
+    await applyAutomaticSubtitleSelection()
     scheduleRenderBoundsSync()
   }
   finally {
-    restoringMediaPreference = false
+    if (generation === mediaPreferenceRestoreGeneration)
+      restoringMediaPreference = false
   }
 }
 
@@ -1089,14 +1179,75 @@ function applyResolvedStreamRequest(request: MediaStreamRequest) {
   mediaHeaders.value = { ...(request.headers ?? {}) }
   activeResolvedMediaSourceId.value = request.mediaSourceId ?? ''
   activeStreamRequest = request
+  loadedPreferenceIdentity = currentHistoryIdentity()
 }
 
-async function restorePlaybackAfterStreamLoad(position: number, wasPlaying: boolean, previousVolume: number, previousSpeed: number, previousSubtitleDelay: number) {
+async function applyAutomaticSubtitleSelection() {
+  if (!subtitleIntentReady || !subtitleAutomatic.value || !trackStateReady.value || !fileLoaded.value
+    || !videoReady.value || playbackCleanupStarted || autoSubtitleSelectionInFlight || pendingTrackPreference?.subtitleRestored === false) {
+    return
+  }
+  const selected = subtitleTracks.value.find(track => track.id === currentSubtitle.value && track.selectable)
+  if (selected)
+    return
+  const candidates = subtitleTracks.value.filter(track => track.selectable && (track.source === 'embedded' || Boolean(track.url)))
+  const track = candidates.find(candidate => candidate.isDefault)
+    ?? candidates.find(candidate => candidate.source === 'embedded') ?? candidates[0]
+  if (!track)
+    return
+  const generation = mediaPreferenceRestoreGeneration
+  autoSubtitleSelectionInFlight = true
+  try {
+    await setSubtitle(track.id)
+  }
+  catch {
+    // Keep Auto intent; a later normal track/readiness update can expose a usable candidate.
+  }
+  finally {
+    autoSubtitleSelectionInFlight = false
+    if (generation !== mediaPreferenceRestoreGeneration && subtitleIntentReady)
+      void applyAutomaticSubtitleSelection()
+  }
+}
+
+async function restorePlaybackAfterStreamLoad(position: number, wasPlaying: boolean, previousVolume: number, preference: MediaPlaybackPreference) {
+  const generation = playbackSessionGeneration
   if (position > 0)
     await seekMpv(position, { optimistic: true })
+  if (!isCurrentPlaybackSession(generation))
+    return
   await setVolume(previousVolume)
-  await applyPlaybackSpeed(previousSpeed)
-  await applySubtitleDelay(previousSubtitleDelay)
+  if (!isCurrentPlaybackSession(generation))
+    return
+  await applyPlaybackSpeed(preference.playbackSpeed)
+  if (!isCurrentPlaybackSession(generation))
+    return
+  await applySubtitleDelay(preference.subtitleDelay)
+  if (!isCurrentPlaybackSession(generation))
+    return
+  await setVideoBrightness(preference.videoBrightness)
+  if (!isCurrentPlaybackSession(generation))
+    return
+  await setVideoAspect(preference.aspectMode)
+  if (!isCurrentPlaybackSession(generation))
+    return
+  await setVideoFit(preference.fitMode)
+  if (!isCurrentPlaybackSession(generation))
+    return
+  persistedSubtitlePreference = preference.subtitle ?? null
+  persistedAudioPreference = preference.audio ?? null
+  subtitleAutomatic.value = persistedSubtitlePreference == null
+  subtitleIntentReady = true
+  pendingTrackPreference = {
+    preference,
+    generation: mediaPreferenceRestoreGeneration,
+    audioRestored: preference.audio == null,
+    subtitleRestored: preference.subtitle == null,
+  }
+  await restorePendingTrackPreference()
+  await applyAutomaticSubtitleSelection()
+  if (!isCurrentPlaybackSession(generation))
+    return
   if (!wasPlaying && isPlaying.value)
     await togglePause()
 }
@@ -1113,8 +1264,20 @@ async function selectStreamVariant(variantId: string) {
   const previousPosition = effectivePlaybackPosition()
   const previousPlaying = isPlaying.value
   const previousVolume = volume.value
-  const previousSpeed = playbackSpeed.value
-  const previousSubtitleDelay = subtitleDelay.value
+  const previousPreference: MediaPlaybackPreference = {
+    sourceId: loadedPreferenceIdentity?.sourceId ?? activeSourceId.value,
+    mediaIdentity: loadedPreferenceIdentity?.mediaIdentity ?? activeItemId.value,
+    subtitle: persistedSubtitlePreference ?? null,
+    audio: persistedAudioPreference ?? currentAudioPreference(),
+    subtitleDelay: subtitleDelay.value,
+    playbackSpeed: playbackSpeed.value,
+    videoBrightness: videoBrightness.value,
+    aspectMode: videoAspectMode.value,
+    fitMode: videoFitMode.value,
+    updatedAt: 0,
+  }
+  const preferenceSave = saveMediaPreferenceNow(undefined, true)
+  const generation = beginPlaybackSession()
   let replacementStarted = false
   let rollbackFailed = false
 
@@ -1122,7 +1285,12 @@ async function selectStreamVariant(variantId: string) {
   streamVariantError.value = null
   revealChrome()
   try {
+    await preferenceSave
+    if (!isCurrentPlaybackSession(generation))
+      return
     const request = await resolvePlaybackLoadRequest(target.id)
+    if (!isCurrentPlaybackSession(generation))
+      return
     const resolvedVariants = usableStreamVariants(request.variants)
     const resolvedVariantID = request.variantId?.trim() || target.id
     if (!resolvedVariants.some(item => item.id === resolvedVariantID))
@@ -1130,6 +1298,9 @@ async function selectStreamVariant(variantId: string) {
 
     replacementStarted = true
     await syncKnownSubtitleTracks(request.subtitles ?? [])
+    if (!isCurrentPlaybackSession(generation))
+      return
+    loadedPlaybackGeneration = generation
     await load(request.url, {
       headers: request.headers,
       audioUrl: request.audioUrl,
@@ -1137,13 +1308,28 @@ async function selectStreamVariant(variantId: string) {
       httpReadProfile: request.httpReadProfile,
       title: mediaTitle.value,
     })
-    await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousSpeed, previousSubtitleDelay)
+    if (!isCurrentPlaybackSession(generation))
+      return
+    await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousPreference)
+    if (!isCurrentPlaybackSession(generation))
+      return
     applyResolvedStreamRequest({ ...request, variantId: resolvedVariantID })
+    void hydrateDownloadedSubtitles()
   }
   catch (error) {
+    if (!isCurrentPlaybackSession(generation))
+      return
+    if (!replacementStarted) {
+      // Resolving a replacement can fail while the original native file keeps playing.
+      loadedPlaybackGeneration = generation
+      subtitleIntentReady = true
+    }
     if (replacementStarted) {
       try {
+        cancelPendingTrackPreferenceRestore()
         await syncKnownSubtitleTracks(previousRequest.subtitles ?? [])
+        if (!isCurrentPlaybackSession(generation))
+          return
         await load(previousRequest.url, {
           headers: previousRequest.headers,
           audioUrl: previousRequest.audioUrl,
@@ -1151,8 +1337,13 @@ async function selectStreamVariant(variantId: string) {
           httpReadProfile: previousRequest.httpReadProfile,
           title: mediaTitle.value,
         })
-        await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousSpeed, previousSubtitleDelay)
+        if (!isCurrentPlaybackSession(generation))
+          return
+        await restorePlaybackAfterStreamLoad(previousPosition, previousPlaying, previousVolume, previousPreference)
+        if (!isCurrentPlaybackSession(generation))
+          return
         applyResolvedStreamRequest(previousRequest)
+        void hydrateDownloadedSubtitles()
       }
       catch {
         rollbackFailed = true
@@ -1165,6 +1356,8 @@ async function selectStreamVariant(variantId: string) {
   finally {
     isStreamVariantSwitching.value = false
     revealChrome()
+    if (isCurrentPlaybackSession(generation) && playbackEndedNaturally())
+      void continueAfterNaturalEnd()
   }
 }
 
@@ -1177,6 +1370,10 @@ function cancelPendingTrackPreferenceRestore() {
 function resetPersistedTrackPreferences() {
   persistedSubtitlePreference = undefined
   persistedAudioPreference = undefined
+  subtitleAutomatic.value = true
+  subtitleIntentReady = false
+  loadedPreferenceIdentity = null
+  restoringMediaPreference = false
 }
 
 async function restoreAudioPreference(preference: MediaPlaybackPreference): Promise<boolean> {
@@ -1193,12 +1390,17 @@ async function restoreAudioPreference(preference: MediaPlaybackPreference): Prom
 }
 
 async function restoreSubtitlePreference(preference: MediaPlaybackPreference): Promise<boolean> {
+  const generation = mediaPreferenceRestoreGeneration
   const subtitle = preference.subtitle
   if (!subtitle)
     return true
+  if (!fileLoaded.value || !videoReady.value)
+    return false
   if (subtitle.kind === 'off') {
     try {
       await setSubtitle(null)
+      if (generation !== mediaPreferenceRestoreGeneration)
+        return false
       activeCachedSubtitlePath = null
       return true
     }
@@ -1215,6 +1417,8 @@ async function restoreSubtitlePreference(preference: MediaPlaybackPreference): P
         subtitle.track?.title ?? subtitle.track?.language ?? '已保存字幕',
         subtitle.track?.language ?? undefined,
       )
+      if (generation !== mediaPreferenceRestoreGeneration)
+        return false
       activeCachedSubtitlePath = subtitle.cachedPath
       return true
     }
@@ -1227,6 +1431,8 @@ async function restoreSubtitlePreference(preference: MediaPlaybackPreference): P
     return false
   try {
     await setSubtitle(track.id)
+    if (generation !== mediaPreferenceRestoreGeneration)
+      return false
     activeCachedSubtitlePath = null
     return true
   }
@@ -1247,12 +1453,12 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
     return null
 
   const context = currentPlaybackContext()
-  const queueItem = currentQueueItem.value
+  const queueItem = currentPlaybackItem()
   const itemId = currentOriginItemId() || undefined
   const libraryId = activeLibraryId.value || queueItem?.libraryId
   const mediaType = activeMediaType.value ?? queueItem?.type
   const position = effectivePlaybackPosition()
-  const mediaDuration = duration.value > 0 ? duration.value : queueItem?.duration
+  const mediaDuration = duration.value > 0 ? duration.value : lastConfirmedDuration.value > 0 ? lastConfirmedDuration.value : savedHistoryDuration ?? queueItem?.duration
   const displayTitle = mediaType === 'episode' ? queueItem?.seriesName || mediaTitle.value : mediaTitle.value
   const displaySubtitle = mediaType === 'episode'
     ? queueItem?.displaySubtitle ?? episodeHistorySubtitle(queueItem?.seasonNumber, queueItem?.episodeNumber, queueItem?.name)
@@ -1265,6 +1471,9 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
     title: displayTitle || context?.title || queueItem?.title || queueItem?.name || '未命名影片',
     streamIdentity: createSafeStreamIdentity(identity.sourceId, itemId, mediaPath.value),
     mediaType,
+    // The offline queue's parent belongs to its virtual source. Origin history
+    // derives its own canonical parent or retains previously proven metadata.
+    seriesId: queueItem?.offlineOriginSourceId ? undefined : queueItem?.seriesId,
     posterUrl: activePosterUrl.value || queueItem?.posterUrl,
     backdropUrl: activeBackdropUrl.value || queueItem?.backdropUrl,
     titleLogoUrl: activeTitleLogoUrl.value || queueItem?.titleLogoUrl,
@@ -1272,7 +1481,7 @@ function currentHistoryPayload(): PlaybackProgressUpsert | null {
     episodeStillUrl: queueItem?.episodeStillUrl,
     position,
     duration: mediaDuration,
-    completed: isCompletedPosition(position, mediaDuration),
+    completed: playbackIsWatched(),
   }
 }
 
@@ -1280,37 +1489,49 @@ function effectivePlaybackPosition(): number {
   const pending = pendingResumeSeek
   if (pending && pending.path === mediaPath.value)
     return Math.max(0, pending.position)
-  return Math.max(0, currentTime.value)
+  return Math.max(0, playbackHasFailed() || !fileLoaded.value ? lastConfirmedTime.value : currentTime.value)
+}
+
+function playbackHasFailed(): boolean {
+  return playbackEndReason.value === 'error' || playbackDiagnostics.value?.state === 'error'
+    || Boolean(playbackDiagnostics.value?.lastError) || renderStatus.value === 'error' || Boolean(renderError.value)
+}
+
+function playbackEndedNaturally(): boolean {
+  return loadedPlaybackGeneration === playbackSessionGeneration
+    && playbackEndReason.value === 'eof' && playbackDiagnostics.value?.state === 'ended' && !playbackHasFailed()
+}
+
+function hasConfirmedWatchedPosition(): boolean {
+  return loadedPlaybackGeneration === playbackSessionGeneration && playbackProgressReady
+    && fileLoaded.value && videoReady.value && renderStatus.value === 'ready'
+    && !pendingResumeSeek && !isBuffering.value && !isQueueSwitching.value && !isStreamVariantSwitching.value
+    && !playbackHasFailed() && !playbackEndReason.value
+    && playbackDiagnostics.value?.state === 'playing'
+    && isCompletedPosition(lastConfirmedTime.value, lastConfirmedDuration.value)
+}
+
+function playbackIsWatched(): boolean {
+  if (playbackEndedNaturally() || hasConfirmedWatchedPosition())
+    sessionWatched = true
+  return sessionWatched
 }
 
 function currentMediaSourceId(): string | undefined {
-  const routeMediaSourceId = queryStringValue(route.query.mediaSourceId)
-  if (routeMediaSourceId)
-    return routeMediaSourceId
   if (activeResolvedMediaSourceId.value)
     return activeResolvedMediaSourceId.value
-
-  const context = currentPlaybackContext()
-  const sourceId = activeSourceId.value || queryStringValue(route.query.sourceId)
-  const itemId = activeItemId.value || queryStringValue(route.query.itemId)
-  if (!context || context.sourceId !== sourceId || context.itemId !== itemId)
-    return undefined
-
-  if (context.locator.kind === 'dataSource')
-    return context.locator.mediaSourceId ?? context.mediaSourceId
-
-  return context.mediaSourceId
+  return undefined
 }
 
 function routeResumePosition(): number | undefined {
   return currentPlaybackItem()?.resumePosition
 }
 
-function shouldResumePosition(position: number | undefined, mediaDuration: number | undefined): position is number {
+function shouldResumePosition(position: number | undefined): position is number {
   if (typeof position !== 'number' || !Number.isFinite(position) || position < 30)
     return false
 
-  return !isCompletedPosition(position, mediaDuration)
+  return currentPlaybackItem()?.played !== true
 }
 
 function syncProviderDiagnostics(sourceId: string): void {
@@ -1334,7 +1555,10 @@ function rememberProviderTriggerDiagnostic(payload: PlaybackProgressUpsert, even
   }, ...providerSyncDiagnostics.value].slice(0, 12)
 }
 
-async function syncProviderProgress(payload: PlaybackProgressUpsert, event: ProviderPlaybackProgressEvent): Promise<void> {
+async function syncProviderProgress(snapshot: PlaybackProgressSnapshot): Promise<void> {
+  const { payload, event, source, providerInput, generation, reportProvider } = snapshot
+  if (!reportProvider)
+    return
   if (!payload.sourceId || !Number.isFinite(payload.position)) {
     rememberProviderTriggerDiagnostic(payload, event, 'PlayerView.syncProviderProgress', '未触发 provider sync：缺少 sourceId 或 position。')
     return
@@ -1345,7 +1569,6 @@ async function syncProviderProgress(payload: PlaybackProgressUpsert, event: Prov
     return
   }
 
-  const source = store.getSource(payload.sourceId)
   if (!source) {
     rememberProviderTriggerDiagnostic(payload, event, 'DataSourceManager.getSource', '未触发 provider sync：播放中的数据源实例不可用。')
     return
@@ -1357,7 +1580,37 @@ async function syncProviderProgress(payload: PlaybackProgressUpsert, event: Prov
   }
 
   try {
-    await source.syncPlaybackProgress({
+    await source.syncPlaybackProgress(providerInput)
+    if (isCurrentPlaybackSession(generation))
+      providerSyncError.value = null
+  }
+  catch (error) {
+    if (isCurrentPlaybackSession(generation))
+      providerSyncError.value = toSafeErrorMessage(error, '播放进度同步失败。')
+  }
+  finally {
+    if (isCurrentPlaybackSession(generation))
+      syncProviderDiagnostics(payload.sourceId)
+  }
+}
+
+function capturePlaybackProgress(event: ProviderPlaybackProgressEvent): PlaybackProgressSnapshot | null {
+  if (!playbackProgressReady || (!playbackHistoryStarted && !playbackEndedNaturally()))
+    return null
+  const currentPayload = currentHistoryPayload()
+  if (!currentPayload)
+    return null
+  const payload = event === 'started' ? { ...currentPayload, completed: false } : currentPayload
+  const reportProvider = !terminalProviderEventSent
+  if (event === 'completed' || event === 'stopped')
+    terminalProviderEventSent = true
+  return {
+    generation: loadedPlaybackGeneration,
+    payload,
+    event,
+    source: store.getSource(payload.sourceId) ?? undefined,
+    reportProvider,
+    providerInput: {
       itemId: payload.itemId ?? '',
       mediaSourceId: currentMediaSourceId(),
       mediaType: payload.mediaType,
@@ -1365,30 +1618,21 @@ async function syncProviderProgress(payload: PlaybackProgressUpsert, event: Prov
       duration: payload.duration,
       startPosition: playbackStartPosition,
       isPaused: event === 'paused' || event === 'stopped' || event === 'completed' || !isPlaying.value,
-      completed: payload.completed ?? false,
+      completed: payload.completed === true,
       event,
       playbackRate: playbackSpeed.value,
-    })
-    providerSyncError.value = null
+      occurredAt: new Date().toISOString(),
+    },
   }
-  catch (error) {
-    providerSyncError.value = toSafeErrorMessage(error, '播放进度同步失败。')
-  }
-  finally {
-    syncProviderDiagnostics(payload.sourceId)
-  }
-}
-
-function providerEventForPayload(payload: PlaybackProgressUpsert, fallback: ProviderPlaybackProgressEvent): ProviderPlaybackProgressEvent {
-  return payload.completed ? 'completed' : fallback
 }
 
 function isLowPositionTerminalEvent(payload: PlaybackProgressUpsert, event: ProviderPlaybackProgressEvent): boolean {
   return !payload.completed && (event === 'paused' || event === 'stopped') && payload.position < HISTORY_MIN_RESUME_POSITION
 }
 
-function shouldRefreshHomeAfterProgressEvent(event: ProviderPlaybackProgressEvent, providerEvent: ProviderPlaybackProgressEvent): boolean {
-  return event === 'stopped' || event === 'completed' || providerEvent === 'completed'
+function shouldRefreshHomeAfterProgressEvent(snapshot: PlaybackProgressSnapshot): boolean {
+  return snapshot.event === 'stopped' || snapshot.event === 'completed'
+    || (snapshot.payload.completed === true && !sessionWatchedHomeRefreshed)
 }
 
 function scheduleHomeSectionsRefreshAfterPlayback() {
@@ -1402,6 +1646,8 @@ function scheduleHomeSectionsRefreshAfterPlayback() {
 }
 
 function shouldSaveLocalProgress(payload: PlaybackProgressUpsert, force: boolean, event: ProviderPlaybackProgressEvent): boolean {
+  if (event === 'started' || (event === 'completed' && payload.completed))
+    return true
   if (payload.completed)
     return payload.position >= HISTORY_MIN_SAVE_POSITION
 
@@ -1411,25 +1657,20 @@ function shouldSaveLocalProgress(payload: PlaybackProgressUpsert, force: boolean
   return payload.position >= HISTORY_MIN_SAVE_POSITION
 }
 
-async function saveCurrentProgress(force = false, event: ProviderPlaybackProgressEvent = 'progress') {
-  if (!playbackProgressReady)
-    return
-
-  const payload = currentHistoryPayload()
-  if (!payload)
-    return
-
-  const providerEvent = providerEventForPayload(payload, event)
+async function saveCurrentProgress(force = false, event: ProviderPlaybackProgressEvent = 'progress', snapshot = capturePlaybackProgress(event)): Promise<boolean> {
+  if (!snapshot)
+    return false
+  const { payload, generation } = snapshot
   if (!force && (!isPlaying.value || payload.position < HISTORY_MIN_SAVE_POSITION || Math.abs(payload.position - lastSavedPosition) < HISTORY_MIN_SAVE_POSITION)) {
     if (event !== 'progress' && !isLowPositionTerminalEvent(payload, event))
-      void syncProviderProgress(payload, providerEvent)
-    return
+      void syncProviderProgress(snapshot)
+    return false
   }
 
   if (!shouldSaveLocalProgress(payload, force, event)) {
     if (event !== 'progress') {
-      const providerSync = syncProviderProgress(payload, providerEvent)
-      if (shouldRefreshHomeAfterProgressEvent(event, providerEvent)) {
+      const providerSync = syncProviderProgress(snapshot)
+      if (shouldRefreshHomeAfterProgressEvent(snapshot)) {
         await providerSync
         scheduleHomeSectionsRefreshAfterPlayback()
       }
@@ -1437,27 +1678,42 @@ async function saveCurrentProgress(force = false, event: ProviderPlaybackProgres
         void providerSync
       }
     }
-    return
+    return false
   }
 
-  const saved = await savePlaybackProgress(payload)
-  if (saved)
+  const write = historyWriteQueue.then(() => savePlaybackProgress(payload))
+  historyWriteQueue = write.then(() => undefined, () => undefined)
+  const saved = await write
+  if (saved && isCurrentPlaybackSession(generation))
     lastSavedPosition = saved.position
 
-  const providerSync = syncProviderProgress(payload, providerEvent)
-  if (shouldRefreshHomeAfterProgressEvent(event, providerEvent)) {
+  const durableSnapshot = saved
+    ? {
+        ...snapshot,
+        providerInput: { ...snapshot.providerInput, occurredAt: new Date(saved.updatedAt).toISOString() },
+      }
+    : snapshot
+  const providerSync = syncProviderProgress(durableSnapshot)
+  if (shouldRefreshHomeAfterProgressEvent(snapshot)) {
     await providerSync
+    if (payload.completed && isCurrentPlaybackSession(generation))
+      sessionWatchedHomeRefreshed = true
     scheduleHomeSectionsRefreshAfterPlayback()
   }
   else {
     void providerSync
   }
+  return saved != null
 }
 
 function syncProviderPlaybackStarted() {
-  const payload = currentHistoryPayload()
-  if (payload)
-    void syncProviderProgress(payload, 'started')
+  // Accepting mpv_load is not proof that remote media actually opened.
+  if (!playbackProgressReady || !fileLoaded.value || !videoReady.value || playbackHasFailed()
+    || loadedPlaybackGeneration !== playbackSessionGeneration || playbackHistoryStarted) {
+    return
+  }
+  playbackHistoryStarted = true
+  void saveCurrentProgress(true, 'started')
 }
 
 async function readSavedProgress(): Promise<PlaybackHistoryEntry | null> {
@@ -1465,14 +1721,25 @@ async function readSavedProgress(): Promise<PlaybackHistoryEntry | null> {
   if (!identity)
     return null
 
-  return getPlaybackProgress(identity)
+  const generation = playbackSessionGeneration
+  const ownerScope = await playbackHistoryOwnerScope(identity.sourceId)
+  if (!isCurrentPlaybackSession(generation))
+    return null
+  activeHistoryOwnerScope = ownerScope
+  const saved = await getPlaybackProgress({ ...identity, ownerScope })
+  if (!isCurrentPlaybackSession(generation))
+    return null
+  savedHistoryDuration = saved?.duration ?? undefined
+  return saved
 }
 
 async function resumeSavedProgressIfAvailable() {
+  const generation = playbackSessionGeneration
   const saved = await readSavedProgress()
+  if (!isCurrentPlaybackSession(generation))
+    return
   const fallbackPosition = routeResumePosition()
-  const fallbackDuration = duration.value > 0 ? duration.value : currentQueueItem.value?.duration
-  const position = shouldResumePosition(fallbackPosition, fallbackDuration)
+  const position = shouldResumePosition(fallbackPosition)
     ? fallbackPosition
     : shouldResumePlayback(saved)
       ? saved.position
@@ -1490,6 +1757,8 @@ async function resumeSavedProgressIfAvailable() {
   pendingResumeSeek = { path: mediaPath.value, position }
   resumeMessage.value = `正在恢复到 ${formatPlaybackTime(position)}`
   await seekResumePosition(position)
+  if (!isCurrentPlaybackSession(generation))
+    return
   playbackProgressReady = true
 }
 
@@ -1522,7 +1791,7 @@ function scheduleResumeSeek(position: number, delay: number, force: boolean) {
     resumeSeekTimers.delete(timer)
     if (playbackCleanupStarted || !mediaPath.value || mediaPath.value !== path || pendingResumeSeek?.path !== path)
       return
-    if ((!isNativeAndroidPlayer || videoReady.value) && Math.abs(currentTime.value - position) <= 5) {
+    if (videoReady.value && Math.abs(lastConfirmedTime.value - position) <= 5) {
       completePendingResumeSeek(path, position)
       return
     }
@@ -1594,6 +1863,12 @@ function resetHistorySaveState() {
   lastSavedPosition = -1
   playbackStartPosition = 0
   playbackProgressReady = false
+  playbackHistoryStarted = false
+  activeHistoryOwnerScope = undefined
+  savedHistoryDuration = undefined
+  sessionWatched = false
+  sessionWatchedHomeRefreshed = false
+  terminalProviderEventSent = false
   resumeMessage.value = null
 }
 
@@ -1615,6 +1890,7 @@ function clearHistorySaveTimer() {
 }
 
 async function syncKnownSubtitleTracks(resolvedSubtitles: readonly PlaybackSubtitleTrack[] = []) {
+  const generation = playbackSessionGeneration
   const contextId = queryStringValue(route.query.contextId)
   const playbackContext = contextId ? getPlaybackMediaContext(contextId) : null
   const sourceId = queryStringValue(route.query.sourceId) || playbackContext?.sourceId || ''
@@ -1623,30 +1899,87 @@ async function syncKnownSubtitleTracks(resolvedSubtitles: readonly PlaybackSubti
     ? playbackContext.subtitles
     : []
 
-  if (resolvedSubtitles.length > 0) {
-    setKnownSubtitleTracks(resolvedSubtitles.map(mapKnownSubtitleTrack))
+  const knownSubtitles = resolvedSubtitles.length > 0 ? resolvedSubtitles : contextSubtitles
+  setKnownSubtitleTracks(knownSubtitles.map(mapKnownSubtitleTrack))
+  if (!sourceId || !itemId || sourceId === LOCAL_FILE_SOURCE_ID)
     return
-  }
-
-  if (!sourceId || !itemId) {
-    setKnownSubtitleTracks(contextSubtitles.map(mapKnownSubtitleTrack))
+  const currentItem = currentPlaybackItem()
+  const hasSearchMetadata = currentItem?.id === itemId && (currentItem.type !== 'episode'
+    || Boolean(currentItem.seriesName?.trim() && currentItem.seriesId
+      && currentItem.seasonNumber != null && currentItem.episodeNumber != null
+      && subtitleEpisodeSearchKeywords(currentItem).title))
+  if (resolvedSubtitles.length > 0 && hasSearchMetadata)
     return
-  }
 
   try {
     store.loadConfigs()
     await store.syncManager()
-    const source = store.getSource(sourceId)
-    if (!source) {
-      setKnownSubtitleTracks(contextSubtitles.map(mapKnownSubtitleTrack))
+    if (!isCurrentPlaybackSession(generation))
       return
-    }
+    const source = store.getSource(sourceId)
+    if (!source)
+      return
+    const isCurrentMetadata = () => isCurrentPlaybackSession(generation)
+      && activeSourceId.value === sourceId && activeItemId.value === itemId && store.getSource(sourceId) === source
 
     const detail = await source.getDetail(itemId)
-    setKnownSubtitleTracks(mergeDataSourceSubtitleTracks(contextSubtitles, detail.subtitles ?? []).map(mapKnownSubtitleTrack))
+    if (!isCurrentMetadata())
+      return
+    const exactItem = detail.id === itemId && !['series', 'season', 'folder'].includes(detail.type)
+      ? detail
+      : detail.children?.find(child => child.id === itemId)
+    if (exactItem?.sourceId === sourceId) {
+      // A sparse history card or direct route must not erase recovered episode facts.
+      const metadata = createPlaybackQueueItem(exactItem)
+      const definedMetadata: Partial<PlaybackQueueItem> = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== undefined))
+      const existing = activePlaybackItem.value?.id === itemId ? activePlaybackItem.value : undefined
+      const resolved = { ...metadata, ...existing, ...definedMetadata }
+      if (resolved.type === 'episode' && !resolved.seriesName?.trim() && resolved.seriesId) {
+        const series = detail.type === 'series' && detail.id === resolved.seriesId
+          ? detail
+          : await source.getDetail(resolved.seriesId).catch(() => null)
+        if (!isCurrentMetadata())
+          return
+        if (series?.sourceId === sourceId && series.type === 'series' && series.id === resolved.seriesId)
+          resolved.seriesName = series.name
+      }
+      activePlaybackItem.value = resolved
+      activeMediaType.value = resolved.type
+      activeLibraryId.value = resolved.libraryId ?? activeLibraryId.value
+    }
+    if (resolvedSubtitles.length === 0)
+      setKnownSubtitleTracks(mergeDataSourceSubtitleTracks(contextSubtitles, detail.subtitles ?? []).map(mapKnownSubtitleTrack))
   }
   catch {
-    setKnownSubtitleTracks(contextSubtitles.map(mapKnownSubtitleTrack))
+    // Known tracks remain usable when optional detail metadata is unavailable.
+  }
+}
+
+function hasCurrentSubtitleOwner(identity: MediaPlaybackPreferenceIdentity | null): boolean {
+  const current = currentMediaPreferenceIdentity()
+  return identity != null && current?.sourceId === identity.sourceId && current.mediaIdentity === identity.mediaIdentity
+}
+
+async function hydrateDownloadedSubtitles() {
+  const identity = currentMediaPreferenceIdentity()
+  if (!identity)
+    return
+  const owner = { ...identity }
+  const generation = playbackSessionGeneration
+  const inventoryGeneration = ++subtitleInventoryGeneration
+  const displaySourceId = currentDisplaySourceId()
+  const source = store.getSource(displaySourceId)
+  const path = mediaPath.value
+  try {
+    const downloads = await listCachedSubtitles(owner)
+    if (isCurrentPlaybackSession(generation) && loadedPlaybackGeneration === generation
+      && inventoryGeneration === subtitleInventoryGeneration && hasCurrentSubtitleOwner(owner)
+      && mediaPath.value === path && currentDisplaySourceId() === displaySourceId && store.getSource(displaySourceId) === source) {
+      setDownloadedSubtitleTracks(downloads)
+    }
+  }
+  catch {
+    // Cache enumeration must not block playback or replace the active subtitle intent.
   }
 }
 
@@ -1835,6 +2168,13 @@ async function loadLocalSubtitleFile() {
     return
 
   localSubtitleImporting.value = true
+  const generation = playbackSessionGeneration
+  const identity = currentMediaPreferenceIdentity()
+  const sourceId = currentDisplaySourceId()
+  const source = store.getSource(sourceId)
+  let intentGeneration = mediaPreferenceRestoreGeneration
+  const isCurrentImport = () => isCurrentPlaybackSession(generation) && hasCurrentSubtitleOwner(identity)
+    && intentGeneration === mediaPreferenceRestoreGeneration && currentDisplaySourceId() === sourceId && store.getSource(sourceId) === source
   try {
     const selected = await open({
       multiple: false,
@@ -1844,20 +2184,32 @@ async function loadLocalSubtitleFile() {
     })
     if (typeof selected !== 'string' || !selected.trim())
       return
+    if (!isCurrentImport())
+      return
 
     cancelPendingTrackPreferenceRestore()
-    const cacheOwner = currentMediaPreferenceIdentity() ?? undefined
+    intentGeneration = mediaPreferenceRestoreGeneration
+    const cacheOwner = identity ?? undefined
     const imported = await importLocalSubtitle(selected, cacheOwner)
+    if (!isCurrentImport())
+      return
     const title = subtitleFileNameFromPath(selected) || '本地字幕'
     await addExternalSubtitle(imported.path, title, undefined, 'downloaded')
+    if (!isCurrentImport())
+      return
     activeCachedSubtitlePath = imported.path
     persistedSubtitlePreference = currentSubtitlePreference()
-    await saveMediaPreferenceNow(undefined, true)
+    subtitleAutomatic.value = false
+    await saveMediaPreferenceNow(identity, true)
+    if (!isCurrentImport())
+      return
+    void hydrateDownloadedSubtitles()
     showTransientPlayerMessage(`已载入本地字幕：${title}`)
     scheduleChromeHide()
   }
   catch (error) {
-    showTransientPlayerMessage(toSafeErrorMessage(error, '本地字幕载入失败。'))
+    if (isCurrentImport())
+      showTransientPlayerMessage(toSafeErrorMessage(error, '本地字幕载入失败。'))
   }
   finally {
     localSubtitleImporting.value = false
@@ -1868,6 +2220,7 @@ function closeSubtitleSearch() {
   if (subtitleSearchLoading.value || subtitleDownloadingId.value)
     return
   subtitleSearchOpen.value = false
+  subtitleSearchGeneration += 1
   subtitleSearchError.value = null
   subtitleSearchResults.value = []
   scheduleChromeHide()
@@ -1898,61 +2251,101 @@ async function searchSubtitles(language: SubtitleLanguage, keyword: string, keyw
   subtitleSearchLoading.value = true
   subtitleSearchError.value = null
   subtitleSearchResults.value = []
+  const generation = ++subtitleSearchGeneration
+  const playbackGeneration = playbackSessionGeneration
+  const sourceId = currentDisplaySourceId()
+  const isCurrentSearch = () => generation === subtitleSearchGeneration && isCurrentPlaybackSession(playbackGeneration)
   try {
     const context = currentSubtitleSearchContext(keyword, keywordMode)
     if (origin === 'emby') {
       store.loadConfigs()
       await store.syncManager()
-      const source = store.getSource(currentDisplaySourceId())
+      if (!isCurrentSearch())
+        return
+      const source = store.getSource(sourceId)
       if (!source?.searchSubtitles)
         throw new Error('当前 Emby 数据源不支持字幕搜索。')
-      subtitleSearchResults.value = await source.searchSubtitles({ ...context, language })
+      const results = await source.searchSubtitles({ ...context, language })
+      if (!isCurrentSearch())
+        return
+      subtitleSearchResults.value = results
     }
     else {
-      subtitleSearchProviderSummary.value = await describeLocalSubtitleSearchProviders(context)
-      subtitleSearchResults.value = await searchLocalSubtitles({ ...context, language })
+      const summary = await describeLocalSubtitleSearchProviders(context)
+      if (!isCurrentSearch())
+        return
+      subtitleSearchProviderSummary.value = summary
+      const results = await searchLocalSubtitles({ ...context, language })
+      if (!isCurrentSearch())
+        return
+      subtitleSearchResults.value = results
     }
 
     if (subtitleSearchResults.value.length === 0)
       subtitleSearchError.value = `${subtitleSearchProviderSummary.value || '已启用的字幕提供器'}没有返回符合当前媒体和语言的字幕，可以切换语言或关键词后重试。`
   }
   catch (error) {
-    subtitleSearchError.value = toSafeErrorMessage(error, '字幕搜索失败。')
+    if (isCurrentSearch())
+      subtitleSearchError.value = toSafeErrorMessage(error, '字幕搜索失败。')
   }
   finally {
-    subtitleSearchLoading.value = false
+    if (isCurrentSearch())
+      subtitleSearchLoading.value = false
   }
 }
 
 async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
   cancelPendingTrackPreferenceRestore()
+  const generation = playbackSessionGeneration
+  const intentGeneration = mediaPreferenceRestoreGeneration
+  const identity = currentMediaPreferenceIdentity()
+  const context = currentSubtitleSearchContext()
+  const sourceId = currentDisplaySourceId()
+  const source = store.getSource(sourceId)
+  const isCurrentDownload = () => isCurrentPlaybackSession(generation) && intentGeneration === mediaPreferenceRestoreGeneration
+    && hasCurrentSubtitleOwner(identity) && currentDisplaySourceId() === sourceId && store.getSource(sourceId) === source
   subtitleDownloadingId.value = result.id
   subtitleSearchError.value = null
   try {
     if (result.origin === 'emby') {
       store.loadConfigs()
       await store.syncManager()
-      const source = store.getSource(currentDisplaySourceId())
+      if (!isCurrentDownload())
+        return
+      const source = store.getSource(sourceId)
       if (!source?.downloadSubtitle)
         throw new Error('当前 Emby 数据源不支持字幕下载。')
       const track = await source.downloadSubtitle({
-        itemId: currentSubtitleSearchContext().itemId,
-        mediaSourceId: currentMediaSourceId(),
+        itemId: context.itemId,
+        mediaSourceId: context.mediaSourceId,
         result,
       })
+      if (!isCurrentDownload())
+        return
       if (!track.url)
         throw new Error('Emby 已下载字幕，但没有返回可加载的字幕地址。')
       await addExternalSubtitle(track.url, track.title ?? result.title, track.language, 'provider')
     }
     else {
-      const cacheOwner = currentMediaPreferenceIdentity() ?? undefined
+      const cacheOwner = identity ?? undefined
       const downloaded = await downloadLocalSubtitle(result, cacheOwner)
+      if (!isCurrentDownload())
+        return
       await addExternalSubtitle(downloaded.path, downloaded.title, downloaded.language, 'downloaded')
+      if (!isCurrentDownload())
+        return
       activeCachedSubtitlePath = downloaded.path
     }
 
+    if (!isCurrentDownload())
+      return
     persistedSubtitlePreference = currentSubtitlePreference()
-    await saveMediaPreferenceNow(undefined, true)
+    subtitleAutomatic.value = false
+    await saveMediaPreferenceNow(identity, true)
+    if (!isCurrentDownload())
+      return
+    if (result.origin !== 'emby')
+      void hydrateDownloadedSubtitles()
 
     showTransientPlayerMessage(`已加载字幕：${result.title}`)
     subtitleSearchOpen.value = false
@@ -1960,44 +2353,49 @@ async function downloadAndLoadSubtitle(result: SubtitleSearchResult) {
     scheduleChromeHide()
   }
   catch (error) {
-    subtitleSearchError.value = toSafeErrorMessage(error, '字幕下载或加载失败。')
+    if (isCurrentDownload())
+      subtitleSearchError.value = toSafeErrorMessage(error, '字幕下载或加载失败。')
   }
   finally {
-    subtitleDownloadingId.value = null
+    if (isCurrentDownload())
+      subtitleDownloadingId.value = null
   }
 }
 
 function currentSubtitleSearchContext(keyword?: string, keywordMode: SubtitleKeywordMode = 'mediaTitle'): SubtitleSearchMediaContext {
-  const playbackContext = currentPlaybackContext()
-  const detail = playbackContext?.detail
-  const queueItem = currentQueueItem.value
+  const item = currentPlaybackItem()
+  const detail = currentSubtitleDetail()
+  const useMediaIdentity = subtitleKeywordUsesMediaIdentity(keywordMode)
   return {
-    itemId: activeItemId.value || playbackContext?.itemId || queueItem?.id || '',
+    itemId: activeItemId.value || item?.id || '',
     mediaSourceId: currentMediaSourceId(),
     title: keyword?.trim() || currentSubtitleMediaTitle(),
     localFilePath: currentLocalSubtitleFilePath(),
     remoteMediaUrl: currentRemoteSubtitleMediaUrl(),
     remoteMediaHeaders: currentRemoteSubtitleMediaUrl() ? { ...mediaHeaders.value } : undefined,
     mediaFileName: currentSubtitleFileName(),
-    originalTitle: keywordMode === 'custom' ? undefined : detail?.originalTitle ?? queueItem?.originalTitle,
-    seriesName: keywordMode === 'custom' ? undefined : detail?.seriesName ?? queueItem?.seriesName,
-    duration: keywordMode === 'custom'
-      ? undefined
-      : detail?.duration ?? queueItem?.duration ?? (duration.value > 0 ? duration.value : undefined),
+    originalTitle: useMediaIdentity ? item?.originalTitle ?? detail?.originalTitle : undefined,
+    seriesName: keywordMode === 'custom' ? undefined : item?.seriesName ?? (detail?.type === 'series' ? detail.name : detail?.seriesName),
+    duration: useMediaIdentity ? item?.duration ?? detail?.duration ?? (duration.value > 0 ? duration.value : undefined) : undefined,
     keywordMode,
-    year: keywordMode === 'custom' ? undefined : detail?.year,
-    mediaType: keywordMode === 'custom' ? undefined : activeMediaType.value ?? detail?.type ?? queueItem?.type,
-    seasonNumber: keywordMode === 'custom' ? undefined : detail?.seasonNumber ?? queueItem?.seasonNumber,
-    episodeNumber: keywordMode === 'custom' ? undefined : detail?.episodeNumber ?? queueItem?.episodeNumber,
-    imdbId: keywordMode === 'custom' ? undefined : detail?.imdbId,
-    tmdbId: keywordMode === 'custom' ? undefined : detail?.tmdbId,
+    year: useMediaIdentity ? detail?.year : undefined,
+    mediaType: keywordMode === 'custom' ? undefined : activeMediaType.value ?? item?.type ?? detail?.type,
+    seasonNumber: useMediaIdentity ? item?.seasonNumber ?? detail?.seasonNumber : undefined,
+    episodeNumber: useMediaIdentity ? item?.episodeNumber ?? detail?.episodeNumber : undefined,
+    imdbId: useMediaIdentity ? detail?.imdbId : undefined,
+    tmdbId: useMediaIdentity ? detail?.tmdbId : undefined,
   }
 }
 
+function currentSubtitleDetail() {
+  const detail = currentPlaybackContext()?.detail
+  const item = currentPlaybackItem()
+  return detail?.sourceId === activeSourceId.value && (detail.id === activeItemId.value || (detail.type === 'series' && detail.id === item?.seriesId))
+    ? detail
+    : undefined
+}
+
 function currentLocalSubtitleFilePath(): string | undefined {
-  const locator = currentPlaybackContext()?.locator
-  if (locator?.kind === 'localPath' && isAbsoluteLocalMediaPath(locator.path))
-    return locator.path.trim()
   const value = mediaPath.value.trim()
   return isAbsoluteLocalMediaPath(value) ? value : undefined
 }
@@ -2013,23 +2411,27 @@ function currentRemoteSubtitleMediaUrl(): string | undefined {
   return /^https?:\/\//i.test(value) ? value : undefined
 }
 
+function currentSubtitleMediaItem() {
+  const item = currentPlaybackItem()
+  const detail = currentSubtitleDetail()
+  return {
+    name: item?.name || detail?.name || mediaTitle.value || '未命名影片',
+    type: activeMediaType.value ?? item?.type ?? detail?.type ?? 'file',
+    seriesName: item?.seriesName || (detail?.type === 'series' ? detail.name : detail?.seriesName),
+    seasonNumber: item?.seasonNumber ?? detail?.seasonNumber,
+    episodeNumber: item?.episodeNumber ?? detail?.episodeNumber,
+  }
+}
+
 function currentSubtitleMediaTitle(): string {
-  const playbackContext = currentPlaybackContext()
-  const queueItem = currentQueueItem.value
-  const value = playbackContext?.detail?.name
-    || queueItem?.title
-    || queueItem?.name
-    || mediaTitle.value
-    || '未命名影片'
-  return value.replace(/\.[a-z0-9]{2,5}$/i, '').trim() || value
+  return subtitleMediaSearchTitle(currentSubtitleMediaItem())
 }
 
 function currentSubtitleFileName(): string {
-  const playbackContext = currentPlaybackContext()
   const candidates = [
     currentLocalSubtitleFilePath(),
-    currentQueueItem.value?.path,
-    playbackContext?.detail?.path,
+    currentPlaybackItem()?.path,
+    currentSubtitleDetail()?.path,
     mediaPath.value,
   ]
   for (const candidate of candidates) {
@@ -2108,25 +2510,20 @@ function isTauriRuntime(): boolean {
 
 watch(
   () => [route.query.sourceId, route.query.itemId, route.query.contextId, route.query.mediaSourceId],
-  async (_value, _oldValue, onCleanup) => {
-    let current = true
-    onCleanup(() => {
-      current = false
-    })
-    const isCurrentLoad = () => current && !playbackCleanupStarted
+  async () => {
+    const progressSave = saveCurrentProgress(true, 'stopped')
+    const preferenceSave = saveMediaPreferenceNow()
+    const generation = beginPlaybackSession()
     resetDanmakuUiForMediaChange()
-    await saveCurrentProgress(true, 'stopped')
-    if (!isCurrentLoad())
+    await progressSave
+    await preferenceSave
+    if (!isCurrentPlaybackSession(generation))
       return
-    await saveMediaPreferenceNow()
-    if (!isCurrentLoad())
-      return
-    cancelPendingTrackPreferenceRestore()
     resetPersistedTrackPreferences()
     clearMediaPreferenceSaveTimer()
     activeCachedSubtitlePath = null
     await releaseHeldArrow(false)
-    if (!isCurrentLoad())
+    if (!isCurrentPlaybackSession(generation))
       return
     resetHistorySaveState()
     mediaPath.value = ''
@@ -2152,16 +2549,17 @@ watch(
 
     if (hasPlaybackTarget) {
       await ensureRenderInitialized()
-      if (!isCurrentLoad())
+      if (!isCurrentPlaybackSession(generation))
         return
       try {
         const request = await resolvePlaybackLoadRequest()
-        if (!isCurrentLoad())
+        if (!isCurrentPlaybackSession(generation))
           return
         applyResolvedStreamRequest(request)
         await syncKnownSubtitleTracks(request.subtitles ?? [])
-        if (!isCurrentLoad())
+        if (!isCurrentPlaybackSession(generation))
           return
+        loadedPlaybackGeneration = generation
         await load(request.url, {
           headers: request.headers,
           audioUrl: request.audioUrl,
@@ -2169,24 +2567,22 @@ watch(
           httpReadProfile: request.httpReadProfile,
           title: mediaTitle.value,
         })
-        if (!isCurrentLoad()) {
-          if (playbackCleanupStarted)
-            await stopPlaybackSilently()
+        if (!isCurrentPlaybackSession(generation))
           return
-        }
         await restoreMediaPlaybackPreference()
-        if (!isCurrentLoad())
+        if (!isCurrentPlaybackSession(generation))
           return
+        void hydrateDownloadedSubtitles()
         startHistorySaveTimer()
         await resumeSavedProgressIfAvailable()
-        if (!isCurrentLoad())
+        if (!isCurrentPlaybackSession(generation))
           return
         syncProviderPlaybackStarted()
-        if (playbackCleanupStarted)
-          await stopPlaybackSilently()
+        if (isCurrentPlaybackSession(generation) && playbackEndedNaturally())
+          void continueAfterNaturalEnd()
       }
       catch (error) {
-        if (!isCurrentLoad() || (error instanceof Error && error.name === 'AbortError'))
+        if (!isCurrentPlaybackSession(generation) || (error instanceof Error && error.name === 'AbortError'))
           return
         mediaPath.value = ''
         mediaHeaders.value = {}
@@ -2205,26 +2601,64 @@ watch(
   { immediate: true },
 )
 
-watch(playbackDiagnostics, (diagnostics) => {
-  if (diagnostics?.state !== 'ended' || diagnostics.lastEvent !== 'end-file') {
-    autoAdvancedLocalQueueItem = ''
+watch([playbackEndReason, playbackDiagnostics], () => {
+  if (!playbackEndedNaturally()) {
+    if (playbackHasFailed() && playbackHistoryStarted && failedProgressGeneration !== loadedPlaybackGeneration) {
+      failedProgressGeneration = loadedPlaybackGeneration
+      void saveCurrentProgress(true, 'stopped')
+    }
     return
   }
-
-  const queue = playbackQueue.value
-  const item = currentQueueItem.value
-  if (playbackCleanupStarted || isQueueSwitching.value || activeSourceId.value !== LOCAL_FILE_SOURCE_ID
-    || !queue || !item || queue.currentIndex >= queue.items.length - 1 || mediaPath.value !== item.path) {
-    return
-  }
-
-  const key = `${playbackContextId.value}:${item.id}`
-  if (autoAdvancedLocalQueueItem === key)
-    return
-
-  autoAdvancedLocalQueueItem = key
-  void playQueueItemAt(queue.currentIndex + 1)
+  void continueAfterNaturalEnd()
 })
+
+async function continueAfterNaturalEnd() {
+  const generation = loadedPlaybackGeneration
+  if (!isCurrentPlaybackSession(generation) || isQueueSwitching.value || isStreamVariantSwitching.value
+    || eofTransition?.generation === generation) {
+    return
+  }
+  const snapshot = capturePlaybackProgress('completed')
+  if (!snapshot)
+    return
+  const queue = playbackQueue.value
+  const item = currentPlaybackItem()
+  const routeKey = route.fullPath
+  const path = mediaPath.value
+  const nextIndex = queue && queue.currentIndex < queue.items.length - 1 ? queue.currentIndex + 1 : null
+  const queueIndex = queue?.currentIndex
+  const nextItem = nextIndex != null ? queue?.items[nextIndex] : undefined
+  const seriesId = item?.type === 'episode' && item.seriesId
+    && queue?.items.every(candidate => candidate.sourceId === item.sourceId && candidate.seriesId === item.seriesId)
+    ? item.seriesId
+    : undefined
+  const sourceId = activeSourceId.value
+  const playbackSource = store.getSource(sourceId)
+  const promise = (async () => {
+    const saved = await saveCurrentProgress(true, 'completed', snapshot)
+    if (!isCurrentPlaybackSession(generation) || route.fullPath !== routeKey || mediaPath.value !== path
+      || playbackQueue.value !== queue || queue?.currentIndex !== queueIndex
+      || (nextIndex != null && queue?.items[nextIndex] !== nextItem)
+      || currentPlaybackItem()?.id !== item?.id || !playbackEndedNaturally()
+      || (sourceId !== LOCAL_FILE_SOURCE_ID && store.getSource(sourceId) !== playbackSource)
+      || store.getSource(snapshot.payload.sourceId) !== snapshot.source) {
+      return
+    }
+    if (!saved) {
+      queueSwitchError.value = '播放记录保存失败，请重试后再切换到下一集。'
+      return
+    }
+    if (nextIndex != null)
+      await playQueueItemAt(nextIndex, generation)
+    else if (seriesId)
+      await router.replace({ name: 'media-detail', params: { sourceId, itemId: seriesId } })
+  })().catch((error) => {
+    if (isCurrentPlaybackSession(generation))
+      queueSwitchError.value = toSafeErrorMessage(error, '无法继续播放下一集。')
+  })
+  eofTransition = { generation, promise }
+  await promise
+}
 
 watch(isPlaying, (playing) => {
   if (playbackCleanupStarted)
@@ -2236,8 +2670,13 @@ watch(isPlaying, (playing) => {
     void saveCurrentProgress(false, 'resumed')
   }
   else {
-    void saveCurrentProgress(true, 'paused')
+    void saveCurrentProgress(true, playbackHasFailed() ? 'stopped' : 'paused')
   }
+})
+
+watch(fileLoaded, (loaded) => {
+  if (loaded && !playbackCleanupStarted)
+    syncProviderPlaybackStarted()
 })
 
 watch(danmakuLoading, (loading) => {
@@ -2254,8 +2693,10 @@ watch([shouldShowChrome, hasMedia], () => {
   void updateChromeOcclusion()
 })
 
-watch([audioTracks, subtitleTracks, videoReady], () => {
+watch([audioTracks, subtitleTracks, videoReady, fileLoaded, trackStateReady], () => {
   void restorePendingTrackPreference()
+  void applyAutomaticSubtitleSelection()
+  syncProviderPlaybackStarted()
 })
 
 watch([videoReady, duration], () => {
@@ -2272,21 +2713,34 @@ watch([videoReady, duration, mediaTitle, currentQueueItem], ([ready, mediaDurati
   }, 250)
 })
 
-watch(currentTime, (time) => {
+watch(lastConfirmedTime, (time) => {
   const pending = pendingResumeSeek
-  if (pending && (!isNativeAndroidPlayer || videoReady.value) && pending.path === mediaPath.value && Math.abs(time - pending.position) <= 5)
+  if (pending && videoReady.value && pending.path === mediaPath.value && Math.abs(time - pending.position) <= 5)
     completePendingResumeSeek(pending.path, pending.position)
 })
 
+watch([lastConfirmedTime, lastConfirmedDuration, videoReady, playbackDiagnostics, isBuffering], () => {
+  if (!sessionWatched && hasConfirmedWatchedPosition()) {
+    sessionWatched = true
+    void saveCurrentProgress(true)
+  }
+})
+
 async function handleFileDrop(path: string) {
+  const progressSave = saveCurrentProgress(true, 'stopped')
+  const preferenceSave = saveMediaPreferenceNow()
+  const generation = beginPlaybackSession()
   resetDanmakuUiForMediaChange()
-  await saveCurrentProgress(true, 'stopped')
-  await saveMediaPreferenceNow()
-  cancelPendingTrackPreferenceRestore()
+  await progressSave
+  await preferenceSave
+  if (!isCurrentPlaybackSession(generation))
+    return
   resetPersistedTrackPreferences()
   clearMediaPreferenceSaveTimer()
   activeCachedSubtitlePath = null
   await releaseHeldArrow(false)
+  if (!isCurrentPlaybackSession(generation))
+    return
   resetHistorySaveState()
   mediaPath.value = path
   mediaHeaders.value = {}
@@ -2298,6 +2752,8 @@ async function handleFileDrop(path: string) {
   activeItemId.value = ''
   activeLibraryId.value = ''
   activeMediaType.value = 'file'
+  activePlaybackItem.value = undefined
+  activeStreamRequest = null
   activePosterUrl.value = ''
   activeBackdropUrl.value = ''
   activeTitleLogoUrl.value = ''
@@ -2306,29 +2762,41 @@ async function handleFileDrop(path: string) {
   setKnownSubtitleTracks([])
   revealChrome()
   await ensureRenderInitialized()
-  if (playbackCleanupStarted)
+  if (!isCurrentPlaybackSession(generation))
     return
+  loadedPreferenceIdentity = currentHistoryIdentity()
+  loadedPlaybackGeneration = generation
   await load(path, { title: mediaTitle.value })
+  if (!isCurrentPlaybackSession(generation))
+    return
   await restoreMediaPlaybackPreference()
+  if (!isCurrentPlaybackSession(generation))
+    return
+  void hydrateDownloadedSubtitles()
   startHistorySaveTimer()
   await resumeSavedProgressIfAvailable()
-  if (playbackCleanupStarted)
-    await stopPlaybackSilently()
+  syncProviderPlaybackStarted()
 }
 
-async function playQueueItemAt(index: number) {
+async function playQueueItemAt(index: number, expectedGeneration = playbackSessionGeneration) {
   const queue = playbackQueue.value
-  if (!queue || index < 0 || index >= queue.items.length || isQueueSwitching.value)
+  if (!isCurrentPlaybackSession(expectedGeneration) || !queue || index < 0 || index >= queue.items.length || isQueueSwitching.value)
     return
   if (index === queue.currentIndex)
     return
 
   const target = queue.items[index]
-  await saveMediaPreferenceNow()
+  const contextId = playbackContextId.value
+  playbackIsWatched()
+  const preferenceSave = saveMediaPreferenceNow()
+  const generation = beginPlaybackSession()
   isQueueSwitching.value = true
   queueSwitchError.value = null
   revealChrome()
   try {
+    await preferenceSave
+    if (!isCurrentPlaybackSession(generation))
+      return
     if (target.sourceId === LOCAL_FILE_SOURCE_ID) {
       if (!target.path)
         throw new Error('本地视频路径不可用。')
@@ -2341,23 +2809,24 @@ async function playQueueItemAt(index: number) {
         throw new Error('数据源不可用，请检查设置或重新登录。')
     }
 
-    if (playbackCleanupStarted)
+    if (!isCurrentPlaybackSession(generation))
       return
-
-    playbackQueue.value = {
-      items: queue.items.map(item => ({ ...item })),
-      currentIndex: index,
-    }
     await router.replace({
       name: 'player',
       query: createPlaybackRouteQuery({
         sourceId: target.sourceId,
         itemId: target.id,
-        contextId: playbackContextId.value || undefined,
+        contextId: contextId || undefined,
       }),
     })
   }
   catch (error) {
+    if (isCurrentPlaybackSession(generation)) {
+      loadedPlaybackGeneration = generation
+      subtitleIntentReady = true
+      if (playbackEndedNaturally())
+        eofTransition = { generation, promise: Promise.resolve() }
+    }
     queueSwitchError.value = toSafeErrorMessage(error, '无法切换到队列媒体。')
   }
   finally {
@@ -2397,28 +2866,45 @@ async function handleSetSubtitleDelay(delay: number) {
   scheduleMediaPreferenceSave()
 }
 
-async function handleSetSubtitle(trackId: Parameters<typeof setSubtitle>[0]) {
+async function handleSetSubtitle(trackId: Parameters<typeof setSubtitle>[0] | 'auto') {
   cancelPendingTrackPreferenceRestore()
+  const generation = playbackSessionGeneration
+  const intentGeneration = mediaPreferenceRestoreGeneration
+  const identity = currentMediaPreferenceIdentity()
   const selected = subtitleTracks.value.find(track => track.id === trackId)
   const previousCachedSubtitlePath = activeCachedSubtitlePath
   const nextCachedSubtitlePath = selected?.source === 'downloaded' && selected.url ? selected.url : null
   try {
-    await setSubtitle(trackId)
+    if (trackId === 'auto')
+      await setSubtitleAutomatic()
+    else
+      await setSubtitle(trackId)
   }
   catch {
-    activeCachedSubtitlePath = previousCachedSubtitlePath
+    if (isCurrentPlaybackSession(generation) && intentGeneration === mediaPreferenceRestoreGeneration)
+      activeCachedSubtitlePath = previousCachedSubtitlePath
     return
   }
+  if (!isCurrentPlaybackSession(generation) || intentGeneration !== mediaPreferenceRestoreGeneration)
+    return
   activeCachedSubtitlePath = nextCachedSubtitlePath
-  persistedSubtitlePreference = currentSubtitlePreference()
-  await saveMediaPreferenceNow(undefined, true)
+  persistedSubtitlePreference = trackId === 'auto' ? null : currentSubtitlePreference()
+  subtitleAutomatic.value = trackId === 'auto'
+  subtitleIntentReady = true
+  if (subtitleAutomatic.value)
+    await applyAutomaticSubtitleSelection()
+  await saveMediaPreferenceNow(identity, true)
 }
 
 async function handleSetAudio(trackId: number) {
   cancelPendingTrackPreferenceRestore()
+  const generation = playbackSessionGeneration
+  const identity = currentMediaPreferenceIdentity()
   await setAudio(trackId)
+  if (!isCurrentPlaybackSession(generation))
+    return
   persistedAudioPreference = currentAudioPreference()
-  await saveMediaPreferenceNow(undefined, true)
+  await saveMediaPreferenceNow(identity, true)
 }
 
 function nextPlaybackSpeed(): number {
@@ -2428,8 +2914,8 @@ function nextPlaybackSpeed(): number {
 
 async function cycleSubtitleFromKeyboard() {
   const selectable = subtitleTracks.value.filter(track => track.selectable)
-  const choices: Array<Parameters<typeof handleSetSubtitle>[0]> = [null, ...selectable.map(track => track.id)]
-  const currentIndex = choices.findIndex(choice => choice === currentSubtitle.value)
+  const choices: Array<Parameters<typeof handleSetSubtitle>[0]> = ['auto', null, ...selectable.map(track => track.id)]
+  const currentIndex = choices.findIndex(choice => choice === (subtitleAutomatic.value ? 'auto' : currentSubtitle.value))
   const next = choices[(currentIndex + 1) % choices.length]
   await handleSetSubtitle(next)
   showKeyboardOsd(`字幕 · ${selectedSubtitleTrackLabel()}`)
@@ -2668,6 +3154,8 @@ function handleRenderBounds(bounds: RenderSurfaceBounds) {
 
 function toggleDiagnosticsPanel() {
   diagnosticsOpen.value = !diagnosticsOpen.value
+  if (diagnosticsOpen.value)
+    void refreshPlaybackDiagnostics()
 }
 
 async function handleSetStrategy(strategy: MpvZOrderStrategy) {
@@ -2758,6 +3246,37 @@ async function handleUpdateFsrSettings(patch: Partial<PlayerFsrSettings>) {
   }
 }
 
+async function handleSetHardwareDecoder(mode: PlayerHardwareDecoder) {
+  if (decoderSettingsPending.value || (mode === hardwareDecoder.value && !decoderSettingsError.value))
+    return
+
+  decoderSettingsPending.value = true
+  decoderSettingsError.value = null
+  const next = normalizePlayerInteractionSettings({
+    ...loadPlayerInteractionSettings(),
+    hardwareDecoder: mode,
+  })
+  hardwareDecoder.value = next.hardwareDecoder
+  let saved = false
+
+  try {
+    await savePlayerInteractionSettings(next)
+    saved = true
+    if (playerViewDisposed || playbackCleanupStarted)
+      return
+    await applyEngineSettings()
+    if (!playerViewDisposed)
+      await refreshPlaybackDiagnostics()
+  }
+  catch (error) {
+    const message = toSafeErrorMessage(error, '请稍后重试。')
+    decoderSettingsError.value = saved ? `无法应用解码设置：${message}` : `无法保存解码设置：${message}`
+  }
+  finally {
+    decoderSettingsPending.value = false
+  }
+}
+
 async function handleSetOrientationMode(mode: MpvOrientationMode) {
   await setOrientationMode(mode)
   const label = mode === 'landscape' ? '锁定横屏' : mode === 'portrait' ? '锁定竖屏' : '自动横屏'
@@ -2777,13 +3296,15 @@ function stopPlaybackForRouteExit(): Promise<void> {
   if (playbackStopPromise)
     return playbackStopPromise
 
+  const preferenceSave = saveMediaPreferenceNow()
+  const progressSave = saveCurrentProgress(true, 'stopped')
+  beginPlaybackSession()
   playbackCleanupStarted = true
   playbackStopPromise = (async () => {
-    await saveMediaPreferenceNow()
-    const progressSave = saveCurrentProgress(true, 'stopped')
     clearHistorySaveTimer()
     await stopPlaybackSilently()
     try {
+      await preferenceSave
       await progressSave
     }
     catch {
@@ -2799,6 +3320,11 @@ function handleBeforeUnload() {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && diagnosticsOpen.value) {
+    event.preventDefault()
+    diagnosticsOpen.value = false
+    return
+  }
   if (event.key === 'Escape' && danmakuSearchOpen.value) {
     event.preventDefault()
     closeDanmakuSearch()
@@ -2819,11 +3345,11 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   // Ctrl+Shift+D (or Cmd+Shift+D) surfaces the diagnostics panel from the WebView overlay.
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'D' || event.key === 'd')) {
     event.preventDefault()
-    diagnosticsOpen.value = !diagnosticsOpen.value
+    toggleDiagnosticsPanel()
     return
   }
 
-  if (!hasMedia.value || shouldIgnorePlaybackShortcut(event))
+  if (diagnosticsOpen.value || !hasMedia.value || shouldIgnorePlaybackShortcut(event))
     return
   const hasModifier = event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
   if (!hasModifier && event.code === 'Space') {
@@ -2869,6 +3395,7 @@ function shouldIgnorePlaybackShortcut(event: KeyboardEvent): boolean {
   if (!(target instanceof HTMLElement))
     return false
   return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+    || target.closest('[data-player-scroll-region]') !== null
 }
 
 function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight', owner: 'keyboard' | 'touch'): boolean {
@@ -2924,11 +3451,12 @@ async function releaseHeldArrow(triggerTap: boolean, owner?: 'keyboard' | 'touch
 }
 
 function handlePlayerAreaClick(event: MouseEvent) {
-  if (Date.now() < suppressPlayerClickUntil)
+  const target = event.target
+  const isStatusContentTap = target instanceof Element && target.closest('[data-player-scroll-region]') !== null
+  if (!isStatusContentTap && Date.now() < suppressPlayerClickUntil)
     return
   if (!hasMedia.value || event.button !== 0 || contextMenuOpen.value || playbackDetailOpen.value || subtitleSearchOpen.value || danmakuSearchOpen.value)
     return
-  const target = event.target
   if (target instanceof Element && target.closest('button, input, select, textarea, a, [role="dialog"], [role="menu"], [data-player-click-ignore]'))
     return
   if (isNativeAndroidPlayer) {
@@ -3260,6 +3788,7 @@ watch(
         :can-play-previous="canPlayPrevious"
         :can-play-next="canPlayNext"
         :current-subtitle="currentSubtitle"
+        :subtitle-automatic="subtitleAutomatic"
         :current-audio="currentAudio"
         :video-aspect-mode="videoAspectMode"
         :video-fit-mode="videoFitMode"
@@ -3268,6 +3797,9 @@ watch(
         :picture-settings-error="pictureSettingsError"
         :fsr-settings="fsrSettings"
         :fsr-error="fsrSettingsError"
+        :hardware-decoder="hardwareDecoder"
+        :decoder-settings-pending="decoderSettingsPending"
+        :decoder-settings-error="decoderSettingsError"
         :mobile-layout="false"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
@@ -3290,6 +3822,7 @@ watch(
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
         @update-fsr-settings="handleUpdateFsrSettings"
+        @set-hardware-decoder="handleSetHardwareDecoder"
         @set-orientation-mode="handleSetOrientationMode"
         @fullscreen-changed="handleFullscreenChanged"
         @fullscreen-transitioning="playerChromeStore.setFullscreenTransitioning"
@@ -3332,6 +3865,7 @@ watch(
         :can-play-previous="canPlayPrevious"
         :can-play-next="canPlayNext"
         :current-subtitle="currentSubtitle"
+        :subtitle-automatic="subtitleAutomatic"
         :current-audio="currentAudio"
         :video-aspect-mode="videoAspectMode"
         :video-fit-mode="videoFitMode"
@@ -3340,6 +3874,9 @@ watch(
         :picture-settings-error="pictureSettingsError"
         :fsr-settings="fsrSettings"
         :fsr-error="fsrSettingsError"
+        :hardware-decoder="hardwareDecoder"
+        :decoder-settings-pending="decoderSettingsPending"
+        :decoder-settings-error="decoderSettingsError"
         :orientation-supported="orientationSupported"
         :orientation-mode="orientationMode"
         :danmaku-settings="danmakuSettings" :danmaku-loading="danmakuLoading" :danmaku-error="danmakuError" :danmaku-comment-count="danmakuComments.length"
@@ -3363,6 +3900,7 @@ watch(
         @set-video-fit="handleSetVideoFit"
         @set-video-brightness="handleSetVideoBrightness"
         @update-fsr-settings="handleUpdateFsrSettings"
+        @set-hardware-decoder="handleSetHardwareDecoder"
         @set-orientation-mode="handleSetOrientationMode"
         @interaction-change="handleControlsInteraction"
         @toggle-danmaku="toggleDanmaku"
@@ -3398,6 +3936,9 @@ watch(
         :origin="subtitleSearchOrigin"
         :default-language="subtitleSearchDefaultLanguage"
         :media-title="currentSubtitleMediaTitle()"
+        :episode="subtitleSearchIsEpisode"
+        :episode-number-keyword="subtitleEpisodeKeywords.number"
+        :episode-title-keyword="subtitleEpisodeKeywords.title"
         :file-name="currentSubtitleFileName()"
         :results="subtitleSearchResults"
         :loading="subtitleSearchLoading"
@@ -3810,15 +4351,8 @@ watch(
 
 }
 
-@media (any-pointer: coarse) {
-  .player-view {
-    touch-action: none;
-  }
-}
-
 .player-view--native-mobile {
   cursor: default !important;
-  touch-action: none;
 }
 
 .player-view--native-mobile .player-top-chrome {

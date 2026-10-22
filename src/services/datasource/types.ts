@@ -19,6 +19,10 @@ export interface MediaItem {
   duration?: number
   size?: number
   modified?: string
+  /** Actual playback/history occurrence time; never catalog creation or modification time. */
+  lastPlayedAt?: string
+  /** Owning catalog's first admission time; independent from source modification or release year. */
+  addedAt?: string
   path: string
   resumePosition?: number
   progress?: number
@@ -30,6 +34,8 @@ export interface MediaItem {
   seriesId?: string
   seasonNumber?: number
   episodeNumber?: number
+  /** Provider-supplied edition/group label, such as main programme or extras. */
+  edition?: string
   /** Provider-owned identity used to merge playback history across routes and devices. */
   historyIdentity?: string
   /** Secondary card copy supplied by the owning provider, for example S01E02 + episode title. */
@@ -142,6 +148,8 @@ export interface FileEntry {
 }
 
 export interface MediaDetail extends MediaItem {
+  /** Provider's preferred exact playable item; user selection and resume win. */
+  defaultPlaybackItemId?: string
   genres?: string[]
   directors?: string[]
   writers?: string[]
@@ -268,6 +276,9 @@ export type HttpReadProfile = 'bounded_ranges_v1'
 
 export interface MediaStreamRequest {
   readonly url: string
+  /** Stable exact selection resolved from a work-level request; never a URL. */
+  readonly itemId?: string
+  readonly historyIdentity?: string
   readonly headers?: Record<string, string>
   readonly httpReadProfile?: HttpReadProfile
   /** Optional separate audio asset for DASH-style playback. It is transient and never persisted. */
@@ -320,6 +331,14 @@ export interface PlaybackRequest {
   readonly variantId?: string
 }
 
+/** Stable native-download selection. Transport URLs and credentials stay in Rust. */
+export interface MediaDownloadSelection {
+  readonly itemId: string
+  readonly mediaSourceId?: string
+  readonly variantId?: string
+  readonly onlineIdentity?: { libraryId: string, workId: string, segmentId: string, versionId: string }
+}
+
 export type ProviderPlaybackProgressEvent = 'started' | 'progress' | 'paused' | 'resumed' | 'stopped' | 'completed'
 
 export interface ProviderPlaybackProgressInput {
@@ -333,6 +352,8 @@ export interface ProviderPlaybackProgressInput {
   isPaused: boolean
   completed: boolean
   event: ProviderPlaybackProgressEvent
+  /** Snapshot occurrence time retained across asynchronous local history persistence. */
+  occurredAt?: string
   playbackRate?: number
 }
 
@@ -395,6 +416,9 @@ export interface DataSource {
   getHomeSections?: () => Promise<HomeSection[]>
   refreshHomeSection?: (refreshKey: string) => Promise<HomeSection[]>
   enqueueOnlineDownload?: (request: PlaybackRequest & { readonly mediaLibraryId?: number }) => Promise<void>
+  /** Cached capability for a media-action menu; absence does not enable online plugins. */
+  canDownloadItem?: (itemId: string) => boolean
+  resolveDownloadSelection?: (request: PlaybackRequest) => Promise<MediaDownloadSelection>
   performSiteAction?: (itemId: string, action: SiteActionKey, value?: boolean, confirmed?: boolean) => Promise<void>
   getFeaturedItems?: () => Promise<MediaItem[]>
   getContinueWatching?: () => Promise<MediaItem[]>

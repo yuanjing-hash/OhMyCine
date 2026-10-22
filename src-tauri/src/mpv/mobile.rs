@@ -6,6 +6,9 @@ use tauri::{
     AppHandle, Emitter, Manager, Wry,
 };
 
+use super::color::MpvColorDiagnostics;
+use super::playback::MpvEndReason;
+
 const PLUGIN_IDENTIFIER: &str = "com.ohmycine.player.mpv";
 const PLUGIN_CLASS: &str = "MpvPlugin";
 
@@ -46,6 +49,9 @@ pub struct AndroidSurfaceStatus {
 #[serde(rename_all = "camelCase")]
 pub struct AndroidPlaybackDiagnostics {
     pub state: String,
+    pub end_reason: Option<MpvEndReason>,
+    pub position: f64,
+    pub duration: f64,
     pub last_event: String,
     pub last_error: Option<String>,
     pub file_loaded: bool,
@@ -56,6 +62,12 @@ pub struct AndroidPlaybackDiagnostics {
     pub video_output: String,
     pub video_output_fallback_used: bool,
     pub playback_transport: String,
+    #[serde(default)]
+    pub color: Option<MpvColorDiagnostics>,
+    #[serde(default)]
+    pub fsr_status: Option<String>,
+    #[serde(default)]
+    pub fsr_reason: Option<String>,
     pub logs: Vec<String>,
 }
 

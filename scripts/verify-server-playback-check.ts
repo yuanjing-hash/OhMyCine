@@ -3,6 +3,13 @@ import { ServerDataSource, ServerRequestError } from '../src/services/datasource
 
 const token = `omc_player_${'a'.repeat(43)}`
 const calls: Array<{ path: string, method: string, accessToken?: string }> = []
+const workId = 'bW92aWU6dG1kYjozNDY'
+const itemId = `entry|9|${workId}|7`
+const historyIdentity = `server:v1:movie:9:${workId}`
+const catalog = {
+  item: { id: workId, library_id: 9, title: 'Fixture', kind: 'movie', item_token: `work|9|${workId}`, history_identity: historyIdentity, added_at: '2026-10-22T00:00:00Z', work_identity: { scheme: 'tmdb', media_type: 'movie', value: '346' } },
+  versions: [{ id: 7, title: 'Fixture', playable: true, exact_identity: 'server:entry:7', item_token: itemId, history_identity: historyIdentity }],
+}
 let reply = { status: 200, body: { code: 0, message: 'success', data: { version: 1, ready: true } } } as { status: number, body: unknown }
 let finish: ((value: typeof reply) => void) | undefined
 let delay = false
@@ -12,6 +19,8 @@ const started = new Promise<void>((resolve) => {
 })
 async function fixture(capabilities: string[]) {
   const source = new ServerDataSource({ readCredential: async () => ({ accessToken: token }), bridge: { async request(request) {
+    if (request.path === `/api/v1/player/media-libraries/9/catalog/${workId}`)
+      return { status: 200, body: { code: 0, data: catalog } }
     calls.push(request)
     if (delay) {
       return new Promise((resolve) => {
@@ -24,13 +33,13 @@ async function fixture(capabilities: string[]) {
   await source.init({ id: 'fixture', name: 'Server', type: 'server', enabled: true, order: 0, url: 'http://127.0.0.1:3000', extra: { credentialRef: 'fixture-only', capabilities } })
   return source
 }
-const request = { itemId: 'physical-fixture', mediaSourceId: '7' }
+const request = { itemId, mediaSourceId: '7' }
 const legacy = await fixture([])
 assert.equal((await legacy.getStreamRequest(request)).url, 'http://127.0.0.1:3000/api/v1/player/media-entries/7/stream')
 assert.equal(calls.length, 0, 'old Server must not receive an unsupported check')
 const source = await fixture(['playback_check_v1'])
 const stream = await source.getStreamRequest(request)
-assert.deepEqual(stream, { url: 'http://127.0.0.1:3000/api/v1/player/media-entries/7/stream', headers: { Authorization: `Bearer ${token}` }, mediaSourceId: '7' })
+assert.deepEqual(stream, { url: 'http://127.0.0.1:3000/api/v1/player/media-entries/7/stream', headers: { Authorization: `Bearer ${token}` }, mediaSourceId: '7', itemId, historyIdentity })
 assert.equal(calls.length, 1)
 assert.equal(calls[0]?.method, 'GET')
 assert.equal(calls[0]?.path, '/api/v1/player/media-entries/7/stream?check=1')

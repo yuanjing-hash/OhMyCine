@@ -1,11 +1,13 @@
 import { getVersion } from '@tauri-apps/api/app'
-import { Channel, invoke } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 
 const SETTINGS_KEY = 'ohmycine-updater-settings-v1'
 
 export type UpdateChannel = 'beta' | 'stable'
-export type UpdateStatus = 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'installing' | 'error'
+export type UpdateDownloadStatus = 'idle' | 'available' | 'downloading' | 'paused' | 'verifying' | 'ready' | 'installing' | 'error'
+export type UpdateStatus = UpdateDownloadStatus | 'checking' | 'latest'
 
 export interface UpdaterSettings {
   autoCheck: boolean
@@ -22,10 +24,13 @@ export interface UpdateCheckResult {
   platform: 'desktop' | 'android'
 }
 
-export type UpdateProgressEvent
-  = | { event: 'Started', data: { content_length?: number } }
-    | { event: 'Progress', data: { chunk_length: number } }
-    | { event: 'Finished' }
+export interface UpdateDownloadState {
+  update: UpdateCheckResult | null
+  status: UpdateDownloadStatus
+  downloadedBytes: number
+  contentLength: number | null
+  error: string | null
+}
 
 const DEFAULT_SETTINGS: UpdaterSettings = {
   autoCheck: true,
@@ -59,10 +64,20 @@ export async function checkPlayerUpdate(channel: UpdateChannel): Promise<UpdateC
   return invoke<UpdateCheckResult>('player_check_for_updates', { channel })
 }
 
-export async function installPlayerUpdate(onProgress: (event: UpdateProgressEvent) => void): Promise<void> {
-  const onEvent = new Channel<UpdateProgressEvent>()
-  onEvent.onmessage = onProgress
-  await invoke('player_install_update', { onEvent })
+export async function readPlayerUpdateState(): Promise<UpdateDownloadState> {
+  return invoke<UpdateDownloadState>('player_update_state')
+}
+
+export async function listenPlayerUpdateState(onState: (state: UpdateDownloadState) => void): Promise<() => void> {
+  return listen<UpdateDownloadState>('updater:state', event => onState(event.payload))
+}
+
+export async function downloadPlayerUpdate(): Promise<UpdateDownloadState> {
+  return invoke<UpdateDownloadState>('player_download_update')
+}
+
+export async function installPlayerUpdate(): Promise<void> {
+  await invoke('player_install_update')
 }
 
 export async function currentPlayerVersion(): Promise<string> {

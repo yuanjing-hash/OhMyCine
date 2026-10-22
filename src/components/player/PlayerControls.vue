@@ -3,7 +3,7 @@ import type { MpvOrientationMode, SubtitleSelectionId, SubtitleTrackOption, Trac
 import type { DanmakuSettings } from '@/services/danmaku/types'
 import type { StreamVariant } from '@/services/datasource/types'
 import type { PlaybackQueueItem } from '@/services/playbackContext'
-import type { PlayerFsrSettings } from '@/services/playerInteractionSettings'
+import type { PlayerFsrSettings, PlayerHardwareDecoder } from '@/services/playerInteractionSettings'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import CachedImage from '@/components/media/CachedImage.vue'
@@ -39,6 +39,7 @@ const props = defineProps<{
   canPlayPrevious: boolean
   canPlayNext: boolean
   currentSubtitle: SubtitleSelectionId | null
+  subtitleAutomatic: boolean
   currentAudio: number | null
   videoAspectMode: VideoAspectMode
   videoFitMode: VideoFitMode
@@ -47,6 +48,9 @@ const props = defineProps<{
   pictureSettingsError: string | null
   fsrSettings: PlayerFsrSettings
   fsrError: string | null
+  hardwareDecoder: PlayerHardwareDecoder
+  decoderSettingsPending: boolean
+  decoderSettingsError: string | null
   mobileLayout: boolean
   orientationSupported: boolean
   orientationMode: MpvOrientationMode
@@ -66,7 +70,7 @@ const emit = defineEmits<{
   setVolume: [volume: number]
   setPlaybackSpeed: [speed: number]
   setSubtitleDelay: [delay: number]
-  setSubtitle: [trackId: SubtitleSelectionId | null]
+  setSubtitle: [trackId: SubtitleSelectionId | null | 'auto']
   loadLocalSubtitle: []
   searchSubtitles: []
   setAudio: [trackId: number]
@@ -75,6 +79,7 @@ const emit = defineEmits<{
   setVideoFit: [mode: VideoFitMode]
   setVideoBrightness: [level: number]
   updateFsrSettings: [patch: Partial<PlayerFsrSettings>]
+  setHardwareDecoder: [mode: PlayerHardwareDecoder]
   setOrientationMode: [mode: MpvOrientationMode]
   fullscreenChanged: [fullscreen: boolean]
   fullscreenTransitioning: [transitioning: boolean]
@@ -112,6 +117,8 @@ const fullscreenTitle = computed(() => {
 
 const speedLabel = computed(() => `${formatSpeed(props.playbackSpeed)}x`)
 const subtitleLabel = computed(() => {
+  if (props.subtitleAutomatic)
+    return '字幕自动'
   if (props.currentSubtitle === null)
     return '字幕关'
   const track = props.subtitleTracks.find(item => item.id === props.currentSubtitle)
@@ -265,7 +272,7 @@ function chooseOrientation(mode: MpvOrientationMode) {
   activeMenu.value = null
 }
 
-function chooseSubtitle(trackId: SubtitleSelectionId | null) {
+function chooseSubtitle(trackId: SubtitleSelectionId | null | 'auto') {
   emit('setSubtitle', trackId)
   closeMenus()
 }
@@ -648,14 +655,17 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
             <p v-if="trackError" class="menu-empty">
               {{ trackError }}
             </p>
-            <button type="button" class="menu-option" :class="{ 'is-selected': currentSubtitle === null }" role="menuitemradio" :aria-checked="currentSubtitle === null" @click="chooseSubtitle(null)">
+            <button type="button" class="menu-option" :class="{ 'is-selected': subtitleAutomatic }" role="menuitemradio" :aria-checked="subtitleAutomatic" @click="chooseSubtitle('auto')">
+              自动选择
+            </button>
+            <button type="button" class="menu-option" :class="{ 'is-selected': !subtitleAutomatic && currentSubtitle === null }" role="menuitemradio" :aria-checked="!subtitleAutomatic && currentSubtitle === null" @click="chooseSubtitle(null)">
               关闭字幕
             </button>
             <template v-if="downloadedSubtitleTracks.length">
               <p class="subtitle-group-label">
                 本地下载
               </p>
-              <button v-for="track in downloadedSubtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': currentSubtitle === track.id }" role="menuitemradio" :aria-checked="currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
+              <button v-for="track in downloadedSubtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': !subtitleAutomatic && currentSubtitle === track.id }" role="menuitemradio" :aria-checked="!subtitleAutomatic && currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
                 <span>{{ fullTrackLabel(track) }}</span>
                 <small>{{ subtitleSourceLabel(track) }}</small>
                 <small v-if="track.unavailableReason">{{ track.unavailableReason }}</small>
@@ -666,7 +676,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
               <p class="subtitle-group-label">
                 视频与媒体源
               </p>
-              <button v-for="track in mediaSubtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': currentSubtitle === track.id }" role="menuitemradio" :aria-checked="currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
+              <button v-for="track in mediaSubtitleTracks" :key="track.id" type="button" class="menu-option menu-option--stacked" :class="{ 'is-selected': !subtitleAutomatic && currentSubtitle === track.id }" role="menuitemradio" :aria-checked="!subtitleAutomatic && currentSubtitle === track.id" :aria-disabled="track.selectable ? undefined : 'true'" :disabled="!track.selectable" :title="track.unavailableReason ?? fullTrackLabel(track)" @click="chooseSubtitle(track.id)">
                 <span>{{ fullTrackLabel(track) }}</span>
                 <small>{{ subtitleSourceLabel(track) }}</small>
                 <small v-if="track.unavailableReason">{{ track.unavailableReason }}</small>
@@ -816,7 +826,7 @@ defineExpose({ dismissTransientUi, toggleFullscreenFromShortcut, openDanmakuSett
       </button>
     </div>
 
-    <PlayerSettingsPanel :open="settingsPanelOpen" :aspect-mode="videoAspectMode" :fit-mode="videoFitMode" :video-brightness="videoBrightness" :error-message="pictureSettingsError" :fsr-settings="fsrSettings" :fsr-error="fsrError" @close="closeSettingsPanel" @interaction-change="setSettingsPanelInteracting" @set-aspect-mode="(mode) => emit('setVideoAspect', mode)" @set-fit-mode="(mode) => emit('setVideoFit', mode)" @set-video-brightness="(level) => emit('setVideoBrightness', level)" @update-fsr-settings="emit('updateFsrSettings', $event)" />
+    <PlayerSettingsPanel :open="settingsPanelOpen" :aspect-mode="videoAspectMode" :fit-mode="videoFitMode" :video-brightness="videoBrightness" :error-message="pictureSettingsError" :fsr-settings="fsrSettings" :fsr-error="fsrError" :hardware-decoder="hardwareDecoder" :decoder-settings-pending="decoderSettingsPending" :decoder-settings-error="decoderSettingsError" @close="closeSettingsPanel" @interaction-change="setSettingsPanelInteracting" @set-aspect-mode="(mode) => emit('setVideoAspect', mode)" @set-fit-mode="(mode) => emit('setVideoFit', mode)" @set-video-brightness="(level) => emit('setVideoBrightness', level)" @update-fsr-settings="emit('updateFsrSettings', $event)" @set-hardware-decoder="emit('setHardwareDecoder', $event)" />
   </div>
 </template>
 

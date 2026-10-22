@@ -1,8 +1,13 @@
 import type { HttpReadProfile } from '@/services/datasource/types'
+import type { LocalSubtitleDownloadResult } from '@/services/subtitle/types'
+import type { MpvColorDiagnostics, VideoDynamicRangeState } from '@/services/videoColor'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { computed, onUnmounted, ref } from 'vue'
 import { loadPlayerInteractionSettings } from '@/services/playerInteractionSettings'
+import { describeVideoSourceColor, describeVideoTargetColor } from '@/services/videoColor'
+
+export type { MpvColorDiagnostics, VideoDynamicRangeState } from '@/services/videoColor'
 
 export interface Track {
   id: number
@@ -113,6 +118,9 @@ export interface MpvRenderState {
 
 export interface MpvPlaybackDiagnostics {
   state: 'idle' | 'loading' | 'playing' | 'ended' | 'error' | 'desktop' | string
+  endReason: MpvEndReason | null
+  position: number
+  duration: number
   lastEvent: string
   lastError?: string | null
   fileLoaded: boolean
@@ -125,13 +133,11 @@ export interface MpvPlaybackDiagnostics {
   playbackTransport: string
   fsrStatus?: string
   fsrReason?: string | null
+  color?: MpvColorDiagnostics | null
   logs: string[]
 }
 
-export interface VideoDynamicRangeState {
-  label: string
-  details: string
-}
+export type MpvEndReason = 'eof' | 'stop' | 'quit' | 'error' | 'redirect'
 
 export interface RenderSurfaceBounds {
   x: number
@@ -163,11 +169,6 @@ const FIT_PROPERTY_VALUE: Record<VideoFitMode, string> = {
   fit: '0',
   crop: '1',
   cinemaCrop: '0.5',
-}
-
-const DEFAULT_DYNAMIC_RANGE: VideoDynamicRangeState = {
-  label: 'SDR',
-  details: '标准动态范围',
 }
 
 function normalizePlaybackSpeed(speed: number): number {
@@ -270,10 +271,21 @@ function mergeSubtitleTracks(embeddedTracks: readonly SubtitleTrackOption[], kno
   return [...embeddedTracks, ...uniqueKnown]
 }
 
+function downloadedSubtitleKey(path: string): string {
+  // Windows may return a canonical long path while the saved preference still uses
+  // the same normal absolute path. Other platforms keep case-sensitive identity.
+  if (/^(?:[a-z]:[\\/]|\\\\)/i.test(path))
+    return path.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '').replace(/\//g, '\\').toLowerCase()
+  return path
+}
+
 export function useMpv() {
   const isPlaying = ref(false)
   const currentTime = ref(0)
   const duration = ref(0)
+  const playbackEndReason = ref<MpvEndReason | null>(null)
+  const lastConfirmedTime = ref(0)
+  const lastConfirmedDuration = ref(0)
   const volume = ref(100)
   const isMuted = ref(false)
   const videoBrightness = ref(50)
@@ -283,7 +295,13 @@ export function useMpv() {
   const subtitleDelay = ref(DEFAULT_SUBTITLE_DELAY)
   const embeddedSubtitleTracks = ref<SubtitleTrackOption[]>([])
   const knownSubtitleTracks = ref<SubtitleTrackOption[]>([])
-  const subtitleTracks = computed(() => mergeSubtitleTracks(embeddedSubtitleTracks.value, knownSubtitleTracks.value))
+  const downloadedSubtitleTracks = ref<SubtitleTrackOption[]>([])
+  const sessionExternalSubtitleTracks = ref<SubtitleTrackOption[]>([])
+  const subtitleTracks = computed(() => mergeSubtitleTracks(embeddedSubtitleTracks.value, [
+    ...downloadedSubtitleTracks.value,
+    ...knownSubtitleTracks.value,
+    ...sessionExternalSubtitleTracks.value,
+  ]))
   const audioTracks = ref<Track[]>([])
   const currentSubtitle = ref<SubtitleSelectionId | null>(null)
   const selectedKnownSubtitle = ref<SubtitleSelectionId | null>(null)
@@ -297,11 +315,13 @@ export function useMpv() {
   const renderDiagnostics = ref<MpvRenderDiagnostics | null>(null)
   const playbackDiagnostics = ref<MpvPlaybackDiagnostics | null>(null)
   const videoReady = ref(false)
+  const fileLoaded = ref(false)
   const isBuffering = ref(false)
   const bufferSpeedBytesPerSecond = ref(0)
   const orientationSupported = ref(false)
   const orientationMode = ref<MpvOrientationMode>('auto')
-  const videoDynamicRange = ref<VideoDynamicRangeState>(DEFAULT_DYNAMIC_RANGE)
+  const videoDynamicRange = ref<VideoDynamicRangeState>(describeVideoSourceColor(null))
+  const videoTargetDynamicRange = computed(() => describeVideoTargetColor(playbackDiagnostics.value?.color))
   const trackError = ref<string | null>(null)
   let renderDiagnosticsTimer: number | undefined
   let bufferPollingTimer: number | undefined
@@ -314,13 +334,28 @@ export function useMpv() {
   let subtitleDelayGeneration = 0
   let loadedExternalSubtitleSequence = 0
   let trackRefreshScheduledForCurrentMedia = false
+  let playbackGeneration = 0
+  let videoColorGeneration = 0
+  let playbackActive = false
+  let mediaLoadPending = false
+  let disposed = false
+  let diagnosticsRefreshPromise: Promise<void> | null = null
+  let playbackTransitionPromise = Promise.resolve()
 
   const unlistenPromises = [
     listen<{ time: number }>('mpv:time-update', (event) => {
+      if (disposed || !playbackActive || mediaLoadPending || !Number.isFinite(event.payload.time) || event.payload.time < 0
+        || playbackEndReason.value === 'error' || playbackEndReason.value === 'stop' || playbackEndReason.value === 'quit') {
+        return
+      }
       currentTime.value = event.payload.time
+      lastConfirmedTime.value = event.payload.time
     }),
     listen<{ duration: number }>('mpv:duration-change', (event) => {
+      if (disposed || !playbackActive || mediaLoadPending || !Number.isFinite(event.payload.duration) || event.payload.duration <= 0)
+        return
       duration.value = event.payload.duration
+      lastConfirmedDuration.value = event.payload.duration
       if (event.payload.duration > 0 && !trackRefreshScheduledForCurrentMedia) {
         trackRefreshScheduledForCurrentMedia = true
         scheduleTrackRefresh(150)
@@ -330,10 +365,20 @@ export function useMpv() {
       isPlaying.value = false
     }),
     listen('mpv:resumed', () => {
-      isPlaying.value = true
+      if (playbackActive && !playbackEndReason.value)
+        isPlaying.value = true
     }),
     listen('mpv:video-ready', () => {
+      if (disposed || !playbackActive)
+        return
       videoReady.value = true
+      resetVideoColorState()
+      void refreshPlaybackDiagnostics()
+    }),
+    listen('mpv:file-loaded', () => {
+      if (disposed || !playbackActive)
+        return
+      fileLoaded.value = true
     }),
   ]
 
@@ -372,19 +417,62 @@ export function useMpv() {
   }
 
   async function refreshPlaybackDiagnostics() {
+    if (disposed)
+      return
+    if (diagnosticsRefreshPromise)
+      return diagnosticsRefreshPromise
+
+    const generation = playbackGeneration
+    const colorGeneration = videoColorGeneration
+    const refresh = readPlaybackDiagnostics(generation, colorGeneration)
+    diagnosticsRefreshPromise = refresh
+    try {
+      await refresh
+    }
+    finally {
+      if (diagnosticsRefreshPromise === refresh)
+        diagnosticsRefreshPromise = null
+    }
+  }
+
+  async function readPlaybackDiagnostics(generation: number, colorGeneration: number) {
+    const loadWasPending = mediaLoadPending
     try {
       const diagnostics = await invoke<MpvPlaybackDiagnostics>('mpv_playback_diagnostics')
-      playbackDiagnostics.value = diagnostics
-      if (diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
+      if (disposed || generation !== playbackGeneration || loadWasPending)
+        return
+
+      const currentColor = playbackActive && !mediaLoadPending && colorGeneration === videoColorGeneration
+      playbackDiagnostics.value = { ...diagnostics, color: currentColor ? diagnostics.color : null }
+      if (currentColor)
+        videoDynamicRange.value = describeVideoSourceColor(diagnostics.color)
+      else
+        videoDynamicRange.value = describeVideoSourceColor(null)
+      if (disposed || generation !== playbackGeneration)
+        return
+      if (playbackActive && !mediaLoadPending) {
+        playbackEndReason.value = diagnostics.state === 'error' ? 'error' : diagnostics.endReason
+        if (Number.isFinite(diagnostics.position) && diagnostics.position >= 0) {
+          lastConfirmedTime.value = diagnostics.position
+          currentTime.value = diagnostics.position
+        }
+        if (Number.isFinite(diagnostics.duration) && diagnostics.duration > 0) {
+          lastConfirmedDuration.value = diagnostics.duration
+          duration.value = diagnostics.duration
+        }
+      }
+      if (playbackActive && !mediaLoadPending && diagnostics.state !== 'desktop')
+        fileLoaded.value = diagnostics.fileLoaded
+      if (playbackActive && !mediaLoadPending && diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
         videoReady.value = true
-      if (diagnostics.state === 'error' || diagnostics.state === 'ended') {
+      if (!mediaLoadPending && (diagnostics.state === 'error' || diagnostics.state === 'ended' || diagnostics.state === 'idle')) {
         isPlaying.value = false
         if (diagnostics.state === 'error')
           videoReady.value = false
       }
     }
     catch {
-      playbackDiagnostics.value = null
+      // A transient diagnostic read failure cannot erase confirmed media/end facts.
     }
   }
 
@@ -445,11 +533,16 @@ export function useMpv() {
   }
 
   async function refreshTrackState() {
+    const generation = playbackGeneration
     try {
       const state = await invoke<MpvTrackState>('mpv_track_state')
+      if (disposed || generation !== playbackGeneration)
+        return
       applyTrackState(state)
     }
     catch (error: unknown) {
+      if (disposed || generation !== playbackGeneration)
+        return
       trackError.value = safeErrorMessage(error, '轨道信息暂不可用')
       trackStateReady.value = false
       embeddedSubtitleTracks.value = []
@@ -499,10 +592,13 @@ export function useMpv() {
   }
 
   function scheduleTrackRefresh(delay: number) {
+    const generation = playbackGeneration
     const timer = window.setTimeout(() => {
       trackRefreshTimers.delete(timer)
+      if (disposed || !playbackActive || generation !== playbackGeneration)
+        return
       void refreshTrackState()
-      void refreshVideoDynamicRange()
+      void refreshPlaybackDiagnostics()
     }, delay)
     trackRefreshTimers.add(timer)
   }
@@ -588,113 +684,162 @@ export function useMpv() {
     resetBufferingState()
   }
 
-  function cleanVideoMetadataValue(value: string): string {
-    return value.trim().replace(/^unknown$/i, '')
+  function resetVideoColorState() {
+    videoColorGeneration += 1
+    videoDynamicRange.value = describeVideoSourceColor(null)
+    if (playbackDiagnostics.value)
+      playbackDiagnostics.value = { ...playbackDiagnostics.value, color: null }
   }
 
-  async function refreshVideoDynamicRange() {
-    const [gamma, primaries, sigPeak, maxClL, doviProfile, doviProfileAlt] = await Promise.all([
-      readMpvProperty('video-params/gamma'),
-      readMpvProperty('video-params/primaries'),
-      readMpvProperty('video-params/sig-peak'),
-      readMpvProperty('video-params/max-cll'),
-      readMpvProperty('video-params/dolby-vision-profile'),
-      readMpvProperty('current-tracks/video/demux-dovi-profile'),
-    ])
-    const normalizedGamma = cleanVideoMetadataValue(gamma).toLowerCase()
-    const normalizedPrimaries = cleanVideoMetadataValue(primaries)
-    const normalizedSigPeak = cleanVideoMetadataValue(sigPeak)
-    const normalizedMaxClL = cleanVideoMetadataValue(maxClL)
-    const normalizedDoviProfile = cleanVideoMetadataValue(doviProfile || doviProfileAlt)
-    const detailParts = [
-      normalizedGamma ? `gamma ${normalizedGamma}` : null,
-      normalizedPrimaries ? `primaries ${normalizedPrimaries}` : null,
-      normalizedSigPeak ? `peak ${normalizedSigPeak}` : null,
-      normalizedMaxClL ? `max-cll ${normalizedMaxClL}` : null,
-      normalizedDoviProfile ? `profile ${normalizedDoviProfile}` : null,
-    ].filter((part): part is string => Boolean(part))
+  function clearTrackRefreshTimers() {
+    for (const timer of trackRefreshTimers)
+      window.clearTimeout(timer)
+    trackRefreshTimers.clear()
+  }
 
-    if (normalizedDoviProfile) {
-      videoDynamicRange.value = { label: 'Dolby Vision', details: detailParts.join(' · ') || '杜比视界' }
-      return
-    }
+  function isCurrentPlaybackGeneration(generation: number): boolean {
+    return !disposed && generation === playbackGeneration
+  }
 
-    if (normalizedGamma === 'pq') {
-      videoDynamicRange.value = { label: 'HDR10 / PQ', details: detailParts.join(' · ') || 'HDR PQ' }
-      return
-    }
-
-    if (normalizedGamma === 'hlg') {
-      videoDynamicRange.value = { label: 'HLG HDR', details: detailParts.join(' · ') || 'HLG HDR' }
-      return
-    }
-
-    if (normalizedPrimaries.toLowerCase() === 'bt.2020' || normalizedSigPeak || normalizedMaxClL) {
-      videoDynamicRange.value = { label: 'HDR', details: detailParts.join(' · ') || '高动态范围' }
-      return
-    }
-
-    videoDynamicRange.value = {
-      label: 'SDR',
-      details: detailParts.join(' · ') || '标准动态范围',
-    }
+  function queuePlaybackTransition(operation: () => Promise<void>): Promise<void> {
+    // Native load can await proxy/surface preparation. Keep a newer load or stop behind
+    // that call so a cancelled request cannot finish after its replacement or stop.
+    const transition = playbackTransitionPromise.then(operation, operation)
+    playbackTransitionPromise = transition.catch(() => undefined)
+    return transition
   }
 
   function setKnownSubtitleTracks(tracks: readonly KnownSubtitleTrackInput[]) {
     knownSubtitleTracks.value = tracks.map(toKnownSubtitleTrack)
-    if (selectedKnownSubtitle.value && !knownSubtitleTracks.value.some(track => track.id === selectedKnownSubtitle.value)) {
+    if (selectedKnownSubtitle.value && !subtitleTracks.value.some(track => track.id === selectedKnownSubtitle.value)) {
       selectedKnownSubtitle.value = null
       currentSubtitle.value = null
     }
   }
 
+  function setDownloadedSubtitleTracks(subtitles: readonly Pick<LocalSubtitleDownloadResult, 'path' | 'title' | 'language'>[]) {
+    const tracks = new Map(downloadedSubtitleTracks.value
+      .flatMap(track => track.url ? [[downloadedSubtitleKey(track.url), track] as const] : []))
+    for (const subtitle of subtitles) {
+      if (!subtitle.path.trim())
+        continue
+      const key = downloadedSubtitleKey(subtitle.path)
+      const previous = tracks.get(key)
+      tracks.set(key, toKnownSubtitleTrack({
+        id: previous?.id.slice('external:'.length) ?? `loaded:${++loadedExternalSubtitleSequence}`,
+        source: 'downloaded',
+        title: subtitle.title || previous?.title || '已下载字幕',
+        language: subtitle.language || previous?.language || null,
+        url: subtitle.path,
+        selectable: true,
+      }))
+    }
+    // A cache-list read may have started before the latest download. Merge those
+    // choices, and leave selecting/loading any one of them to explicit intent.
+    downloadedSubtitleTracks.value = [...tracks.values()]
+  }
+
   async function load(path: string, options: MpvLoadOptions = {}) {
+    const generation = ++playbackGeneration
+    playbackActive = true
+    mediaLoadPending = true
+    clearTrackRefreshTimers()
+    resetVideoColorState()
+    playbackDiagnostics.value = null
     stopBufferingPolling()
     subtitleDelayGeneration += 1
     selectedKnownSubtitle.value = null
+    downloadedSubtitleTracks.value = []
+    sessionExternalSubtitleTracks.value = []
     currentTime.value = 0
     duration.value = 0
+    lastConfirmedTime.value = 0
+    lastConfirmedDuration.value = 0
+    playbackEndReason.value = null
     trackRefreshScheduledForCurrentMedia = false
     trackStateReady.value = false
+    embeddedSubtitleTracks.value = []
+    audioTracks.value = []
+    currentSubtitle.value = null
+    currentAudio.value = null
     isPlaying.value = false
     videoReady.value = false
+    fileLoaded.value = false
     playbackSpeed.value = DEFAULT_PLAYBACK_SPEED
-    videoDynamicRange.value = DEFAULT_DYNAMIC_RANGE
     videoBrightness.value = 50
     subtitleDelay.value = DEFAULT_SUBTITLE_DELAY
     videoAspectMode.value = 'default'
     videoFitMode.value = 'fit'
-    await subtitleDelayCommand.catch(() => undefined)
-    await applyEngineSettings()
-    await invoke<void>('mpv_load', {
-      path,
-      headers: toMpvHeaderPayload(options.headers),
-      audioPath: options.audioUrl,
-      audioHeaders: toMpvHeaderPayload(options.audioHeaders),
-      title: options.title,
-      httpReadProfile: options.httpReadProfile,
-    })
-    startBufferingPolling()
-    try {
-      await invoke<void>('mpv_resume')
-      if (renderBackend.value === 'androidSurface')
+    await queuePlaybackTransition(async () => {
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      try {
+        await subtitleDelayCommand.catch(() => undefined)
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await applyEngineSettings()
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        // sid is sticky in mpv; each incoming file starts in Auto before its own intent restores.
+        await invoke<void>('mpv_set_property', { prop: 'sid', value: 'auto' })
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await invoke<void>('mpv_load', {
+          path,
+          headers: toMpvHeaderPayload(options.headers),
+          audioPath: options.audioUrl,
+          audioHeaders: toMpvHeaderPayload(options.audioHeaders),
+          title: options.title,
+          httpReadProfile: options.httpReadProfile,
+        })
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        mediaLoadPending = false
+        startBufferingPolling()
+        await invoke<void>('mpv_resume')
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        if (renderBackend.value === 'androidSurface') {
+          await refreshPlaybackDiagnostics()
+          if (!isCurrentPlaybackGeneration(generation))
+            return
+        }
+        await refreshOrientationState()
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await refreshDisplayBrightness()
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        isPlaying.value = !playbackEndReason.value
+        await applyPlaybackSpeed(playbackSpeed.value)
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        await invoke<void>('mpv_set_property', { prop: 'brightness', value: '0' })
+        if (!isCurrentPlaybackGeneration(generation))
+          return
         await refreshPlaybackDiagnostics()
-      await refreshOrientationState()
-      await refreshDisplayBrightness()
-      currentTime.value = 0
-      isPlaying.value = true
-      await applyPlaybackSpeed(playbackSpeed.value)
-      await applySubtitleDelay(DEFAULT_SUBTITLE_DELAY)
-      await invoke<void>('mpv_set_property', { prop: 'video-aspect-override', value: ASPECT_PROPERTY_VALUE.default })
-      await invoke<void>('mpv_set_property', { prop: 'panscan', value: FIT_PROPERTY_VALUE.fit })
-      await invoke<void>('mpv_set_property', { prop: 'brightness', value: '0' })
-      await refreshVideoDynamicRange()
-      scheduleTrackRefresh(2500)
-    }
-    catch (error) {
-      stopBufferingPolling()
-      throw error
-    }
+        if (isCurrentPlaybackGeneration(generation))
+          scheduleTrackRefresh(2500)
+      }
+      catch (error) {
+        if (!isCurrentPlaybackGeneration(generation))
+          return
+        mediaLoadPending = false
+        playbackActive = false
+        resetVideoColorState()
+        stopBufferingPolling()
+        throw error
+      }
+    })
   }
 
   async function togglePause() {
@@ -755,23 +900,49 @@ export function useMpv() {
     await subtitleDelayCommand
   }
 
-  async function setSubtitle(trackId: SubtitleSelectionId | null) {
-    if (trackId === null) {
+  async function setSubtitleAutomatic() {
+    const generation = playbackGeneration
+    await queuePlaybackTransition(async () => {
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      await invoke<void>('mpv_set_property', { prop: 'sid', value: 'auto' })
+      if (!isCurrentPlaybackGeneration(generation))
+        return
       selectedKnownSubtitle.value = null
+      currentSubtitle.value = embeddedSubtitleTracks.value.find(track => track.selected)?.id ?? null
+      trackError.value = null
+    })
+  }
+
+  async function setSubtitle(trackId: SubtitleSelectionId | null) {
+    const generation = playbackGeneration
+    await queuePlaybackTransition(async () => {
+      if (isCurrentPlaybackGeneration(generation))
+        await applySubtitleSelection(trackId, generation)
+    })
+  }
+
+  async function applySubtitleSelection(trackId: SubtitleSelectionId | null, generation: number) {
+    if (trackId === null) {
       await invoke<void>('mpv_set_property', { prop: 'sid', value: 'no' })
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      selectedKnownSubtitle.value = null
       currentSubtitle.value = null
       return
     }
 
     const embeddedId = parseEmbeddedSubtitleId(trackId)
     if (embeddedId !== null) {
-      selectedKnownSubtitle.value = null
       await invoke<void>('mpv_set_property', { prop: 'sid', value: embeddedId.toString() })
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      selectedKnownSubtitle.value = null
       currentSubtitle.value = trackId
       return
     }
 
-    const track = knownSubtitleTracks.value.find(item => item.id === trackId)
+    const track = subtitleTracks.value.find(item => item.id === trackId)
     if (!track || !track.selectable || !track.url) {
       const message = track?.unavailableReason ?? '该字幕暂不可加载。'
       trackError.value = message
@@ -785,6 +956,8 @@ export function useMpv() {
         language: track.language ?? null,
         headers: toMpvHeaderPayload(track.headers),
       })
+      if (!isCurrentPlaybackGeneration(generation))
+        return
       selectedKnownSubtitle.value = trackId
       currentSubtitle.value = trackId
       trackError.value = null
@@ -795,27 +968,50 @@ export function useMpv() {
     }
   }
 
-  async function addExternalSubtitle(url: string, title: string, language?: string, source: 'downloaded' | 'provider' = 'downloaded') {
+  async function addExternalSubtitle(url: string, title: string, language?: string, source: 'downloaded' | 'provider' = 'downloaded', headers?: Readonly<Record<string, string>>) {
+    const generation = playbackGeneration
+    await queuePlaybackTransition(async () => {
+      if (isCurrentPlaybackGeneration(generation))
+        await applyExternalSubtitle(url, title, language, source, generation, headers)
+    })
+  }
+
+  async function applyExternalSubtitle(url: string, title: string, language: string | undefined, source: 'downloaded' | 'provider', generation: number, headers?: Readonly<Record<string, string>>) {
     trackError.value = null
     try {
       await invoke<void>('mpv_add_subtitle', {
         url,
         title: title || language || '外部字幕',
         language: language || null,
-        headers: [],
+        headers: toMpvHeaderPayload(headers),
       })
-      const loadedTrack = toKnownSubtitleTrack({
-        id: `loaded:${++loadedExternalSubtitleSequence}`,
-        source,
-        language: language || null,
-        title: title || language || '外部字幕',
-        url,
-        selectable: true,
-      })
-      knownSubtitleTracks.value = [
-        ...knownSubtitleTracks.value.filter(track => !String(track.id).startsWith('external:loaded:')),
-        loadedTrack,
-      ]
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      let loadedTrack: SubtitleTrackOption
+      if (source === 'downloaded') {
+        setDownloadedSubtitleTracks([{ path: url, title, language: language || '' }])
+        const downloaded = downloadedSubtitleTracks.value.find(track => track.url
+          && downloadedSubtitleKey(track.url) === downloadedSubtitleKey(url))
+        if (!downloaded)
+          throw new Error('字幕缓存路径无效。')
+        loadedTrack = downloaded
+      }
+      else {
+        const previous = sessionExternalSubtitleTracks.value.find(track => track.url === url)
+        loadedTrack = toKnownSubtitleTrack({
+          id: previous?.id.slice('external:'.length) ?? `loaded:${++loadedExternalSubtitleSequence}`,
+          source,
+          language: language || null,
+          title: title || language || '外部字幕',
+          url,
+          headers,
+          selectable: true,
+        })
+        sessionExternalSubtitleTracks.value = [
+          ...sessionExternalSubtitleTracks.value.filter(track => track.id !== loadedTrack.id),
+          loadedTrack,
+        ]
+      }
       selectedKnownSubtitle.value = loadedTrack.id
       currentSubtitle.value = loadedTrack.id
     }
@@ -826,8 +1022,14 @@ export function useMpv() {
   }
 
   async function setAudio(trackId: number) {
-    await invoke<void>('mpv_set_property', { prop: 'aid', value: trackId.toString() })
-    currentAudio.value = trackId
+    const generation = playbackGeneration
+    await queuePlaybackTransition(async () => {
+      if (!isCurrentPlaybackGeneration(generation))
+        return
+      await invoke<void>('mpv_set_property', { prop: 'aid', value: trackId.toString() })
+      if (isCurrentPlaybackGeneration(generation))
+        currentAudio.value = trackId
+    })
   }
 
   async function setVideoAspect(mode: VideoAspectMode) {
@@ -841,29 +1043,44 @@ export function useMpv() {
   }
 
   async function stop() {
+    const generation = ++playbackGeneration
+    playbackActive = false
+    mediaLoadPending = false
+    clearTrackRefreshTimers()
+    resetVideoColorState()
+    playbackDiagnostics.value = null
     stopBufferingPolling()
-    await invoke<void>('mpv_stop')
+    await queuePlaybackTransition(() => invoke<void>('mpv_stop'))
+    if (!isCurrentPlaybackGeneration(generation))
+      return
     isPlaying.value = false
     currentTime.value = 0
     duration.value = 0
+    lastConfirmedTime.value = 0
+    lastConfirmedDuration.value = 0
+    playbackEndReason.value = null
     embeddedSubtitleTracks.value = []
     knownSubtitleTracks.value = []
+    downloadedSubtitleTracks.value = []
+    sessionExternalSubtitleTracks.value = []
     audioTracks.value = []
     currentSubtitle.value = null
     selectedKnownSubtitle.value = null
     currentAudio.value = null
     trackStateReady.value = false
     videoReady.value = false
+    fileLoaded.value = false
   }
 
   onUnmounted(() => {
+    disposed = true
+    playbackGeneration += 1
+    resetVideoColorState()
     stopBufferingPolling()
     if (renderDiagnosticsTimer)
       window.clearInterval(renderDiagnosticsTimer)
 
-    for (const timer of trackRefreshTimers)
-      window.clearTimeout(timer)
-    trackRefreshTimers.clear()
+    clearTrackRefreshTimers()
 
     for (const promise of unlistenPromises) {
       promise.then(unlisten => unlisten())
@@ -874,6 +1091,9 @@ export function useMpv() {
     isPlaying,
     currentTime,
     duration,
+    playbackEndReason,
+    lastConfirmedTime,
+    lastConfirmedDuration,
     volume,
     isMuted,
     videoBrightness,
@@ -894,11 +1114,13 @@ export function useMpv() {
     renderDiagnostics,
     playbackDiagnostics,
     videoReady,
+    fileLoaded,
     isBuffering,
     bufferSpeedBytesPerSecond,
     orientationSupported,
     orientationMode,
     videoDynamicRange,
+    videoTargetDynamicRange,
     trackError,
     applyEngineSettings,
     refreshPlaybackDiagnostics,
@@ -911,6 +1133,7 @@ export function useMpv() {
     refreshDisplayBrightness,
     setDisplayBrightness,
     setKnownSubtitleTracks,
+    setDownloadedSubtitleTracks,
     load,
     togglePause,
     seek,
@@ -922,6 +1145,7 @@ export function useMpv() {
     applySubtitleDelay,
     setSubtitleDelay,
     setSubtitle,
+    setSubtitleAutomatic,
     addExternalSubtitle,
     setAudio,
     setVideoAspect,

@@ -8,6 +8,7 @@ export interface PlaybackQueueItem {
   name: string
   originalTitle?: string
   seriesName?: string
+  seriesId?: string
   path: string
   type: MediaItem['type']
   posterUrl?: string
@@ -17,11 +18,13 @@ export interface PlaybackQueueItem {
   duration?: number
   seasonNumber?: number
   episodeNumber?: number
+  edition?: string
   historyIdentity?: string
   displaySubtitle?: string
   episodeStillUrl?: string
   cardLayout?: MediaItem['cardLayout']
   resumePosition?: number
+  played?: boolean
   offlineOriginSourceId?: string
   offlineOriginItemId?: string
 }
@@ -85,6 +88,7 @@ export interface PlaybackQueueItemInput {
   name: string
   originalTitle?: string
   seriesName?: string
+  seriesId?: string
   path: string
   type: MediaItem['type']
   posterUrl?: string
@@ -94,11 +98,13 @@ export interface PlaybackQueueItemInput {
   duration?: number
   seasonNumber?: number
   episodeNumber?: number
+  edition?: string
   historyIdentity?: string
   displaySubtitle?: string
   episodeStillUrl?: string
   cardLayout?: MediaItem['cardLayout']
   resumePosition?: number
+  played?: boolean
   offlineOriginSourceId?: string
   offlineOriginItemId?: string
 }
@@ -177,6 +183,7 @@ export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
     name: item.name,
     originalTitle: item.originalTitle,
     seriesName: item.seriesName,
+    seriesId: item.seriesId,
     path: item.path,
     type: item.type,
     posterUrl: item.posterUrl,
@@ -186,11 +193,13 @@ export function createPlaybackQueueItem(item: MediaItem): PlaybackQueueItem {
     duration: item.duration,
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
+    edition: item.edition,
     historyIdentity: item.historyIdentity,
     displaySubtitle: item.displaySubtitle,
     episodeStillUrl: item.episodeStillUrl,
     cardLayout: item.cardLayout,
     resumePosition: item.resumePosition,
+    played: item.played,
     offlineOriginSourceId: item.offlineOriginSourceId,
     offlineOriginItemId: item.offlineOriginItemId,
   })
@@ -230,6 +239,7 @@ function normalizeQueueItem(item: PlaybackQueueItemInput): PlaybackQueueItem {
     name: item.name,
     originalTitle: item.originalTitle,
     seriesName: item.seriesName,
+    seriesId: item.seriesId,
     path: item.path,
     type: item.type,
     posterUrl: item.posterUrl,
@@ -239,11 +249,13 @@ function normalizeQueueItem(item: PlaybackQueueItemInput): PlaybackQueueItem {
     duration: item.duration,
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
+    edition: item.edition,
     historyIdentity: item.historyIdentity,
     displaySubtitle: item.displaySubtitle,
     episodeStillUrl: item.episodeStillUrl,
     cardLayout: item.cardLayout,
     resumePosition: item.resumePosition,
+    played: item.played,
     offlineOriginSourceId: item.offlineOriginSourceId,
     offlineOriginItemId: item.offlineOriginItemId,
   }

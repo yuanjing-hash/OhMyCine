@@ -1,9 +1,9 @@
 import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaItem, MediaLibrary } from '@/services/datasource/types'
-import type { PlaybackHistoryEntry } from '@/services/playbackHistory'
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { getAppSetting, removeAppSetting, setAppSetting } from '@/services/appSettings'
 import { removeCredential } from '@/services/datasource/credentialStore'
+import { mergeContinueWatchingSections } from '@/services/datasource/homeAggregation'
 import { rememberPlaybackTargetsForItems } from '@/services/datasource/identityMerge'
 import { dataSourceManager } from '@/services/datasource/manager'
 import { OFFLINE_SOURCE_ID } from '@/services/datasource/offline'
@@ -12,7 +12,7 @@ import { logoutServerBestEffort } from '@/services/datasource/server'
 import { queueLegacySourceCleanup, runLegacySourceCleanup } from '@/services/legacySourceMigration'
 import { clearPlayerMediaCache, deleteMediaPlaybackPreferencesForSource } from '@/services/mediaPlaybackPreferences'
 import { removeNavigationShortcutBinding } from '@/services/navigationShortcuts'
-import { deletePlaybackHistoryForSource, isCompletedPosition, listLocalContinueWatching, listPlaybackHistoryTombstones, toContinueWatchingMediaItem } from '@/services/playbackHistory'
+import { deletePlaybackHistoryForSource, disabledPlaybackHistorySourceIds, isPlaybackHistorySnapshotCurrent, listPlaybackHistorySnapshot, playbackSeriesId, toContinueWatchingMediaItem } from '@/services/playbackHistory'
 import { dispatchServerLibraryRefresh } from '@/services/serverMediaChanges'
 
 const STORAGE_KEY = 'ohmycine-datasources'
@@ -64,6 +64,19 @@ export const useDataSourceStore = defineStore('datasource', () => {
   const orderedConfigs = computed(() => configs.value
     .filter(config => config.id !== OFFLINE_SOURCE_ID && config.type !== 'offline')
     .sort((a, b) => a.order - b.order))
+  const disabledHistorySourceIds = computed(() => disabledPlaybackHistorySourceIds(configs.value))
+
+  watch(() => JSON.stringify(disabledHistorySourceIds.value), () => {
+    homeLoadId++
+    isLoading.value = false
+    if (!displayCacheHydrated)
+      return
+    homeSections.value = excludeDisabledHomeSections(homeSections.value)
+    sourceRootSnapshots.value = Object.fromEntries(
+      Object.entries(sourceRootSnapshots.value).filter(([sourceId]) => !disabledHistorySourceIds.value.includes(sourceId)),
+    )
+    invalidateHomeCache()
+  }, { flush: 'sync' })
 
   const activeSource = computed(() =>
     configs.value.find(c => c.id === activeSourceId.value) ?? null,
@@ -75,7 +88,6 @@ export const useDataSourceStore = defineStore('datasource', () => {
     if (configsLoaded)
       return
     configsLoaded = true
-    hydrateDisplayCache()
     try {
       const raw = getAppSetting(STORAGE_KEY)
       if (raw) {
@@ -99,6 +111,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     catch {
       configs.value = []
     }
+    hydrateDisplayCache()
   }
 
   async function saveConfigs() {
@@ -369,7 +382,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     invalidateHomeCache()
   }
 
-  async function loadHomeSections(options: LoadHomeSectionsOptions = {}) {
+  async function loadHomeSections(options: LoadHomeSectionsOptions = {}, historyRetry = 0) {
     const hasCachedContent = homeSections.value.length > 0
     const cacheIsFresh = homeLoadedAt.value > 0 && hasCachedContent && Date.now() - homeLoadedAt.value < HOME_CACHE_TTL_MS
     if (!options.force && cacheIsFresh)
@@ -381,23 +394,33 @@ export const useDataSourceStore = defineStore('datasource', () => {
       isLoading.value = true
     try {
       await syncManager().catch(() => undefined)
-      const [sections, localContinueEntries, tombstones] = await Promise.all([
+      const sourceSignature = JSON.stringify(orderedConfigs.value)
+      const [sections, historySnapshot] = await Promise.all([
         loadAggregatedHomeSections(orderedConfigs.value),
-        listLocalContinueWatchingSafely(20),
-        listPlaybackHistoryTombstones().catch(() => [] as PlaybackHistoryEntry[]),
+        listPlaybackHistorySnapshot(disabledHistorySourceIds.value),
       ])
-      const localContinueItems = await enrichLocalContinueWatchingItems(localContinueEntries.map(toContinueWatchingMediaItem))
-      const serverSourceIds = new Set(orderedConfigs.value.filter(config => config.type === 'server').map(config => config.id))
-      const continueSection = mergeContinueWatchingSections(sections, localContinueItems, tombstones, serverSourceIds)
+      const historyItems = await enrichLocalContinueWatchingItems(historySnapshot.entries.map(toContinueWatchingMediaItem), true, loadId)
+      const localContinueItems = historyItems.filter((_, index) => !historySnapshot.entries[index].deleted)
+      const tombstones = historySnapshot.entries.flatMap((entry, index) => entry.deleted ? [{ ...entry, seriesId: historyItems[index].seriesId }] : [])
+      const continueSection = mergeContinueWatchingSections(sections, localContinueItems, tombstones)
+      continueSection.items = await enrichLocalContinueWatchingItems(continueSection.items, false, loadId)
       const nonContinueSections = sections.filter(section => section.type !== 'continueWatching')
       const mergedSections = continueSection.items.length > 0
         ? [continueSection, ...nonContinueSections]
         : nonContinueSections
 
-      if (loadId !== homeLoadId)
+      const snapshotCurrent = await isPlaybackHistorySnapshotCurrent(historySnapshot)
+      if (loadId !== homeLoadId || sourceSignature !== JSON.stringify(orderedConfigs.value))
         return
+      if (!snapshotCurrent) {
+        if (historyRetry < 1)
+          await loadHomeSections({ force: true, background: true }, historyRetry + 1)
+        else
+          invalidateHomeCache()
+        return
+      }
 
-      homeSections.value = mergedSections.length > 0
+      homeSections.value = excludeDisabledHomeSections(mergedSections.length > 0
         ? mergedSections
         : [
             {
@@ -407,7 +430,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
               items: generatePlaceholderHeroItems(),
             },
             continueSection,
-          ]
+          ])
       homeLoadedAt.value = Date.now()
       void persistDisplayCache()
     }
@@ -425,6 +448,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
     if (!source?.refreshHomeSection)
       throw new Error('当前媒体来源不支持单独刷新栏目。')
     const replacement = await source.refreshHomeSection(section.refreshKey)
+    if (disabledHistorySourceIds.value.includes(section.sourceId))
+      return
     const index = homeSections.value.findIndex(item => item.id === section.id)
     if (index < 0)
       return
@@ -436,6 +461,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   function getSourceRootSnapshot(id: string): SourceRootSnapshot | null {
+    if (disabledHistorySourceIds.value.includes(id))
+      return null
     return sourceRootSnapshots.value[id] ?? null
   }
 
@@ -445,6 +472,8 @@ export const useDataSourceStore = defineStore('datasource', () => {
   }
 
   function setSourceRootSnapshot(id: string, snapshot: Omit<SourceRootSnapshot, 'updatedAt'>) {
+    if (disabledHistorySourceIds.value.includes(id))
+      return
     sourceRootSnapshots.value = {
       ...sourceRootSnapshots.value,
       [id]: {
@@ -468,6 +497,19 @@ export const useDataSourceStore = defineStore('datasource', () => {
   function invalidateHomeCache() {
     homeLoadedAt.value = 0
     void persistDisplayCache()
+  }
+
+  function clearPlaybackHistoryDisplayCache() {
+    homeLoadId++
+    isLoading.value = false
+    homeSections.value = homeSections.value.filter(section => section.type !== 'continueWatching')
+    sourceRootSnapshots.value = Object.fromEntries(Object.entries(sourceRootSnapshots.value).map(([id, snapshot]) => [id, {
+      ...snapshot,
+      updatedAt: 0,
+      homeSections: snapshot.homeSections.filter(section => section.type !== 'continueWatching'),
+    }]))
+    dataSourceManager.clearAllSourceCaches()
+    invalidateHomeCache()
   }
 
   function pruneOfflineProjection() {
@@ -500,15 +542,20 @@ export const useDataSourceStore = defineStore('datasource', () => {
       return
     try {
       const cache = sanitizePersistedDisplayCache(JSON.parse(raw) as unknown)
-      homeSections.value = cache.homeSections
+      // Account-bound history is rebuilt only after this session validates its account.
+      homeSections.value = excludeDisabledHomeSections(cache.homeSections.filter(section => section.type !== 'continueWatching'))
       // Display the saved snapshot immediately, then revalidate Server state after restart.
       homeLoadedAt.value = 0
-      sourceRootSnapshots.value = cache.sourceRootSnapshots
+      sourceRootSnapshots.value = Object.fromEntries(
+        Object.entries(cache.sourceRootSnapshots)
+          .filter(([sourceId]) => !disabledHistorySourceIds.value.includes(sourceId))
+          .map(([sourceId, snapshot]) => [sourceId, { ...snapshot, homeSections: snapshot.homeSections.filter(section => section.type !== 'continueWatching') }]),
+      )
       rememberPlaybackTargetsForItems([
-        ...cache.homeSections.flatMap(section => section.items),
-        ...Object.values(cache.sourceRootSnapshots).flatMap(snapshot => snapshot.homeSections.flatMap(section => section.items)),
+        ...homeSections.value.flatMap(section => section.items),
+        ...Object.values(sourceRootSnapshots.value).flatMap(snapshot => snapshot.homeSections.flatMap(section => section.items)),
       ])
-      const sanitized = JSON.stringify(cache)
+      const sanitized = JSON.stringify({ ...cache, homeSections: homeSections.value, sourceRootSnapshots: sourceRootSnapshots.value })
       if (sanitized !== raw)
         void setAppSetting(DISPLAY_CACHE_KEY, sanitized).catch(() => undefined)
     }
@@ -518,6 +565,16 @@ export const useDataSourceStore = defineStore('datasource', () => {
       sourceRootSnapshots.value = {}
       void removeAppSetting(DISPLAY_CACHE_KEY).catch(() => undefined)
     }
+  }
+
+  function excludeDisabledHomeSections(sections: HomeSection[]): HomeSection[] {
+    const excluded = new Set(disabledHistorySourceIds.value)
+    if (!excluded.size)
+      return sections
+    return sections
+      .filter(section => !section.sourceId || !excluded.has(section.sourceId))
+      .map(section => ({ ...section, items: section.items.filter(item => !excluded.has(item.sourceId)) }))
+      .filter(section => section.items.length > 0 || Boolean(section.providerIdentity && section.errorCode))
   }
 
   async function persistDisplayCache() {
@@ -535,21 +592,29 @@ export const useDataSourceStore = defineStore('datasource', () => {
     await setAppSetting(DISPLAY_CACHE_KEY, JSON.stringify(cache))
   }
 
-  async function enrichLocalContinueWatchingItems(items: readonly MediaItem[]): Promise<MediaItem[]> {
-    return Promise.all(items.map(enrichLocalContinueWatchingItem))
+  async function enrichLocalContinueWatchingItems(items: readonly MediaItem[], parentOnly: boolean, loadId: number): Promise<MediaItem[]> {
+    const enriched: MediaItem[] = []
+    for (let offset = 0; offset < items.length; offset += 4) {
+      if (loadId !== homeLoadId)
+        return [...enriched, ...items.slice(offset)]
+      enriched.push(...await Promise.all(items.slice(offset, offset + 4).map(item => enrichLocalContinueWatchingItem(item, parentOnly))))
+    }
+    return enriched
   }
 
-  async function enrichLocalContinueWatchingItem(item: MediaItem): Promise<MediaItem> {
-    const needsEpisodeParent = item.type === 'episode' && !item.seriesName
-    if (hasArtwork(item) && !needsEpisodeParent)
+  async function enrichLocalContinueWatchingItem(item: MediaItem, parentOnly: boolean): Promise<MediaItem> {
+    const needsEpisodeParent = item.type === 'episode' && !playbackSeriesId(item)
+    if (!needsEpisodeParent && (parentOnly || hasArtwork(item)))
       return item
 
     const source = dataSourceManager.getSource(item.sourceId)
-    if (!source)
+    if (!source?.isConnected)
       return item
 
     try {
       const detail = await source.getDetail(item.id)
+      if (dataSourceManager.getSource(item.sourceId) !== source || detail.sourceId !== item.sourceId || detail.id !== item.id)
+        return item
       return {
         ...item,
         posterUrl: firstNonEmpty(item.posterUrl, detail.posterUrl),
@@ -558,6 +623,9 @@ export const useDataSourceStore = defineStore('datasource', () => {
         duration: item.duration ?? detail.duration,
         libraryId: item.libraryId ?? detail.libraryId,
         seriesName: firstNonEmpty(item.seriesName, detail.seriesName),
+        seriesId: playbackSeriesId(item) ?? playbackSeriesId(detail),
+        seasonNumber: item.seasonNumber ?? detail.seasonNumber,
+        episodeNumber: item.episodeNumber ?? detail.episodeNumber,
       }
     }
     catch {
@@ -572,6 +640,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
   return {
     configs,
     orderedConfigs,
+    disabledHistorySourceIds,
     activeSourceId,
     activeSource,
     homeSections,
@@ -596,6 +665,7 @@ export const useDataSourceStore = defineStore('datasource', () => {
     setSourceRootSnapshot,
     invalidateSourceRootSnapshot,
     invalidateHomeCache,
+    clearPlaybackHistoryDisplayCache,
     pruneOfflineProjection,
     searchAllSources,
     getSource,
@@ -696,13 +766,16 @@ function sanitizeDisplayMediaItem(value: unknown): MediaItem {
     duration: optionalNumber(item.duration),
     size: optionalNumber(item.size),
     modified: optionalText(item.modified),
+    lastPlayedAt: optionalText(item.lastPlayedAt),
+    addedAt: optionalText(item.addedAt),
     path: '',
     resumePosition: optionalNumber(item.resumePosition),
     progress: optionalNumber(item.progress),
     progressSource: item.progressSource === 'local' ? 'local' : undefined,
-    played: item.played === true,
+    played: typeof item.played === 'boolean' ? item.played : undefined,
     favorite: item.favorite === true,
     seriesName: optionalText(item.seriesName),
+    seriesId: sanitizeIdentityText(item.seriesId),
     seasonNumber: optionalNumber(item.seasonNumber),
     episodeNumber: optionalNumber(item.episodeNumber),
     historyIdentity: sanitizeBoundedText(item.historyIdentity, 1100),
@@ -869,95 +942,6 @@ function isRemoteSourceType(type: string): boolean {
   return type === 'server' || type === 'emby' || type === 'jellyfin'
 }
 
-function mergeContinueWatchingSections(
-  sections: readonly HomeSection[],
-  localItems: readonly MediaItem[],
-  tombstones: readonly PlaybackHistoryEntry[],
-  serverSourceIds: ReadonlySet<string>,
-): HomeSection {
-  const keyFor = (item: MediaItem) => continueWatchingKey(item, serverSourceIds)
-  const suppressed = new Map<string, number>()
-  const suppress = (key: string, updatedAt: number) => suppressed.set(key, Math.max(suppressed.get(key) ?? 0, updatedAt))
-  for (const entry of tombstones) {
-    suppress(`${entry.sourceId}:${entry.mediaIdentity}`, entry.updatedAt)
-    if (entry.itemId)
-      suppress(`${entry.sourceId}:${entry.itemId}`, entry.updatedAt)
-    const canonical = serverMovieHistoryIdentity(entry.sourceId, entry.itemId, entry.mediaType, serverSourceIds)
-    if (canonical)
-      suppress(`${entry.sourceId}:${canonical}`, entry.updatedAt)
-  }
-  const hiddenByTombstone = (item: MediaItem, key: string) => {
-    const deletedAt = suppressed.get(key)
-    if (deletedAt == null)
-      return false
-    const playedAt = Date.parse(item.modified ?? '')
-    return !Number.isFinite(playedAt) || playedAt <= deletedAt
-  }
-  const visible = (item: MediaItem) => !hiddenByTombstone(item, keyFor(item))
-    && !hiddenByTombstone(item, `${item.sourceId}:${item.historyIdentity ?? item.id}`)
-    && !hiddenByTombstone(item, `${item.sourceId}:${item.id}`)
-  const providerItems = sections.filter(section => section.type === 'continueWatching').flatMap(section => section.items).filter(visible)
-  localItems = localItems.filter(visible)
-  const merged = new Map<string, MediaItem>()
-
-  for (const item of providerItems)
-    merged.set(keyFor(item), item)
-
-  for (const item of localItems) {
-    const key = keyFor(item)
-    const providerItem = merged.get(key)
-    merged.set(key, providerItem ? mergeContinueWatchingItem(item, providerItem) : item)
-  }
-
-  return {
-    id: 'continue-watching',
-    title: '继续观看',
-    type: 'continueWatching',
-    items: [...localItems.map(keyFor), ...providerItems.map(keyFor)]
-      .filter((key, index, keys) => keys.indexOf(key) === index)
-      .map(key => merged.get(key))
-      .filter((item): item is MediaItem => item != null),
-  }
-}
-
-function mergeContinueWatchingItem(localItem: MediaItem, providerItem: MediaItem): MediaItem {
-  const localUpdatedAt = Date.parse(localItem.modified ?? '')
-  const providerUpdatedAt = Date.parse(providerItem.modified ?? '')
-  const preferLocal = Number.isFinite(localUpdatedAt) && (!Number.isFinite(providerUpdatedAt) || localUpdatedAt > providerUpdatedAt)
-  const providerResumePosition = preferLocal ? undefined : usableResumePosition(providerItem)
-  const providerProgress = providerResumePosition == null
-    ? undefined
-    : providerItem.progress ?? progressRatio(providerResumePosition, providerItem.duration)
-
-  return {
-    ...localItem,
-    ...providerItem,
-    libraryId: providerItem.libraryId ?? localItem.libraryId,
-    posterUrl: firstNonEmpty(providerItem.posterUrl, localItem.posterUrl),
-    backdropUrl: firstNonEmpty(providerItem.backdropUrl, localItem.backdropUrl),
-    titleLogoUrl: firstNonEmpty(providerItem.titleLogoUrl, localItem.titleLogoUrl),
-    duration: providerItem.duration ?? localItem.duration,
-    path: providerItem.path || localItem.path,
-    resumePosition: providerResumePosition ?? localItem.resumePosition,
-    progress: providerProgress ?? localItem.progress,
-    progressSource: providerResumePosition != null ? providerItem.progressSource : localItem.progressSource,
-    seriesName: firstNonEmpty(providerItem.seriesName, localItem.seriesName),
-  }
-}
-
-function usableResumePosition(item: MediaItem): number | undefined {
-  const position = item.resumePosition
-  if (typeof position !== 'number' || !Number.isFinite(position) || position < 30)
-    return undefined
-  return isCompletedPosition(position, item.duration) ? undefined : position
-}
-
-function progressRatio(position: number, duration: number | undefined): number | undefined {
-  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0)
-    return undefined
-  return Math.max(0, Math.min(1, position / duration))
-}
-
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   return values.find(value => typeof value === 'string' && value.trim().length > 0)
 }
@@ -973,38 +957,6 @@ async function loadAggregatedHomeSections(configs: readonly DataSourceConfig[]):
   catch {
     return []
   }
-}
-
-async function listLocalContinueWatchingSafely(limit: number): Promise<PlaybackHistoryEntry[]> {
-  try {
-    return await listLocalContinueWatching(limit)
-  }
-  catch {
-    return []
-  }
-}
-
-function continueWatchingKey(item: MediaItem, serverSourceIds: ReadonlySet<string>): string {
-  const canonical = serverMovieHistoryIdentity(item.sourceId, item.id, item.type, serverSourceIds)
-  return `${item.sourceId}:${canonical ?? item.historyIdentity ?? item.id}`
-}
-
-function serverMovieHistoryIdentity(
-  sourceId: string,
-  itemId: string | null | undefined,
-  mediaType: MediaItem['type'] | null | undefined,
-  serverSourceIds: ReadonlySet<string>,
-): string | undefined {
-  if (!serverSourceIds.has(sourceId) || mediaType !== 'movie' || !itemId)
-    return undefined
-  const parts = itemId.split('|')
-  if ((parts[0] !== 'work' || parts.length !== 3) && (parts[0] !== 'entry' || parts.length !== 4))
-    return undefined
-  if (!/^[1-9]\d*$/.test(parts[1] ?? '') || !/^[\w-]{1,512}$/.test(parts[2] ?? ''))
-    return undefined
-  if (parts[0] === 'entry' && !/^[1-9]\d*$/.test(parts[3] ?? ''))
-    return undefined
-  return `server:v1:movie:${parts[1]}:${parts[2]}`
 }
 
 function sanitizeConfigs(value: unknown): DataSourceConfig[] {

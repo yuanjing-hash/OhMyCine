@@ -8,6 +8,7 @@ name = "ohmycine_player_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+cc = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
@@ -36,6 +37,7 @@ rand = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 raw-window-handle = "0.6"
 tauri-plugin-updater = "2.10.1"
+minisign-verify = "=0.2.5"
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 

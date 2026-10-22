@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { MediaItem, MediaLibrary } from '@/services/datasource/types'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import type { PlaybackHistoryStatus } from '@/services/playbackHistory'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import MediaGrid from '@/components/media/MediaGrid.vue'
 import { toSafeErrorMessage } from '@/services/datasource/errors'
@@ -15,22 +16,46 @@ const PAGE_SIZE = 24
 const router = useRouter()
 const store = useDataSourceStore()
 const page = ref(1)
+const status = ref<PlaybackHistoryStatus>('all')
+const statusOptions: ReadonlyArray<{ value: PlaybackHistoryStatus, label: string }> = [
+  { value: 'all', label: '全部' },
+  { value: 'inProgress', label: '观看中' },
+  { value: 'watched', label: '已看完' },
+]
 const total = ref(0)
 const hasMore = ref(false)
 const loading = ref(true)
 const items = ref<MediaItem[]>([])
 const errorMessage = ref<string | null>(null)
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
+const emptyTitle = computed(() => status.value === 'watched' ? '还没有已看完的记录' : status.value === 'inProgress' ? '还没有观看中的记录' : '还没有观看历史')
+let pageLoadId = 0
+let disposed = false
+
+watch(status, () => {
+  page.value = 1
+  void loadPage(1)
+})
+
+watch(() => JSON.stringify(store.disabledHistorySourceIds), () => {
+  const excluded = new Set(store.disabledHistorySourceIds)
+  items.value = items.value.filter(item => !excluded.has(item.sourceId))
+  page.value = 1
+  void loadPage(1)
+}, { flush: 'sync' })
 
 onMounted(async () => {
+  window.addEventListener(PLAYED_STATE_CHANGED_EVENT, handleHistoryChanged)
   store.loadConfigs()
   await store.syncManager().catch(() => undefined)
   await syncPlaybackHistory(store).catch(() => undefined)
-  await loadPage(1)
-  window.addEventListener(PLAYED_STATE_CHANGED_EVENT, handleHistoryChanged)
+  if (!disposed)
+    await loadPage(1)
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  pageLoadId++
   window.removeEventListener(PLAYED_STATE_CHANGED_EVENT, handleHistoryChanged)
 })
 
@@ -39,8 +64,16 @@ function handleHistoryChanged() {
 }
 
 async function loadPage(nextPage: number) {
+  const loadId = ++pageLoadId
   loading.value = true
-  const result = await listPlaybackHistoryPage(nextPage, PAGE_SIZE)
+  const result = await listPlaybackHistoryPage(nextPage, PAGE_SIZE, store.disabledHistorySourceIds, status.value)
+  if (loadId !== pageLoadId || disposed)
+    return
+  const lastPage = Math.max(1, Math.ceil(result.total / PAGE_SIZE))
+  if (result.page > lastPage) {
+    await loadPage(lastPage)
+    return
+  }
   page.value = result.page
   total.value = result.total
   hasMore.value = result.hasMore
@@ -96,11 +129,17 @@ async function playItem(item: MediaItem | MediaLibrary) {
         </p>
       </header>
 
+      <div class="mb-6 flex flex-wrap gap-2" role="group" aria-label="观看状态筛选">
+        <button v-for="option in statusOptions" :key="option.value" type="button" class="rounded-xl px-4 py-2 text-sm transition-colors" :class="status === option.value ? 'bg-white/18 text-white' : 'bg-white/6 text-white/50 hover:bg-white/10 hover:text-white'" :aria-pressed="status === option.value" @click="status = option.value">
+          {{ option.label }}
+        </button>
+      </div>
+
       <p v-if="errorMessage" role="alert" class="mb-5 rounded-2xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-200">
         {{ errorMessage }}
       </p>
 
-      <MediaGrid :items="items" :loading="loading" action-context="history" empty-title="还没有观看历史" empty-description="开始播放后会先保存在本机；连接 Server 后将自动同步到同一账号的其他设备。" @select="playItem" @play="playItem" />
+      <MediaGrid :items="items" :loading="loading" action-context="history" :empty-title="emptyTitle" empty-description="开始播放后会先保存在本机；连接 Server 后将自动同步到同一账号的其他设备。" @select="playItem" @play="playItem" />
 
       <nav v-if="totalPages > 1" class="mt-8 flex items-center justify-center gap-3" aria-label="观看历史分页">
         <button type="button" class="rounded-xl bg-white/8 px-5 py-2.5 text-sm text-white disabled:opacity-35" :disabled="loading || page <= 1" @click="loadPage(page - 1)">

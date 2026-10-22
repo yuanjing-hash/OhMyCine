@@ -183,8 +183,10 @@ function toMediaItem(item: OfflineItemSummary): MediaItem {
     type: mediaType(item.mediaType),
     size: item.videoBytes,
     modified: new Date(item.completedAt * 1000).toISOString(),
+    addedAt: new Date(item.completedAt * 1000).toISOString(),
     path: '',
     seriesName: item.seriesName,
+    seriesId: item.mediaType === 'episode' && item.seriesName ? offlineSeriesItemId(item.sourceId, item.seriesName) : undefined,
     seasonNumber: item.seasonNumber,
     episodeNumber: item.episodeNumber,
     exactIdentity: `${item.sourceId}:${item.itemId}:${item.mediaSourceId ?? ''}:${item.variantId ?? ''}`,
@@ -233,6 +235,11 @@ function mediaType(value: string): MediaItem['type'] {
     : 'file'
 }
 
+function offlineSeriesItemId(sourceId: string, seriesName: string): string {
+  // Reuse the virtual hierarchy's own identity; this is not a remote catalog ID.
+  return `offline-series:${encodeURIComponent(`${sourceId}\u0000${seriesName}`)}`
+}
+
 export function buildOfflineHierarchy(items: readonly OfflineItemSummary[]): MediaItem[] {
   const roots: MediaItem[] = []
   const series = new Map<string, MediaItem>()
@@ -247,7 +254,7 @@ export function buildOfflineHierarchy(items: readonly OfflineItemSummary[]): Med
     let seriesItem = series.get(seriesKey)
     if (!seriesItem) {
       seriesItem = {
-        id: `offline-series:${encodeURIComponent(seriesKey)}`,
+        id: offlineSeriesItemId(record.sourceId, record.seriesName),
         sourceId: OFFLINE_SOURCE_ID,
         originType: 'offline',
         name: record.seriesName,
@@ -271,6 +278,7 @@ export function buildOfflineHierarchy(items: readonly OfflineItemSummary[]): Med
         type: 'season',
         path: '',
         seriesName: record.seriesName,
+        seriesId: seriesItem.id,
         seasonNumber,
         children: [],
         exactIdentity: `offline-season:${seasonKey}`,

@@ -69,7 +69,7 @@ assert.match(playerView, /if \(isNativeAndroidPlayer\)\s+await seekMpv\(position
 assert.match(playerView, /\(!isNativeAndroidPlayer \|\| videoReady\.value\) && Math\.abs\(currentTime\.value - position\) <= 5/)
 assert.match(playerView, /pending && \(!isNativeAndroidPlayer \|\| videoReady\.value\) && pending\.path === mediaPath\.value/)
 assert.match(playerView, /function effectivePlaybackPosition\(\)[\s\S]*pendingResumeSeek[\s\S]*pending\.position/)
-assert.match(playerView, /if \(!playbackProgressReady\)\s+return[\s\S]*const payload = currentHistoryPayload\(\)/)
+assert.match(playerView, /if \(!playbackProgressReady \|\| !fileLoaded\.value\)\s+return[\s\S]*const currentPayload = currentHistoryPayload\(\)/)
 assert.match(playerView, /playbackProgressReady = true[\s\S]*syncProviderPlaybackStarted\(\)/)
 assert.match(playerView, /const position = shouldResumePosition\(fallbackPosition, fallbackDuration\)[\s\S]*fallbackPosition[\s\S]*shouldResumePlayback\(saved\)/)
 assert.match(playerView, /seek: seekMpv/)
@@ -90,7 +90,7 @@ assert.match(preferenceCommand, /DELETE FROM media_playback_preferences WHERE so
 
 const dataSourceStore = await readFile(fileURLToPath(new URL('../src/stores/datasource.ts', import.meta.url)), 'utf8')
 assert.match(dataSourceStore, /deleteMediaPlaybackPreferencesForSource\(id\)/)
-assert.match(dataSourceStore, /const providerResumePosition = usableResumePosition\(providerItem\)/)
+assert.match(dataSourceStore, /const providerResumePosition = preferLocal \? undefined : usableResumePosition\(providerItem\)/)
 assert.match(dataSourceStore, /resumePosition: providerResumePosition \?\? localItem\.resumePosition/)
 
 console.log(JSON.stringify({

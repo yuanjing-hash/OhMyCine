@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, useAttrs, watch } from 'vue'
-import { cacheImage, getCachedImage, isTauriImageCacheAvailable, peekCachedImage } from '@/services/imageCache'
+import { cacheImage, getCachedImage, isTauriImageCacheAvailable, peekCachedImage, serverArtworkCredentialGeneration, subscribeServerArtworkSources } from '@/services/imageCache'
 import { isProtectedServerArtworkURL } from '@/services/serverArtwork'
 
 defineOptions({ inheritAttrs: false })
@@ -21,17 +21,71 @@ const root = ref<HTMLElement | null>(null)
 const initialDisplaySource = () => isProtectedServerArtworkURL(props.src) ? peekCachedImage(props.cacheKey, props.src) ?? '' : props.src
 const displaySource = ref(initialDisplaySource())
 const ready = ref(Boolean(displaySource.value))
+const retryDelays = [600, 1800] as const
 let observer: IntersectionObserver | null = null
 let generation = 0
 let visible = false
+let disposed = false
+let attempts = 0
+let inFlightGeneration: number | null = null
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let credentialGeneration = serverArtworkCredentialGeneration(props.cacheKey, props.src)
 
-watch(() => [props.cacheKey, props.src], () => {
+function clearRetry() {
+  clearTimeout(retryTimer)
+  retryTimer = undefined
+}
+
+function resetImage() {
   generation += 1
+  attempts = 0
+  clearRetry()
+  credentialGeneration = serverArtworkCredentialGeneration(props.cacheKey, props.src)
   displaySource.value = initialDisplaySource()
   ready.value = Boolean(displaySource.value)
   if (visible)
-    void resolveImage(generation)
+    requestImage()
+}
+
+const unsubscribeArtworkSources = subscribeServerArtworkSources(() => {
+  if (credentialGeneration !== serverArtworkCredentialGeneration(props.cacheKey, props.src))
+    resetImage()
 })
+
+watch(() => [props.cacheKey, props.src], () => {
+  resetImage()
+})
+
+function requestImage() {
+  if (disposed || !visible || inFlightGeneration === generation || attempts > retryDelays.length)
+    return
+  if (isProtectedServerArtworkURL(props.src) && credentialGeneration === null)
+    return
+  clearRetry()
+  const currentGeneration = generation
+  inFlightGeneration = currentGeneration
+  attempts += 1
+  void resolveImage(currentGeneration).finally(() => {
+    if (inFlightGeneration === currentGeneration)
+      inFlightGeneration = null
+  })
+}
+
+function retryImage(currentGeneration: number) {
+  if (disposed || currentGeneration !== generation)
+    return
+  const delay = retryDelays[attempts - 1]
+  if (delay === undefined) {
+    emit('error', props.src)
+    return
+  }
+  if (!visible || retryTimer !== undefined)
+    return
+  retryTimer = setTimeout(() => {
+    retryTimer = undefined
+    requestImage()
+  }, delay)
+}
 
 async function resolveImage(currentGeneration: number) {
   const protectedArtwork = isProtectedServerArtworkURL(props.src)
@@ -47,8 +101,7 @@ async function resolveImage(currentGeneration: number) {
   if (cached) {
     displaySource.value = cached
     ready.value = true
-    if (protectedArtwork)
-      return
+    return
   }
   else if (!props.src) {
     displaySource.value = ''
@@ -63,10 +116,13 @@ async function resolveImage(currentGeneration: number) {
   displaySource.value = resolved
   ready.value = Boolean(resolved)
   if (!resolved)
-    emit('error', props.src)
+    retryImage(currentGeneration)
 }
 
-function handleImageError() {
+function handleImageError(event: Event) {
+  const image = event.target as HTMLImageElement
+  if (disposed || !image.isConnected || image.getAttribute('src') !== displaySource.value)
+    return
   if (!isProtectedServerArtworkURL(props.src) && displaySource.value !== props.src && props.src) {
     displaySource.value = props.src
     ready.value = true
@@ -74,28 +130,45 @@ function handleImageError() {
   }
   displaySource.value = ''
   ready.value = false
-  emit('error', props.src)
+  // A browser URL can fail before the lazy native-cache lookup starts.
+  attempts = Math.max(1, attempts)
+  retryImage(generation)
+}
+
+function handleOnline() {
+  if (!ready.value)
+    requestImage()
 }
 
 onMounted(() => {
+  globalThis.addEventListener('online', handleOnline)
   if (!('IntersectionObserver' in globalThis)) {
     visible = true
-    void resolveImage(generation)
+    requestImage()
     return
   }
   observer = new IntersectionObserver((entries) => {
-    if (!entries.some(entry => entry.isIntersecting))
+    const wasVisible = visible
+    visible = entries.some(entry => entry.isIntersecting)
+    if (!visible) {
+      clearRetry()
       return
-    visible = true
-    observer?.disconnect()
-    observer = null
-    void resolveImage(generation)
+    }
+    if (!wasVisible && (!ready.value || attempts === 0))
+      requestImage()
   }, { rootMargin: '320px' })
   if (root.value)
     observer.observe(root.value)
 })
 
-onBeforeUnmount(() => observer?.disconnect())
+onBeforeUnmount(() => {
+  disposed = true
+  generation += 1
+  clearRetry()
+  observer?.disconnect()
+  unsubscribeArtworkSources()
+  globalThis.removeEventListener('online', handleOnline)
+})
 </script>
 
 <template>

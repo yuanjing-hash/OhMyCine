@@ -1,4 +1,5 @@
 import type { ServerCredentialValue } from './credentialStore'
+import type { OnlineLibrarySummary } from './serverOnline'
 import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaAcquisitionState, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderCollectionOption, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
@@ -8,12 +9,15 @@ import { getServerAcquisition, getServerDiscoveryDetail } from '@/services/serve
 import { createCredentialRef, readServerCredential, saveServerCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
 import { playbackTargetsForItem } from './identityMerge'
+import { parseServerHistoryIdentity } from './serverIdentity'
 import {
+  createOnlineVersionID,
   onlineContributionErrorToHomeSection,
   onlineLibraryToMediaLibrary,
   onlineNavigationToMediaItem,
   onlinePlaybackToStreamRequest,
   onlineSectionsToHomeSections,
+  onlineVersionToMediaItem,
   onlineWorkToDetail,
   onlineWorkToMediaItem,
   parseOnlineFeedSections,
@@ -96,7 +100,7 @@ interface ServerPersonRecord {
 
 interface ServerItemRecord {
   id: string
-  item_token?: string
+  item_token: string
   library_id: number
   title: string
   original_title?: string
@@ -121,6 +125,7 @@ interface ServerItemRecord {
   season_count: number
   episode_count: number
   modified_at: string
+  added_at: string
   match_status: string
   history_identity?: string
 }
@@ -278,12 +283,19 @@ export class ServerDataSource implements DataSource {
   private credential: ServerCredentialValue | null = null
   private connected = false
   private capabilities = new Set<string>()
+  private historyAccountId: number | null = null
+  private historyAccountRequest: Promise<number> | null = null
+  private readonly onlineDownloadLibraries = new Set<string>()
+  private readonly onlineProgressLibraries = new Map<string, boolean>()
+  private readonly onlineSystemHistoryLibraries = new Set<string>()
   private readonly onlineProgressContexts = new Map<string, ServerOnlineProgressContext>()
   private readonly bridge: ServerBridge
   private readonly readCredential: (ref: string) => Promise<ServerCredentialValue | null>
   private mediaChangeWatchGeneration = 0
   private lifecycleGeneration = 0
   private retired = false
+  private discoveryStreamGeneration = 0
+  private readonly discoveryStreamCancellations = new Map<string, () => Promise<void>>()
 
   constructor(options: { bridge?: ServerBridge, readCredential?: (ref: string) => Promise<ServerCredentialValue | null> } = {}) {
     this.bridge = options.bridge ?? defaultServerBridge
@@ -299,11 +311,60 @@ export class ServerDataSource implements DataSource {
     return this.capabilities.has(capability)
   }
 
+  canDownloadItem(itemId: string): boolean {
+    const online = parseOnlineItemID(itemId)
+    return !online || (this.hasCapability('online_offline_plan_v1') && this.onlineDownloadLibraries.has(online.libraryId))
+  }
+
+  canSyncOnlineHistory(mediaIdentity: string): boolean {
+    const online = parseOnlineItemID(mediaIdentity)
+    return online?.kind === 'version' && (this.hasCapability('online_playback_history_v1') || this.onlineSystemHistoryLibraries.has(online.libraryId))
+  }
+
+  async resolveDownloadSelection(request: PlaybackRequest) {
+    const online = parseOnlineItemID(request.itemId)
+    if (!online)
+      return { itemId: request.itemId, mediaSourceId: request.mediaSourceId, variantId: request.variantId }
+    if (online.kind !== 'work' && online.kind !== 'version')
+      throw new Error('请先选择具体节目或集数。')
+    const libraries = await this.onlineLibraries()
+    if (!this.hasCapability('online_offline_plan_v1') || !libraries.some(library => library.id === online.libraryId && library.available && library.offlineDownloadSupported))
+      throw new Error('当前 Server 或在线插件不支持本地下载。')
+    const work = await this.onlineWork(online.libraryId, online.workId)
+    const candidates = work.segments.flatMap(segment => segment.versions.map(version => ({ segment, version })))
+    const selected = online.kind === 'version'
+      ? candidates.find(candidate => candidate.segment.id === online.segmentId && candidate.version.id === online.versionId)
+      : request.mediaSourceId
+        ? candidates.find(candidate => candidate.version.id === request.mediaSourceId)
+        : candidates.find(candidate => candidate.version.variants.length === 0 || candidate.version.variants.some(variant => variant.available))
+    if (!selected || (request.mediaSourceId && selected.version.id !== request.mediaSourceId))
+      throw new Error('所选节目版本已不可用，请刷新详情。')
+    const itemId = createOnlineVersionID(online.libraryId, work.id, selected.segment.id, selected.version.id)
+    const variants = selected.version.variants.length > 0 ? selected.version.variants : (await this.getStreamRequest({ itemId, mediaSourceId: selected.version.id, variantId: request.variantId })).variants ?? []
+    const variant = request.variantId
+      ? variants.find(candidate => candidate.id === request.variantId && candidate.available)
+      : variants.find(candidate => candidate.available)
+    if (!variant)
+      throw new Error('所选清晰度没有完整播放或下载权益。')
+    return {
+      itemId,
+      mediaSourceId: selected.version.id,
+      variantId: variant.id,
+      onlineIdentity: { libraryId: online.libraryId, workId: work.id, segmentId: selected.segment.id, versionId: selected.version.id },
+    }
+  }
+
   async init(config: DataSourceConfig): Promise<void> {
     const generation = ++this.lifecycleGeneration
     this.retired = false
     this.credential = null
     this.connected = false
+    this.cancelDiscoveryStreams()
+    this.historyAccountId = null
+    this.historyAccountRequest = null
+    this.onlineDownloadLibraries.clear()
+    this.onlineProgressLibraries.clear()
+    this.onlineSystemHistoryLibraries.clear()
     this.config = sanitizeServerConfig(config)
     this.baseUrl = normalizeServerBaseUrl(config.url)
     this.credentialRef = readServerExtra(config).credentialRef ?? ''
@@ -324,13 +385,33 @@ export class ServerDataSource implements DataSource {
 
   async refreshCapabilities(): Promise<string[]> {
     const data = recordData(await this.request('/api/v1/player/bootstrap'))
+    const user = isRecord(data.user) ? data.user : {}
+    if (!Number.isSafeInteger(user.id) || Number(user.id) <= 0)
+      throw new Error('Server 返回了无效的账户身份。')
     if (!Array.isArray(data.capabilities) || data.capabilities.length > 64)
       throw new Error('Server 返回了无效的账户能力。')
     const capabilities = data.capabilities.flatMap((value): string[] => typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value) ? [value] : [])
     if (capabilities.length !== data.capabilities.length)
       throw new Error('Server 返回了无效的账户能力。')
     this.capabilities = new Set(capabilities)
+    this.historyAccountId = Number(user.id)
     return this.capabilityCodes
+  }
+
+  async getPlaybackHistoryAccount(): Promise<{ endpoint: string, accountId: number }> {
+    if (this.historyAccountId === null) {
+      this.historyAccountRequest ??= this.refreshCapabilities().then(() => {
+        if (this.historyAccountId === null)
+          throw new Error('Server 账户身份尚未确认。')
+        return this.historyAccountId
+      }).finally(() => {
+        this.historyAccountRequest = null
+      })
+      await this.historyAccountRequest
+    }
+    if (this.historyAccountId === null)
+      throw new Error('Server 账户身份尚未确认。')
+    return { endpoint: this.baseUrl, accountId: this.historyAccountId }
   }
 
   async syncPlaybackHistory(payload: ServerPlaybackHistorySyncRequest): Promise<ServerPlaybackHistorySyncResponse> {
@@ -374,24 +455,56 @@ export class ServerDataSource implements DataSource {
       throw new Error('Server 流式资源搜索路径无效。')
     if (!this.bridge.stream || !this.bridge.cancelStream)
       throw new Error('当前 Player 环境不支持 Server 流式搜索。')
-    const credential = await this.ensureCredential()
+    const generation = this.discoveryStreamGeneration
+    const baseUrl = this.baseUrl
+    // Do not let a credential read that outlives destroy()/init() resurrect an old stream.
+    const credential = this.credential ?? (this.credentialRef ? await this.readCredential(this.credentialRef) : null)
+    if (generation !== this.discoveryStreamGeneration)
+      throw new Error('Server 来源已切换，搜索已取消。')
+    if (!credential)
+      throw new Error('OhMyCine Server 登录凭据不存在，请重新连接。')
     const requestId = crypto.randomUUID()
-    const request: ServerNativeRequest = { baseUrl: this.baseUrl, method: 'GET', path, accessToken: credential.accessToken }
-    const done = this.bridge.stream(request, requestId, onEvent).catch((error) => {
-      throw new Error(redactSensitiveText(error))
-    })
-    return {
-      requestId,
-      done,
-      cancel: async () => {
+    const request: ServerNativeRequest = { baseUrl, method: 'GET', path, accessToken: credential.accessToken }
+    let cancelled = false
+    let started = false
+    const cancel = async () => {
+      if (cancelled)
+        return
+      cancelled = true
+      this.discoveryStreamCancellations.delete(requestId)
+      if (started) {
         try {
           await this.bridge.cancelStream?.(requestId)
         }
         catch {
           // Cancellation is best effort; search generations still reject late events.
         }
-      },
+      }
     }
+    this.discoveryStreamCancellations.set(requestId, cancel)
+    const done = Promise.resolve().then(async () => {
+      if (cancelled || generation !== this.discoveryStreamGeneration)
+        return
+      started = true
+      await this.bridge.stream?.(request, requestId, (event) => {
+        if (!cancelled && generation === this.discoveryStreamGeneration)
+          onEvent(event)
+      })
+    }).catch((error) => {
+      if (!cancelled && generation === this.discoveryStreamGeneration)
+        throw new Error(redactSensitiveText(error))
+    }).finally(() => {
+      this.discoveryStreamCancellations.delete(requestId)
+    })
+    void done.catch(() => {})
+    return { requestId, done, cancel }
+  }
+
+  private cancelDiscoveryStreams(): void {
+    this.discoveryStreamGeneration++
+    for (const cancel of this.discoveryStreamCancellations.values())
+      void cancel()
+    this.discoveryStreamCancellations.clear()
   }
 
   async getDiscoveryDownloadOptions(): Promise<{ downloaders: unknown, libraries: unknown, profiles: unknown }> {
@@ -441,11 +554,14 @@ export class ServerDataSource implements DataSource {
   destroy(): void {
     this.lifecycleGeneration++
     this.retired = true
+    this.cancelDiscoveryStreams()
     unregisterServerArtworkSource(this.id, this.credential?.accessToken)
     this.mediaChangeWatchGeneration += 1
     this.credential = null
     this.connected = false
     this.capabilities.clear()
+    this.onlineProgressLibraries.clear()
+    this.onlineSystemHistoryLibraries.clear()
     this.onlineProgressContexts.clear()
   }
 
@@ -481,6 +597,7 @@ export class ServerDataSource implements DataSource {
     const online = onlineResult.status === 'fulfilled'
       ? parseOnlineLibraryList(onlineResult.value).filter(item => item.available).map(item => onlineLibraryToMediaLibrary(this.id, item, this.baseUrl))
       : []
+    this.rememberOnlineLibraries(onlineResult.status === 'fulfilled' ? parseOnlineLibraryList(onlineResult.value) : [])
     return [...physical, ...online]
   }
 
@@ -498,7 +615,7 @@ export class ServerDataSource implements DataSource {
     const collection = parseServerCollectionID(value)
     if (collection) {
       const data = recordData(await this.request(`/api/v1/player/collections/${encodeURIComponent(collection.collectionId)}/items`))
-      return arrayRecords(data.list).map(parseItem).filter((item): item is ServerItemRecord => item != null).map(item => this.mapItem(item))
+      return arrayRecords(data.list).map(requireCatalogItem).map(item => this.mapItem(item))
     }
     const online = parseOnlineItemID(value)
     if (online?.kind === 'library') {
@@ -600,25 +717,19 @@ export class ServerDataSource implements DataSource {
   }
 
   private async loadPhysicalHomeSections(): Promise<HomeSection[]> {
-    if (this.hasCapability('media_overview_v1')) {
-      try {
-        const overview = parseServerOverview(await this.request('/api/v1/player/overview'))
-        if (overview)
-          return this.mapPhysicalOverview(overview)
-      }
-      catch {
-        // A capability can be stale during rolling upgrades. Fall back to the
-        // version-independent endpoint set without taking down the source.
-      }
-    }
-    return this.loadLegacyPhysicalHomeSections()
+    const overview = parseServerOverview(await this.request('/api/v1/player/overview'))
+    if (!overview)
+      throw new Error('Server 返回的媒体总览响应无效。')
+    return this.mapPhysicalOverview(overview)
   }
 
   private mapPhysicalOverview(overview: ServerOverviewRecord): HomeSection[] {
-    const mappedItems = (section: ServerOverviewSectionRecord) => section.list
-      .map(parseItem)
-      .filter((item): item is ServerItemRecord => item != null)
-      .map(item => this.mapItem(item))
+    const mappedItems = (section: ServerOverviewSectionRecord) => section.list.map((value) => {
+      const item = parseItem(value)
+      if (!item)
+        throw new Error('Server 返回的媒体总览作品无效。')
+      return this.mapItem(item)
+    })
     const mappedHistory = (section: ServerOverviewSectionRecord) => mapServerHistoryItems(this.id, section.list, this.baseUrl)
     const mappedCollections = (section: ServerOverviewSectionRecord) => section.list
       .map(parseCollectionRecord)
@@ -638,33 +749,6 @@ export class ServerDataSource implements DataSource {
       overviewHomeSection(this.id, 'libraries', '媒体库', 'libraryRow', mappedLibraries, overview.sections.mediaLibraries, { purpose: 'libraries' }),
     ] satisfies HomeSection[]
     return sections.filter(section => section.purpose === 'libraries' || section.purpose === 'history' || section.items.length > 0 || Boolean(section.errorCode && section.purpose))
-  }
-
-  private async loadLegacyPhysicalHomeSections(): Promise<HomeSection[]> {
-    const physicalData = recordData(await this.request('/api/v1/player/media-libraries').catch(() => null))
-    const physicalLibraries = arrayRecords(physicalData.list)
-      .map(item => parseLibrary(item, this.baseUrl))
-      .filter((item): item is MediaLibrary => item != null)
-      .map(item => ({ ...item, sourceId: this.id }))
-    const [pages, historyResult, favoritesResult, collectionsResult] = await Promise.all([
-      Promise.all(physicalLibraries.slice(0, 12).map(library => this.catalog(library.id).catch(() => []))),
-      this.listPlaybackHistory({ limit: 24 }).catch(() => ({ items: [], hasMore: false } as ProviderPlaybackHistoryPage)),
-      this.listFavorites().catch(() => []),
-      this.collections().catch(() => []),
-    ])
-    const items = pages.flat().map(item => this.mapItem(item)).sort((a, b) => Date.parse(b.modified ?? '') - Date.parse(a.modified ?? ''))
-    const continueItems = historyResult.items.filter(item => item.played !== true && (item.resumePosition ?? 0) > 0 && (item.progress ?? 0) < 0.92).slice(0, 12)
-    const automaticCollections = collectionsResult.filter(item => item.source === 'tmdb').map(item => this.mapCollection(item)).slice(0, 12)
-    const manualCollections = collectionsResult.filter(item => item.source === 'manual').map(item => this.mapCollection(item)).slice(0, 12)
-    return ([
-      { id: `${this.id}:hero`, sourceId: this.id, title: 'Server 精选', type: 'hero', items: items.filter(item => item.backdropUrl).slice(0, 12) },
-      { id: `${this.id}:continue`, sourceId: this.id, title: '继续观看', type: 'continueWatching', purpose: 'history', items: continueItems, viewAllRoute: { kind: 'history', sourceId: this.id } },
-      { id: `${this.id}:recent`, sourceId: this.id, title: 'Server 最近入库', type: 'recentlyAdded', items: items.slice(0, 24) },
-      { id: `${this.id}:favorites`, sourceId: this.id, title: '我的收藏', type: 'libraryRow', purpose: 'favorites', items: favoritesResult.slice(0, 12), viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('favorites') } },
-      { id: `${this.id}:automatic-collections`, sourceId: this.id, title: '自动合集', type: 'libraryRow', purpose: 'automaticCollections', collectionSource: 'automatic', items: automaticCollections, viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('automaticCollections') } },
-      { id: `${this.id}:manual-collections`, sourceId: this.id, title: '我的合集', type: 'libraryRow', purpose: 'manualCollections', collectionSource: 'manual', items: manualCollections, viewAllRoute: { kind: 'sourcePath', path: createServerOverviewPath('manualCollections') } },
-      { id: `${this.id}:libraries`, sourceId: this.id, title: '媒体库', type: 'libraryRow', purpose: 'libraries', items: physicalLibraries.map(library => mediaLibraryToRootItem(library)) },
-    ] satisfies HomeSection[]).filter(section => section.purpose === 'libraries' || section.purpose === 'history' || section.items.length > 0)
   }
 
   async refreshHomeSection(refreshKey: string): Promise<HomeSection[]> {
@@ -702,7 +786,7 @@ export class ServerDataSource implements DataSource {
       this.onlineLibraries().catch(() => []),
     ])
     const physicalData = physical == null ? {} : recordData(physical)
-    const physicalItems = arrayRecords(physicalData.list).map(parseItem).filter((item): item is ServerItemRecord => item != null).map(item => this.mapItem(item))
+    const physicalItems = arrayRecords(physicalData.list).map(requireCatalogItem).map(item => this.mapItem(item))
     const onlineItems = (await Promise.all(onlineLibraries.filter(item => item.available && item.capabilities.includes('site.search')).slice(0, 8).map(async (library) => {
       try {
         const sections = parseOnlineFeedSections(await this.request(`/api/v1/player/online-libraries/${encodeURIComponent(library.id)}/search?q=${encodeURIComponent(query)}`), this.baseUrl)
@@ -717,8 +801,17 @@ export class ServerDataSource implements DataSource {
 
   async getDetail(id: string): Promise<MediaDetail> {
     const online = parseOnlineItemID(id)
-    if (online?.kind === 'work' || online?.kind === 'version')
-      return onlineWorkToDetail(this.id, online.libraryId, await this.onlineWork(online.libraryId, online.workId))
+    if (online?.kind === 'work' || online?.kind === 'version') {
+      const [work] = await Promise.all([this.onlineWork(online.libraryId, online.workId), this.onlineLibraries()])
+      const detail = onlineWorkToDetail(this.id, online.libraryId, work)
+      if (online.kind === 'work')
+        return detail
+      const segment = work.segments.find(candidate => candidate.id === online.segmentId)
+      const version = segment?.versions.find(candidate => candidate.id === online.versionId)
+      if (!segment || !version)
+        throw new Error('所选节目版本已不可用。')
+      return { ...onlineVersionToMediaItem(this.id, online.libraryId, work, segment, version), mediaSources: detail.mediaSources?.filter(source => source.itemId === id) }
+    }
     const acquisition = parseServerAcquisitionItemID(id)
     if (acquisition) {
       const [detail, status] = await Promise.all([
@@ -765,7 +858,7 @@ export class ServerDataSource implements DataSource {
       sourceLabel: this.name,
       deliveryKind: version.delivery_kind,
       sourceId: this.id,
-      itemId: createEntryItemID(work.libraryId, work.workId, version.id),
+      itemId: version.item_token!,
       exactIdentity: version.exact_identity,
     } satisfies MediaSourceOption))
     const alternateSources = playbackTargetsForItem(item)
@@ -858,10 +951,18 @@ export class ServerDataSource implements DataSource {
     this.assertLifecycle(generation)
     const online = parseOnlineItemID(request.itemId)
     if (online?.kind === 'work' || online?.kind === 'version') {
-      const work = await this.onlineWork(online.libraryId, online.workId)
+      if (online.kind === 'version' && request.mediaSourceId && request.mediaSourceId !== online.versionId)
+        throw new Error('所选在线媒体版本与播放条目不一致。')
+      // Exact version tokens already contain all stable identities. Resolve the
+      // fresh authorized plan directly; catalogue metadata is not entitlement.
+      const work = online.kind === 'work' ? await this.onlineWork(online.libraryId, online.workId) : undefined
+      const candidates = work?.segments.flatMap(segment => segment.versions.map(version => ({ segment, version }))) ?? []
       const requestedVersion = online.kind === 'version'
-        ? work.segments.flatMap(segment => segment.versions.map(version => ({ segment, version }))).find(item => item.segment.id === online.segmentId && item.version.id === online.versionId)
-        : work.segments.flatMap(segment => segment.versions.map(version => ({ segment, version }))).find(item => versionAvailable(item.version, request.variantId))
+        ? { segment: { id: online.segmentId }, version: { id: online.versionId, variants: [] } }
+        : request.mediaSourceId
+          ? candidates.find(item => item.version.id === request.mediaSourceId)
+          : candidates.find(item => item.segment.id === work?.defaultSegmentId && versionAvailable(item.version, request.variantId))
+            ?? candidates.find(item => versionAvailable(item.version, request.variantId))
       if (!requestedVersion)
         throw new Error('请选择可播放的在线媒体版本。')
       const variantId = request.variantId
@@ -878,6 +979,8 @@ export class ServerDataSource implements DataSource {
       ))
       if (!plan)
         throw new Error('Server 返回的在线媒体播放方案无效。')
+      if (plan.workId !== online.workId || plan.segmentId !== requestedVersion.segment.id || plan.versionId !== requestedVersion.version.id || (request.variantId && plan.variantId !== request.variantId))
+        throw new Error('Server 返回的播放身份与所选节目或清晰度不一致。')
       const credential = await this.ensureCredential()
       this.rememberOnlineProgressContext(request.itemId, plan.versionId, {
         libraryId: online.libraryId,
@@ -885,30 +988,26 @@ export class ServerDataSource implements DataSource {
         segmentId: plan.segmentId,
         versionId: plan.versionId,
       })
-      return onlinePlaybackToStreamRequest(this.baseUrl, credential.accessToken, plan)
+      const itemId = createOnlineVersionID(online.libraryId, plan.workId, plan.segmentId, plan.versionId)
+      return { ...onlinePlaybackToStreamRequest(this.baseUrl, credential.accessToken, plan), itemId, historyIdentity: itemId }
     }
     const work = parseWorkItemID(request.itemId)
-    let entryID: number | null = null
-    if (work) {
-      const detail = await this.detail(work.libraryId, work.workId)
-      const requestedEntryID = parseEntryID(request.itemId) ?? parseNumericID(request.mediaSourceId)
-      const defaultVersion = requestedEntryID
-        ? detail.versions.find(version => version.id === requestedEntryID && version.playable)
-        : detail.item.kind === 'movie'
-          ? detail.versions.find(version => version.playable && (work.season == null || (version.season ?? 0) === work.season))
-          : undefined
-      entryID = defaultVersion?.id ?? null
-    }
-    else {
-      entryID = parseNumericID(request.mediaSourceId)
-    }
-    if (!entryID)
+    if (!work)
+      throw new Error('Server 媒体标识无效。')
+    const detail = await this.detail(work.libraryId, work.workId)
+    const requestedEntryID = parseEntryID(request.itemId) ?? parseNumericID(request.mediaSourceId)
+    const version = requestedEntryID
+      ? detail.versions.find(version => version.id === requestedEntryID && version.playable)
+      : detail.item.kind === 'movie'
+        ? detail.versions.find(version => version.playable && (work.season == null || (version.season ?? 0) === work.season))
+        : undefined
+    if (!version?.item_token || !version.history_identity)
       throw new Error('请选择可播放的 Server 媒体版本。')
     // This optional JSON preflight never returns a CDN URL or media bytes.
     // Older Servers keep the original stream path without an extra request.
     let httpReadProfile: MediaStreamRequest['httpReadProfile']
     if (this.hasCapability('playback_check_v1')) {
-      const check = await this.request(`/api/v1/player/media-entries/${entryID}/stream?check=1`)
+      const check = await this.request(`/api/v1/player/media-entries/${version.id}/stream?check=1`)
       if (!isRecord(check) || check.version !== 1 || check.ready !== true)
         throw new Error('Server 返回的播放检查结果无效，请重试或检查 Server 版本。')
       if (check.http_read_profile !== undefined) {
@@ -921,9 +1020,11 @@ export class ServerDataSource implements DataSource {
     const credential = await this.ensureCredential()
     this.assertLifecycle(generation)
     return {
-      url: `${this.baseUrl}/api/v1/player/media-entries/${entryID}/stream`,
+      url: `${this.baseUrl}/api/v1/player/media-entries/${version.id}/stream`,
       headers: { Authorization: `Bearer ${credential.accessToken}` },
-      mediaSourceId: String(entryID),
+      mediaSourceId: String(version.id),
+      itemId: version.item_token,
+      historyIdentity: version.history_identity,
       ...(httpReadProfile ? { httpReadProfile } : {}),
     }
   }
@@ -952,7 +1053,7 @@ export class ServerDataSource implements DataSource {
 
   async listFavorites(): Promise<MediaItem[]> {
     const data = recordData(await this.request('/api/v1/player/favorites'))
-    return arrayRecords(data.list).map(parseItem).filter((item): item is ServerItemRecord => item != null).map(item => ({ ...this.mapItem(item), favorite: true }))
+    return arrayRecords(data.list).map(requireCatalogItem).map(item => ({ ...this.mapItem(item), favorite: true }))
   }
 
   async getFavoriteState(itemId: string): Promise<boolean> {
@@ -989,6 +1090,14 @@ export class ServerDataSource implements DataSource {
       : this.onlineProgressContexts.get(onlineProgressContextKey(progress.itemId, progress.mediaSourceId))
     if (!context)
       return
+    if (online?.kind === 'version' && progress.mediaSourceId && progress.mediaSourceId !== online.versionId)
+      throw new Error('播放进度的媒体版本与播放条目不一致。')
+    if (!this.hasCapability('online_playback_history_v1')) {
+      if (!this.onlineProgressLibraries.has(context.libraryId))
+        await this.onlineLibraries()
+      if (!this.onlineProgressLibraries.get(context.libraryId))
+        return
+    }
     await this.request(
       `/api/v1/player/online-libraries/${encodeURIComponent(context.libraryId)}/items/${encodeURIComponent(context.workId)}/progress`,
       'POST',
@@ -996,10 +1105,11 @@ export class ServerDataSource implements DataSource {
         segmentId: context.segmentId,
         versionId: context.versionId,
         event: progress.event,
+        completed: progress.completed === true,
         positionSeconds: Math.max(0, progress.position),
         ...(progress.duration != null ? { durationSeconds: Math.max(0, progress.duration) } : {}),
         idempotencyKey: crypto.randomUUID(),
-        occurredAt: new Date().toISOString(),
+        occurredAt: progress.occurredAt ?? new Date().toISOString(),
       },
     )
   }
@@ -1146,7 +1256,7 @@ export class ServerDataSource implements DataSource {
       if (total != null && total > SERVER_MAX_ITEMS)
         throw new Error(`Server 媒体数量超过单次浏览安全上限（${SERVER_MAX_ITEMS} 项）。`)
 
-      const pageItems = arrayRecords(data.list).map(parseItem).filter((item): item is ServerItemRecord => item != null)
+      const pageItems = arrayRecords(data.list).map(requireCatalogItem)
       if (pageItems.length === 0)
         return [...items.values()]
 
@@ -1165,14 +1275,34 @@ export class ServerDataSource implements DataSource {
   private async detail(libraryID: string, workID: string): Promise<ServerDetailRecord> {
     const data = recordData(await this.request(`/api/v1/player/media-libraries/${encodeURIComponent(libraryID)}/catalog/${encodeURIComponent(workID)}`))
     const item = parseItem(data.item)
-    const versions = arrayRecords(data.versions).map(parseVersion).filter((version): version is ServerVersionRecord => version != null)
+    const versions = arrayRecords(data.versions).map((value) => {
+      const version = parseVersion(value)
+      if (!version)
+        throw new Error('Server 返回的媒体版本无效。')
+      return version
+    })
     if (!item)
       throw new Error('Server 返回的媒体详情无效。')
     return { item, versions }
   }
 
   private async onlineLibraries() {
-    return parseOnlineLibraryList(await this.request('/api/v1/player/online-libraries'))
+    const libraries = parseOnlineLibraryList(await this.request('/api/v1/player/online-libraries'))
+    this.rememberOnlineLibraries(libraries)
+    return libraries
+  }
+
+  private rememberOnlineLibraries(libraries: readonly OnlineLibrarySummary[]): void {
+    this.onlineDownloadLibraries.clear()
+    this.onlineProgressLibraries.clear()
+    this.onlineSystemHistoryLibraries.clear()
+    for (const library of libraries) {
+      if (library.available && library.offlineDownloadSupported)
+        this.onlineDownloadLibraries.add(library.id)
+      this.onlineProgressLibraries.set(library.id, library.available && (library.systemHistorySupported || library.capabilities.includes('playback.progress_sync')))
+      if (library.available && library.systemHistorySupported)
+        this.onlineSystemHistoryLibraries.add(library.id)
+    }
   }
 
   private async onlineWork(libraryID: string, workID: string) {
@@ -1183,7 +1313,7 @@ export class ServerDataSource implements DataSource {
   }
 
   private mapItem(item: ServerItemRecord): MediaItem {
-    const itemID = item.item_token ?? createWorkItemID(String(item.library_id), item.id)
+    const itemID = item.item_token
     return {
       id: itemID,
       sourceId: this.id,
@@ -1200,15 +1330,18 @@ export class ServerDataSource implements DataSource {
       tagline: item.tagline,
       duration: item.runtime_minutes ? item.runtime_minutes * 60 : undefined,
       modified: item.modified_at,
+      addedAt: item.added_at,
       path: '',
-      historyIdentity: item.kind === 'movie' ? item.history_identity ?? createMovieHistoryIdentity(String(item.library_id), item.id) : undefined,
+      historyIdentity: item.kind === 'movie' ? item.history_identity : undefined,
       workIdentity: mapIdentity(item.work_identity),
       playbackTargets: [{ sourceId: this.id, itemId: itemID, label: this.name }],
     }
   }
 
   private mapVersion(item: ServerItemRecord, version: ServerVersionRecord, work: WorkItemID): MediaItem {
-    const id = version.item_token ?? createEntryItemID(work.libraryId, work.workId, version.id)
+    if (!version.item_token || !version.history_identity)
+      throw new Error('Server 返回的播放身份无效。')
+    const id = version.item_token
     const isEpisode = item.kind === 'series'
     const episodeArtwork = isEpisode ? this.artwork(version.episode_still_url ?? version.still_url) : undefined
     const runtimeMinutes = isEpisode ? version.runtime_minutes : item.runtime_minutes
@@ -1234,10 +1367,8 @@ export class ServerDataSource implements DataSource {
       seasonNumber: version.season,
       episodeNumber: version.episode,
       seriesName: item.kind === 'series' ? version.series_title ?? item.title : undefined,
-      historyIdentity: version.history_identity
-        ?? (isEpisode && version.season != null && version.episode != null
-          ? createEpisodeHistoryIdentity(work.libraryId, work.workId, version.season, version.episode)
-          : !isEpisode ? item.history_identity ?? createMovieHistoryIdentity(work.libraryId, work.workId) : undefined),
+      seriesId: isEpisode ? item.item_token : undefined,
+      historyIdentity: version.history_identity,
       workIdentity: mapIdentity(item.work_identity),
       exactIdentity: version.exact_identity,
       playbackTargets: [{ sourceId: this.id, itemId: id, mediaSourceId: String(version.id), label: this.name, exactIdentity: version.exact_identity }],
@@ -1834,9 +1965,19 @@ function parseItem(value: unknown): ServerItemRecord | null {
   const identity = value.work_identity
   if ((identity.scheme !== 'tmdb' && identity.scheme !== 'server') || (identity.media_type !== 'movie' && identity.media_type !== 'series') || typeof identity.value !== 'string')
     return null
+  const addedAt = optionalString(value.added_at)
+  if (!addedAt || addedAt.length > 64 || !Number.isFinite(Date.parse(addedAt)))
+    return null
+  const itemToken = optionalString(value.item_token)
+  const tokenWork = itemToken?.startsWith('work|') ? parseWorkItemID(itemToken) : null
+  const historyIdentity = optionalHistoryIdentity(value.history_identity)
+  if (!itemToken || !tokenWork || tokenWork.libraryId !== String(value.library_id) || tokenWork.workId !== value.id
+    || (value.kind === 'movie' && (!historyIdentity || !historyIdentity.startsWith('server:v1:movie:')))) {
+    return null
+  }
   return {
     id: value.id,
-    item_token: optionalString(value.item_token),
+    item_token: itemToken,
     library_id: value.library_id,
     title: value.title,
     original_title: optionalString(value.original_title),
@@ -1865,9 +2006,17 @@ function parseItem(value: unknown): ServerItemRecord | null {
     season_count: numberValue(value.season_count) ?? 0,
     episode_count: numberValue(value.episode_count) ?? 0,
     modified_at: optionalString(value.modified_at) ?? '',
+    added_at: addedAt,
     match_status: optionalString(value.match_status) ?? '',
-    history_identity: optionalHistoryIdentity(value.history_identity),
+    history_identity: historyIdentity,
   }
+}
+
+function requireCatalogItem(value: unknown): ServerItemRecord {
+  const item = parseItem(value)
+  if (!item)
+    throw new Error('Server 返回的媒体作品无效。')
+  return item
 }
 
 function parseAcquisitionRecord(value: unknown): ServerAcquisitionRecord | null {
@@ -1916,9 +2065,13 @@ function parseVersion(value: unknown): ServerVersionRecord | null {
   const deliveryKind = value.delivery_kind === 'server_stream' || value.delivery_kind === 'server_redirect'
     ? value.delivery_kind
     : undefined
+  const itemToken = optionalString(value.item_token)
+  const historyIdentity = optionalHistoryIdentity(value.history_identity)
+  if (value.playable && (!itemToken || parseEntryID(itemToken) !== value.id || !historyIdentity || !historyIdentity.startsWith('server:v1:')))
+    return null
   return {
     id: value.id,
-    item_token: optionalString(value.item_token),
+    item_token: itemToken,
     title: value.title,
     display_title: optionalString(value.display_title),
     display_subtitle: optionalString(value.display_subtitle),
@@ -1940,7 +2093,7 @@ function parseVersion(value: unknown): ServerVersionRecord | null {
     stream_path: optionalString(value.stream_path),
     delivery_kind: deliveryKind,
     exact_identity: value.exact_identity,
-    history_identity: optionalHistoryIdentity(value.history_identity),
+    history_identity: historyIdentity,
   }
 }
 
@@ -1971,7 +2124,7 @@ function optionalIDString(value: unknown): string | undefined {
 
 function optionalHistoryIdentity(value: unknown): string | undefined {
   const candidate = optionalString(value)
-  return candidate && /^server:v1:(?:movie|episode):\S{1,1024}$/.test(candidate) ? candidate : undefined
+  return candidate && (parseServerHistoryIdentity(candidate) || parseOnlineItemID(candidate)?.kind === 'version') ? candidate : undefined
 }
 
 function boundedNumber(value: unknown, minimum: number, maximum: number): number | undefined {
@@ -2033,24 +2186,9 @@ function versionAvailable(version: { variants: readonly { id: string, available:
 function mapIdentity(value: ServerIdentityRecord): MediaIdentity {
   return { scheme: value.scheme, mediaType: value.media_type, value: value.value }
 }
-function createWorkItemID(libraryId: string, workId: string): string {
-  return `work|${libraryId}|${workId}`
-}
 function createSeasonItemID(libraryId: string, workId: string, season: number): string {
   return `season|${libraryId}|${workId}|${season}`
 }
-function createEntryItemID(libraryId: string, workId: string, entryID: number): string {
-  return `entry|${libraryId}|${workId}|${entryID}`
-}
-
-function createMovieHistoryIdentity(libraryId: string, workId: string): string {
-  return `server:v1:movie:${libraryId}:${workId}`
-}
-
-function createEpisodeHistoryIdentity(libraryId: string, workId: string, season: number, episode: number): string {
-  return `server:v1:episode:${libraryId}:${workId}:${season}:${episode}`
-}
-
 function createPlayerMediaStateItemID(itemId: string): string {
   const work = parseWorkItemID(itemId)
   if (!work)
@@ -2103,8 +2241,8 @@ export function mapServerHistoryItem(sourceId: string, value: unknown, baseUrl: 
   if (!isRecord(value))
     return []
   const title = optionalString(value.display_title) ?? optionalString(value.series_title) ?? optionalString(value.title)
-  const historyIdentity = optionalHistoryIdentity(value.history_identity) ?? optionalString(value.media_identity)
-  const itemId = optionalString(value.item_token) ?? optionalString(value.item_id) ?? historyIdentity
+  const historyIdentity = optionalHistoryIdentity(value.history_identity)
+  const itemId = optionalString(value.item_token)
   const libraryId = optionalIDString(value.library_id)
   const position = boundedNumber(value.position, 0, Number.MAX_SAFE_INTEGER) ?? 0
   const duration = boundedNumber(value.duration, 0, Number.MAX_SAFE_INTEGER)
@@ -2141,6 +2279,7 @@ export function mapServerHistoryItem(sourceId: string, value: unknown, baseUrl: 
     episodeNumber,
     cardLayout: type === 'episode' ? 'poster' : undefined,
     modified: new Date(updatedAt).toISOString(),
+    lastPlayedAt: new Date(updatedAt).toISOString(),
   }]
 }
 

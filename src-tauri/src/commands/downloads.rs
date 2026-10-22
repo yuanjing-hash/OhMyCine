@@ -24,6 +24,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+#[path = "download_online.rs"]
+mod online;
+#[path = "download_remux.rs"]
+mod remux;
+
 const DATABASE_FILE: &str = "downloads.sqlite";
 const OFFLINE_DATABASE_FILE: &str = "offline_media.sqlite";
 const DATASOURCES_SETTING: &str = "ohmycine-datasources";
@@ -322,6 +327,12 @@ pub struct OfflineAttachmentInput {
     extension: Option<String>,
 }
 
+#[derive(Default)]
+struct DownloadAttachments {
+    attachments: Vec<OfflineAttachmentInput>,
+    failed_kinds: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OfflineAttachmentSyncRequest {
@@ -359,6 +370,8 @@ struct PersistedDataSource {
 struct ResolvedRemote {
     url: Url,
     headers: HeaderMap,
+    online: bool,
+    lease_until: Option<u64>,
 }
 
 #[tauri::command]
@@ -1173,6 +1186,7 @@ pub fn recover_interrupted_downloads(app: &AppHandle) -> Result<(), String> {
             let result = (|| {
                 let storage = DownloadStorage::open(&app)?;
                 storage.recover_requested_controls(&app)?;
+                online::recover_orphans(&app)?;
                 storage.recover_interrupted()?;
                 schedule_queued(&app)
             })();
@@ -1186,6 +1200,7 @@ pub fn recover_interrupted_downloads(app: &AppHandle) -> Result<(), String> {
     {
         storage.retry_cleanup()?;
         storage.recover_requested_controls(app)?;
+        online::recover_orphans(app)?;
         storage.recover_interrupted()?;
         schedule_queued(app)
     }
@@ -1301,8 +1316,12 @@ fn start_task(
         )
         .await;
         let result = execute_task(&app, &task, &control).await;
+        let task = DownloadStorage::open(&app)
+            .ok()
+            .and_then(|storage| storage.get(&task.id).ok().flatten())
+            .unwrap_or(task);
         match result {
-            Ok(()) if control.load(Ordering::Acquire) == CONTROL_CANCEL => {
+            Ok(_) if control.load(Ordering::Acquire) == CONTROL_CANCEL => {
                 #[cfg(not(target_os = "android"))]
                 if let Ok(storage) = DownloadStorage::open(&app) {
                     let _ = cleanup_cancelled_final(&storage, &task);
@@ -1311,7 +1330,7 @@ fn start_task(
                 #[cfg(target_os = "android")]
                 let _ = cleanup_cancelled_android_final(&app, &task).await;
             }
-            Ok(()) => {
+            Ok(attachments) => {
                 let completion = DownloadStorage::open(&app).and_then(|storage| {
                     let transitioned = storage.try_set_completed(&task_id)?;
                     let completed = if transitioned {
@@ -1327,6 +1346,19 @@ fn start_task(
                         // Finalizing from the enqueue-time clone would record zero for responses
                         // whose size was unknown until the transfer started.
                         let _ = finalize_offline_item(&app, &completed).await;
+                        if !attachments.attachments.is_empty()
+                            || !attachments.failed_kinds.is_empty()
+                        {
+                            let _ = player_download_sync_attachments(
+                                app.clone(),
+                                OfflineAttachmentSyncRequest {
+                                    task_id: completed.id.clone(),
+                                    attachments: attachments.attachments,
+                                    failed_kinds: attachments.failed_kinds,
+                                },
+                            )
+                            .await;
+                        }
                     }
                     Ok((true, None)) => {}
                     Ok((false, _)) | Err(_) => {
@@ -1402,17 +1434,23 @@ async fn execute_task(
     app: &AppHandle,
     task: &DownloadTask,
     control: &Arc<AtomicU8>,
-) -> Result<(), String> {
+) -> Result<DownloadAttachments, String> {
     if control.load(Ordering::Acquire) != CONTROL_RUNNING {
         return Err("Download stopped by user request.".to_string());
     }
     let storage = DownloadStorage::open(app)?;
     storage.set_transfer_state(&task.id, "downloading", 1)?;
     emit_task(app, &storage, &task.id);
+    drop(storage);
+
+    if task.online_identity.is_some() {
+        return online::execute(app, task, control).await;
+    }
 
     #[cfg(target_os = "android")]
     {
-        return execute_android_task(app, task, control).await;
+        execute_android_task(app, task, control).await?;
+        return Ok(DownloadAttachments::default());
     }
 
     #[cfg(not(target_os = "android"))]
@@ -1443,19 +1481,19 @@ async fn execute_task(
         return Err("Download stopped by user request.".to_string());
     }
     #[cfg(not(target_os = "android"))]
-    storage.set_transfer_state(&task.id, "finalizing", 0)?;
+    DownloadStorage::open(app)?.set_transfer_state(&task.id, "finalizing", 0)?;
     #[cfg(not(target_os = "android"))]
-    emit_task(app, &storage, &task.id);
+    emit_task(app, &DownloadStorage::open(app)?, &task.id);
     #[cfg(not(target_os = "android"))]
     fs::rename(&partial_path, &final_path)
         .map_err(|_| "Failed to finalize the downloaded file atomically.".to_string())?;
     #[cfg(not(target_os = "android"))]
     if control.load(Ordering::Acquire) == CONTROL_CANCEL {
-        cleanup_cancelled_final(&storage, task)?;
+        cleanup_cancelled_final(&DownloadStorage::open(app)?, task)?;
         return Err("Download stopped by user request.".to_string());
     }
     #[cfg(not(target_os = "android"))]
-    Ok(())
+    Ok(DownloadAttachments::default())
 }
 
 #[cfg(target_os = "android")]
@@ -2177,6 +2215,8 @@ async fn resolve_task_remote(
     Ok(ResolvedRemote {
         url: resolved.url,
         headers: resolved.headers,
+        online: false,
+        lease_until: None,
     })
 }
 
@@ -2185,10 +2225,7 @@ async fn resolve_server_media(
     task: &DownloadTask,
 ) -> Result<ResolvedRemote, String> {
     if task.online_identity.is_some() || task.item_id.starts_with("online-") {
-        return Err(
-            "This Server online source does not yet expose a safe offline download stream."
-                .to_string(),
-        );
+        return online::progressive(app, task).await;
     }
     let entry_id = server_entry_id(&task.item_id, task.media_source_id.as_deref())
         .ok_or_else(|| "The Server media entry identity is invalid.".to_string())?;
@@ -2221,7 +2258,12 @@ async fn resolve_server_media(
         HeaderValue::from_str(&format!("Bearer {}", envelope.access_token.trim()))
             .map_err(|_| "Stored OhMyCine Server credentials are invalid.".to_string())?,
     );
-    Ok(ResolvedRemote { url, headers })
+    Ok(ResolvedRemote {
+        url,
+        headers,
+        online: false,
+        lease_until: None,
+    })
 }
 
 async fn request_media(resolved: &ResolvedRemote, offset: u64) -> Result<Response, String> {
@@ -2536,6 +2578,9 @@ async fn request_media_range(
     resolved: &ResolvedRemote,
     requested_range: Option<(u64, Option<u64>)>,
 ) -> Result<Response, String> {
+    if resolved.online {
+        return online::request_transport(resolved, requested_range).await;
+    }
     let client = controlled_client()?;
     let mut url = resolved.url.clone();
     let mut headers = resolved.headers.clone();
@@ -2574,8 +2619,10 @@ async fn request_media_range(
 
 fn controlled_client() -> Result<Client, String> {
     Client::builder()
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(30 * 60))
         .build()
         .map_err(|_| "Failed to initialize the media download client.".to_string())
@@ -2664,18 +2711,22 @@ fn validate_enqueue_request(request: &DownloadEnqueueRequest) -> Result<(), Stri
         validate_stable_id(&identity.work_id, "Invalid online work identity.")?;
         validate_stable_id(&identity.segment_id, "Invalid online segment identity.")?;
         validate_stable_id(&identity.version_id, "Invalid online version identity.")?;
+        if !online::identity_matches(&request.item_id, identity)
+            || request.media_source_id.as_deref() != Some(identity.version_id.as_str())
+            || request.variant_id.is_none()
+        {
+            return Err(
+                "The online download requires an exact episode, version and quality selection."
+                    .to_string(),
+            );
+        }
     }
     if request.source_type == "server" {
         if request.item_id.starts_with("online-") {
             if request.online_identity.is_none() {
                 return Err("The Server online media identity is incomplete.".to_string());
             }
-            return Err(
-                "This Server online source does not yet expose a safe offline download stream."
-                    .to_string(),
-            );
-        }
-        if request.online_identity.is_some()
+        } else if request.online_identity.is_some()
             || server_entry_id(&request.item_id, request.media_source_id.as_deref()).is_none()
         {
             return Err("The Server media entry identity is invalid.".to_string());
@@ -2982,6 +3033,14 @@ fn safe_display_name(value: &str) -> String {
 }
 
 fn download_file_name(display_name: &str, item_id: &str) -> String {
+    if item_id.starts_with("online-") {
+        let display = safe_display_name(display_name);
+        let stem = Path::new(&display)
+            .file_stem()
+            .and_then(|v| v.to_str())
+            .unwrap_or("media");
+        return format!("{stem}.mp4");
+    }
     let item_name = item_id
         .trim_end_matches(['/', '\\'])
         .rsplit(['/', '\\'])
@@ -3136,6 +3195,7 @@ fn cleanup_cancelled_task(
     storage: &DownloadStorage,
     task: &DownloadTask,
 ) -> Result<(), String> {
+    let _ = online::cleanup(app, &task.id);
     #[cfg(not(target_os = "android"))]
     let relative_path = format!("{}.partial", task.destination_name);
     #[cfg(target_os = "android")]
@@ -3174,6 +3234,7 @@ async fn cleanup_cancelled_android_task(
     app: &AppHandle,
     task: &DownloadTask,
 ) -> Result<(), String> {
+    let _ = online::cleanup(app, &task.id);
     let relative_path = format!(".{}.ohmycine-part", task.destination_name);
     let cleanup = download_android::delete_partial_document(
         app,
@@ -3461,7 +3522,8 @@ impl DownloadStorage {
         media_source_id: Option<&str>,
         variant_id: Option<&str>,
     ) -> Result<Option<DownloadTask>, String> {
-        self.conn
+        let exact = self
+            .conn
             .query_row(
                 &format!(
                     "SELECT {TASK_COLUMNS} FROM download_tasks
@@ -3474,7 +3536,29 @@ impl DownloadStorage {
                 map_task,
             )
             .optional()
-            .map_err(|_| "Failed to resolve the local offline media.".to_string())
+            .map_err(|_| "Failed to resolve the local offline media.".to_string())?;
+        if exact.is_some() || !item_id.starts_with("online-work|") {
+            return Ok(exact);
+        }
+        let mut statement = self
+            .conn
+            .prepare(&format!(
+            "SELECT {TASK_COLUMNS} FROM download_tasks WHERE source_id=?1 AND status='completed'
+             AND media_type='movie' AND (?2 IS NULL OR media_source_id=?2)
+             AND (?3 IS NULL OR variant_id=?3) ORDER BY updated_at DESC,id DESC"
+        ))
+            .map_err(|_| "Failed to resolve the local offline media.".to_string())?;
+        let candidates = statement
+            .query_map(params![source_id, media_source_id, variant_id], map_task)
+            .map_err(|_| "Failed to resolve the local offline media.".to_string())?;
+        for candidate in candidates {
+            let candidate =
+                candidate.map_err(|_| "Failed to resolve the local offline media.".to_string())?;
+            if online::work_matches_version(item_id, &candidate.item_id) {
+                return Ok(Some(candidate));
+            }
+        }
+        Ok(None)
     }
     fn claim_next_runnable(&self) -> Result<Option<DownloadTask>, String> {
         self.conn
@@ -3967,6 +4051,51 @@ fn find_offline_location(
     let conn = Connection::open(storage::data_file(app, OFFLINE_DATABASE_FILE)?)
         .map_err(|_| "Failed to open the offline media database.".to_string())?;
     initialize_offline_schema(&conn)?;
+    find_offline_location_in(&conn, source_id, item_id, media_source_id, variant_id)
+}
+
+fn project_online_movie_item(
+    conn: &Connection,
+    source_id: &str,
+    item_id: &str,
+    media_source_id: Option<&str>,
+    variant_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    if !item_id.starts_with("online-work|") {
+        return Ok(None);
+    }
+    let mut statement = conn
+        .prepare(
+            "SELECT item_id FROM offline_items WHERE source_id=?1 AND media_type='movie'
+         AND (?2 IS NULL OR media_source_id=?2) AND (?3 IS NULL OR variant_id=?3)
+         ORDER BY completed_at DESC,id DESC",
+        )
+        .map_err(|_| "Failed to resolve the offline movie identity.".to_string())?;
+    let candidates = statement
+        .query_map(params![source_id, media_source_id, variant_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|_| "Failed to resolve the offline movie identity.".to_string())?;
+    for candidate in candidates {
+        let candidate =
+            candidate.map_err(|_| "Failed to resolve the offline movie identity.".to_string())?;
+        if online::work_matches_version(item_id, &candidate) {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+fn find_offline_location_in(
+    conn: &Connection,
+    source_id: &str,
+    item_id: &str,
+    media_source_id: Option<&str>,
+    variant_id: Option<&str>,
+) -> Result<Option<OfflineLocation>, String> {
+    let projected =
+        project_online_movie_item(conn, source_id, item_id, media_source_id, variant_id)?;
+    let item_id = projected.as_deref().unwrap_or(item_id);
     conn.query_row(
         "SELECT id,root_reference,relative_video_path,video_bytes,entity_hash FROM offline_items
          WHERE source_id=?1 AND item_id=?2
@@ -4368,6 +4497,21 @@ fn find_offline_detail(
     let conn = Connection::open(storage::data_file(app, OFFLINE_DATABASE_FILE)?)
         .map_err(|_| "Failed to open the offline media database.".to_string())?;
     initialize_offline_schema(&conn)?;
+    find_offline_detail_in(&conn, source_id, item_id, offline_id)
+}
+
+fn find_offline_detail_in(
+    conn: &Connection,
+    source_id: &str,
+    item_id: &str,
+    offline_id: Option<&str>,
+) -> Result<Option<OfflineDetailRecord>, String> {
+    let projected = if offline_id.is_none() {
+        project_online_movie_item(conn, source_id, item_id, None, None)?
+    } else {
+        None
+    };
+    let item_id = projected.as_deref().unwrap_or(item_id);
     let record = conn
         .query_row(
             "SELECT i.id,i.source_id,i.item_id,i.media_source_id,i.variant_id,i.display_name,
@@ -4648,6 +4792,7 @@ fn initialize_download_schema(conn: &Connection) -> Result<(), String> {
                 ON download_cleanup(created_at);",
         )
         .map_err(|_| "Failed to initialize download scheduling tables.".to_string())?;
+        online::initialize_schema(conn)?;
         conn.execute(
             "UPDATE download_tasks SET status='interrupted',error_message=NULL,
              active_segments=0,speed_bytes_per_second=0,eta_seconds=NULL
@@ -4899,6 +5044,90 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap()
+    }
+
+    #[test]
+    fn online_movie_workcard_resolves_saved_video_and_detail_without_server() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_offline_schema(&conn).unwrap();
+        let root = std::env::temp_dir().join(format!("ohmycine-offline-work-{}", random_id()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("movie.mp4"), b"saved-video-fixture").unwrap();
+        let mut task = test_task("movie-version", 1);
+        task.source_type = "server".to_string();
+        task.item_id = "online-version|lib%7C%25|movie%25_|feature|main".to_string();
+        task.media_source_id = Some("main".to_string());
+        task.destination_directory = root.to_string_lossy().to_string();
+        task.destination_name = "movie.mp4".to_string();
+        task.total_bytes = Some(19);
+        task.status = "completed".to_string();
+        finalize_offline_item_in(&conn, &task).unwrap();
+        let work = "online-work|lib%7C%25|movie%25_";
+        let location =
+            find_offline_location_in(&conn, &task.source_id, work, Some("main"), Some("1080p"))
+                .unwrap()
+                .unwrap();
+        let video = safe_destination_path(
+            &validate_destination_directory(&location.root_reference).unwrap(),
+            &location.relative_video_path,
+        )
+        .unwrap();
+        assert_eq!(fs::read(video).unwrap(), b"saved-video-fixture");
+        let detail = find_offline_detail_in(&conn, &task.source_id, work, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.item_id, task.item_id);
+        assert_eq!(detail.snapshot.name, task.display_name);
+        assert!(
+            find_offline_location_in(&conn, "different-source", work, None, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(find_offline_location_in(
+            &conn,
+            &task.source_id,
+            "online-work|other|movie%25_",
+            None,
+            None
+        )
+        .unwrap()
+        .is_none());
+        assert!(find_offline_location_in(
+            &conn,
+            &task.source_id,
+            work,
+            Some("different-version"),
+            None
+        )
+        .unwrap()
+        .is_none());
+        assert!(find_offline_location_in(
+            &conn,
+            &task.source_id,
+            work,
+            None,
+            Some("different-quality")
+        )
+        .unwrap()
+        .is_none());
+        task.id = "episode-version".to_string();
+        task.item_id = "online-version|lib%7C%25|series%25_|episode|main".to_string();
+        task.media_type = "episode".to_string();
+        finalize_offline_item_in(&conn, &task).unwrap();
+        assert!(find_offline_detail_in(
+            &conn,
+            &task.source_id,
+            "online-work|lib%7C%25|series%25_",
+            None
+        )
+        .unwrap()
+        .is_none());
+        assert!(!online::work_matches_version(
+            "online-work|lib%7C%25|movie%25_",
+            "online-version|lib%7C%25|movie%25_X|feature|main"
+        ));
+        fs::remove_file(root.join("movie.mp4")).unwrap();
+        fs::remove_dir(root).unwrap();
     }
 
     #[test]
@@ -5383,10 +5612,13 @@ mod tests {
             segment_id: "segment".to_string(),
             version_id: "version".to_string(),
         });
-        assert_eq!(
-            validate_enqueue_request(&missing_online_identity).unwrap_err(),
-            "This Server online source does not yet expose a safe offline download stream."
-        );
+        assert!(validate_enqueue_request(&missing_online_identity).is_err());
+        missing_online_identity.media_source_id = Some("version".to_string());
+        missing_online_identity.variant_id = Some("hd".to_string());
+        assert!(validate_enqueue_request(&missing_online_identity).is_ok());
+        missing_online_identity.item_id =
+            "online-version|library|other-work|segment|version".to_string();
+        assert!(validate_enqueue_request(&missing_online_identity).is_err());
     }
     #[test]
     fn download_names_never_create_path_segments() {
