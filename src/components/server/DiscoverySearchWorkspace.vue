@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import type { ServerDiscoveryTypePolicy, ServerResourceGroup, ServerResourceItem } from '@/services/serverDiscovery'
 import type { ResourceSearchActivity, ResourceSearchState } from '@/services/serverDiscoverySearch'
+import type { ServerResourceRecognition } from '@/services/serverResourceRecognition'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import DiscoveryResourceRecognition from '@/components/server/DiscoveryResourceRecognition.vue'
 import { serverDiscoveryTypeOptions, serverResourceTypeLabel } from '@/services/serverDiscovery'
 import { resourceGroupIsPrevious, resourceGroupPageIsChanging, searchIncompleteLabel, searchPhaseLabel } from '@/services/serverDiscoverySearch'
+import { isServerCloudResource } from '@/services/serverResourceRecognition'
 
 const props = defineProps<{
   open: boolean
@@ -16,6 +19,9 @@ const props = defineProps<{
   typePolicy?: 'default' | ServerDiscoveryTypePolicy
   cloudTypes?: string[]
   copyingToken?: string
+  recognitions?: Record<string, ServerResourceRecognition>
+  recognizingTokens?: string[]
+  recognitionErrors?: Record<string, string>
 }>()
 
 const emit = defineEmits<{
@@ -29,6 +35,7 @@ const emit = defineEmits<{
   updateTypePolicy: [value: 'default' | ServerDiscoveryTypePolicy]
   updateCloudTypes: [value: string[]]
   refresh: []
+  recognize: [token: string]
 }>()
 
 const searching = computed(() => props.state.outcome === 'running')
@@ -141,6 +148,17 @@ function formatBytes(value?: number) {
     index++
   }
   return `${size.toFixed(index > 1 ? 1 : 0)} ${units[index]}`
+}
+
+function origins(item: ServerResourceItem) {
+  const seen = new Set<string>()
+  return (item.origins ?? []).filter((origin) => {
+    const key = `${origin.kind}:${origin.name}`
+    if (seen.has(key))
+      return false
+    seen.add(key)
+    return true
+  })
 }
 </script>
 
@@ -303,7 +321,7 @@ function formatBytes(value?: number) {
                       {{ item.subtitle }}
                     </p>
                     <div class="mt-2 flex flex-wrap gap-2 text-xs text-[var(--color-text-secondary)]">
-                      <span v-if="serverResourceTypeLabel(item)" class="resource-type">{{ serverResourceTypeLabel(item) }}</span><span v-for="origin in item.origins || []" :key="`${origin.kind}:${origin.name}`">PanSou · {{ origin.kind === 'tg' ? 'TG' : '插件' }} · {{ origin.name }}</span>
+                      <span v-if="serverResourceTypeLabel(item)" class="resource-type">{{ serverResourceTypeLabel(item) }}</span><span v-for="origin in origins(item)" :key="`${origin.kind}:${origin.name}`">PanSou · {{ origin.kind === 'tg' ? 'TG' : '插件' }} · {{ origin.name }}</span>
                     </div>
                     <p class="mt-2 text-xs text-white/42">
                       {{ [formatBytes(item.sizeBytes), item.seeders != null ? `${item.seeders} 做种` : '', item.promotion, item.quality, item.matchedName ? `命中：${item.matchedName}` : ''].filter(Boolean).join(' · ') }}
@@ -311,8 +329,12 @@ function formatBytes(value?: number) {
                     <p v-if="unavailable(item)" class="mt-2 text-xs text-[var(--color-text-secondary)]" role="status">
                       {{ unavailable(item) }}
                     </p>
+                    <DiscoveryResourceRecognition :cloud="isServerCloudResource(item)" :result="recognitions?.[item.token]" :loading="recognizingTokens?.includes(item.token)" :error="recognitionErrors?.[item.token]" />
                   </div>
                   <div class="flex shrink-0 flex-wrap justify-end gap-2">
+                    <button class="page-button" type="button" :disabled="recognizingTokens?.includes(item.token) || !!activeGroup.unavailableReason" @click="emit('recognize', item.token)">
+                      重新检测
+                    </button>
                     <button v-if="mixedSupported && item.resultType" class="page-button" type="button" :disabled="copyingToken === item.token || !!activeGroup.unavailableReason" @click="emit('copyResource', item)">
                       {{ copyingToken === item.token ? '正在读取…' : '复制链接' }}
                     </button><button class="select-button" type="button" :disabled="!canAcquire || busyToken === item.token || !!unavailable(item) || resourceGroupPageIsChanging(state, activeGroup)" :title="unavailable(item)" @click="emit('selectResource', item)">

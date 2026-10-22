@@ -162,8 +162,10 @@ await partialLibrarySource.init({ id: 'server-partial-library', type: 'server', 
 assert.deepEqual(await partialLibrarySource.listLibraries(), [])
 await assert.rejects(partialLibrarySource.listLibrariesForMediaChangeRefresh(), /physical catalog unavailable/)
 partialLibrarySource.destroy()
+const acquisitionReadsBeforeCategories = calls.filter(call => call.path.startsWith('/api/v1/player/discovery/acquisitions?')).length
 const categories = await source.list('9')
 assert.deepEqual(categories.map(item => [item.type, item.name]), [['folder', '外语电影']])
+assert.equal(calls.filter(call => call.path.startsWith('/api/v1/player/discovery/acquisitions?')).length, acquisitionReadsBeforeCategories)
 assert.equal(categories[0].posterUrl, 'http://127.0.0.1:3000/api/v1/assets/generated-library-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 assert.equal(categories[0].artworkRevision, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 assert.equal(categories[0].artworkSource, 'generated')
@@ -187,8 +189,10 @@ const acquisitionCatalogSource = new ServerDataSource({
 })
 await acquisitionCatalogSource.init({ id: 'server-acquisition-catalog', type: 'server', name: '入库占位测试', order: 0, url: 'http://127.0.0.1:3000', enabled: true, extra: { credentialRef: 'acquisition-catalog-credential', deviceId: 'acquisition-catalog-device' } })
 const acquisitionCategories = await acquisitionCatalogSource.list('9')
-assert.deepEqual(acquisitionCategories.map(item => [item.type, item.name]), [['folder', '正在入库']])
-const acquisitionItems = await acquisitionCatalogSource.list(acquisitionCategories[0].id)
+assert.deepEqual(acquisitionCategories, [])
+// Existing bookmarks may still resolve the old task-only deep link, but it is
+// never inserted into the real media-library category navigation.
+const acquisitionItems = await acquisitionCatalogSource.list('server-acquisition-category|9')
 assert.deepEqual(acquisitionItems.map(item => [item.name, item.type, item.acquisition?.progress]), [['Seven Samurai release', 'movie', 25]])
 const acquisitionDetail = await acquisitionCatalogSource.getDetail(acquisitionItems[0].id)
 assert.equal(acquisitionDetail.name, '七武士')
@@ -755,7 +759,7 @@ const historyConfigs = [
 const serverHistoryScope = 'a'.repeat(64)
 const providerHistoryScopes = new Map([['emby-home', 'b'.repeat(64)], ['jellyfin-disabled', 'c'.repeat(64)]])
 const historyUploads = await createServerHistoryUploadChanges([
-  { sourceId: 'server-home', ownerScope: serverHistoryScope, mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'entry|9|bW92aWU|42', title: 'Server 电影', position: 60, updatedAt: 1_791_888_010_000, completed: false, deleted: false, progressSource: 'local' },
+  { sourceId: 'server-home', ownerScope: serverHistoryScope, mediaIdentity: 'server:v1:movie:9:bW92aWU6dG1kYjozNDY', itemId: 'entry|9|bW92aWU6dG1kYjozNDY|42', title: 'Server 电影', position: 60, updatedAt: 1_791_888_010_000, completed: false, deleted: false, progressSource: 'local' },
   { sourceId: 'emby-home', ownerScope: providerHistoryScopes.get('emby-home'), mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', posterUrl: 'https://image.example.test/emby.jpg', position: 120, updatedAt: 1_791_888_011_000, completed: false, deleted: false, progressSource: 'local' },
   { sourceId: 'jellyfin-disabled', ownerScope: providerHistoryScopes.get('jellyfin-disabled'), mediaIdentity: 'jellyfin:item:84', itemId: '84', title: '已停用来源电影', position: 90, updatedAt: 1_791_888_011_500, completed: false, deleted: false, progressSource: 'local' },
   { sourceId: 'local-file', mediaIdentity: 'local:file:demo', itemId: 'demo', title: '本机文件', position: 30, updatedAt: 1_791_888_012_000, completed: false, deleted: false, progressSource: 'local' },
@@ -765,15 +769,15 @@ assert.deepEqual(historyUploads.map(item => [item.source_kind, item.source_name,
   ['emby', '客厅 Emby', 'https://image.example.test/emby.jpg'],
   ['jellyfin', '已停用 Jellyfin', undefined],
 ])
-assert.equal(historyUploads[0]?.item_token, 'work|9|bW92aWU', 'movie history must survive a changed entry ID')
+assert.equal(historyUploads[0]?.item_token, 'work|9|bW92aWU6dG1kYjozNDY', 'movie history must survive a changed entry ID')
 const tombstoneUploads = await createServerHistoryUploadChanges([
   { sourceId: 'emby-home', ownerScope: providerHistoryScopes.get('emby-home'), mediaIdentity: 'emby:item:42', itemId: '42', title: 'Emby 电影', position: 0, updatedAt: 1_791_888_013_000, completed: false, deleted: true, progressSource: 'local' },
-  { sourceId: 'server-home', ownerScope: serverHistoryScope, mediaIdentity: 'server:v1:movie:9:bW92aWU', itemId: 'work|9|bW92aWU', title: 'Server 电影', position: 0, updatedAt: 1_791_888_013_001, completed: false, deleted: true, progressSource: 'local' },
+  { sourceId: 'server-home', ownerScope: serverHistoryScope, mediaIdentity: 'server:v1:movie:9:bW92aWU6dG1kYjozNDY', itemId: 'work|9|bW92aWU6dG1kYjozNDY', title: 'Server 电影', position: 0, updatedAt: 1_791_888_013_001, completed: false, deleted: true, progressSource: 'local' },
 ], historyConfigs, 'server-home', undefined, serverHistoryScope, providerHistoryScopes)
 assert.equal(tombstoneUploads[0]?.deleted, true)
 assert.equal(tombstoneUploads[0]?.sync_key, historyUploads[1]?.sync_key, 'deletion must target the prior Emby record')
 assert.equal(tombstoneUploads[1]?.sync_key, historyUploads[0]?.sync_key, 'deletion must target the canonical Server record')
-const deletionFocus = { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU', updatedAt: tombstoneUploads[1]!.updated_at }
+const deletionFocus = { sourceId: 'server-home', mediaIdentity: 'server:v1:movie:9:bW92aWU6dG1kYjozNDY', updatedAt: tombstoneUploads[1]!.updated_at }
 assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [tombstoneUploads[1]!]), true)
 assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [{ ...tombstoneUploads[1]!, deleted: false }]), false, 'newer playback must not confirm deletion')
 assert.equal(serverConfirmsHistoryDeletion(deletionFocus, tombstoneUploads[1]!, [{ ...tombstoneUploads[1]!, updated_at: deletionFocus.updatedAt - 1 }]), false, 'older tombstone must not confirm deletion')
@@ -832,7 +836,8 @@ console.log(JSON.stringify({
   ownerScopedAcquisitionContract: true,
   expectedIdentitySubmission: true,
   perSiteResultPagination: true,
-  acquisitionPlaceholderCategory: true,
+  realLibraryCategoriesOnly: true,
+  legacyAcquisitionDeepLink: true,
   canonicalHistoryIdentity: true,
   seriesPosterHistoryCard: true,
   providerNeutralServerOverview: true,
@@ -840,7 +845,7 @@ console.log(JSON.stringify({
 }, null, 2))
 
 function mediaItem(index = 0) {
-  const id = index === 0 ? 'bW92aWU6dG1kYjozNDY' : `movie-${index}`
+  const id = Buffer.from(`movie:tmdb:${346 + index}`).toString('base64url')
   return {
     id,
     item_token: `work|9|${id}`,
@@ -909,11 +914,12 @@ function legacyArtworkItem() {
 }
 
 function noPlayableItem() {
+  const id = Buffer.from('movie:file:no-playable').toString('base64url')
   return {
     ...mediaItem(),
-    id: 'movie-no-playable',
-    item_token: 'work|9|movie-no-playable',
-    history_identity: 'server:v1:movie:9:movie-no-playable',
+    id,
+    item_token: `work|9|${id}`,
+    history_identity: `server:v1:movie:9:${id}`,
     title: '无可播放版本',
   }
 }

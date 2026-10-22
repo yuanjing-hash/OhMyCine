@@ -1,8 +1,10 @@
 import type { ServerDataSource } from '@/services/datasource/server'
+import type { ShareContentAnalysis } from '@/services/serverShareContent'
 import { ServerRequestError } from '@/services/datasource/server'
+import { parseShareContentAnalysis } from '@/services/serverShareContent'
 
 export interface ServerShareEntry { token: string, path: string, name: string, isDirectory: boolean, size: number }
-export interface ServerSharePreview { token: string, entries: ServerShareEntry[], fileCount: number, totalSize: number, expiresAt: string }
+export interface ServerSharePreview { token: string, entries: ServerShareEntry[], fileCount: number, totalSize: number, expiresAt: string, shareAnalysis?: ShareContentAnalysis }
 export interface ServerShareSelection { previewToken: string, entryTokens: string[] }
 export const maxServerShareSelectedFiles = 500
 
@@ -41,7 +43,7 @@ export function parseServerSharePreview(value: unknown): ServerSharePreview {
   const files = entries.filter(entry => !entry.isDirectory)
   if (files.length !== data.file_count || files.reduce((sum, item) => sum + item.size, 0) !== data.total_size)
     throw invalidPreview()
-  return { token: data.token, entries, fileCount: data.file_count, totalSize: data.total_size, expiresAt: data.expires_at }
+  return { token: data.token, entries, fileCount: data.file_count, totalSize: data.total_size, expiresAt: data.expires_at, shareAnalysis: parseShareContentAnalysis(data.share_analysis) }
 }
 
 export function shareEntryLeaves(preview: ServerSharePreview, entry: ServerShareEntry): ServerShareEntry[] {

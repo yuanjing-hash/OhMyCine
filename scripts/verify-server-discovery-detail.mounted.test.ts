@@ -14,6 +14,8 @@ const acquisition = vi.hoisted(() => vi.fn())
 const followDefaults = vi.hoisted(() => vi.fn())
 const followPreview = vi.hoisted(() => vi.fn())
 const createFollow = vi.hoisted(() => vi.fn())
+const recognizeResource = vi.hoisted(() => vi.fn())
+const resourceFixture = vi.hoisted(() => ({ item: { token: 'fixture-token', title: 'Fixture result', resultType: 'magnet' } as Record<string, unknown> }))
 vi.mock('vue-router', async () => {
   const { reactive } = await import('vue')
   const route = reactive({ params: { sourceId: 'fixture', provider: 'tmdb', mediaType: 'movie', providerId: '100' }, query: {}, fullPath: '/fixture' })
@@ -22,6 +24,7 @@ vi.mock('vue-router', async () => {
 vi.mock('@/services/datasource/server', () => ({ ServerDataSource: class {
   async refreshCapabilities() { return ['discovery_search', 'mixed_discovery_v1', 'subscription_create'] }
   createDiscoveryFollow(input: unknown) { return createFollow(input) }
+  recognizeDiscoveryResource(token: string) { return recognizeResource(token) }
 } }))
 vi.mock('@/stores/datasource', async () => {
   const { ServerDataSource } = await import('@/services/datasource/server')
@@ -41,7 +44,7 @@ vi.mock('@/services/serverDiscovery', async original => ({
   getServerFollowDefaults: followDefaults, getServerFollowRoutePreview: followPreview, getServerResourceLink: vi.fn(), getServerRouteRecommendation: vi.fn(),
   streamServerResources: async (_source: unknown, input: Record<string, unknown>, event: (value: unknown) => void) => {
     calls.push(input)
-    event({ type: 'site', group: { siteId: 8, siteName: 'PanSou', status: 'success', page: input.page, hasNext: input.page === 1, skipped: 0, snapshotId: 'owned-snapshot', items: [{ token: 'fixture-token', title: 'Fixture result', resultType: 'magnet' }] } })
+    event({ type: 'site', group: { siteId: 8, siteName: 'PanSou', status: 'success', page: input.page, hasNext: input.page === 1, skipped: 0, snapshotId: 'owned-snapshot', items: [resourceFixture.item] } })
     event({ type: 'done', progress: { total: 1, pending: 0, running: 0, completed: 1, succeeded: 1, failed: 0, resultCount: 1 } })
     return { done: Promise.resolve(), cancel: vi.fn() }
   },
@@ -54,6 +57,8 @@ beforeEach(() => {
   followDefaults.mockReset()
   followPreview.mockReset().mockImplementation(async (_source, siteIds: number[], libraryId: number) => ({ available: true, routes: siteIds.map(siteId => ({ siteId, siteName: `站点 ${siteId}`, sourceKind: 'bt', recommended: { downloaderId: 'qbit', libraryId } })) }))
   createFollow.mockReset().mockResolvedValue({})
+  recognizeResource.mockReset().mockResolvedValue({ status: 'matched', title: 'Fixture', media_type: 'movie' })
+  resourceFixture.item = { token: 'fixture-token', title: 'Fixture result', resultType: 'magnet' }
   const route = useRoute()
   route.params.sourceId = 'fixture'
   route.params.mediaType = 'movie'
@@ -87,6 +92,26 @@ async function openSubscription(wrapper: ReturnType<typeof render>) {
   await flushPromises()
 }
 function confirmSubscription(wrapper: ReturnType<typeof render>) { return wrapper.findAll('button').find(button => button.text() === '确认订阅')! }
+
+it('automatically inspects cloud cards in the real detail search workspace before acquisition opens', async () => {
+  resourceFixture.item = { token: 'cloud-claim', title: 'Advertised 1–99', sourceKind: 'quark_share', resultType: 'quark' }
+  recognizeResource.mockResolvedValue({ status: 'matched', title: 'Actual show', media_type: 'tv', share_analysis: {
+    status: 'complete', complete: true, groups: [{ title: 'Actual show', media_type: 'tv', season: 1, episodes: Array.from({ length: 14 }, (_, index) => index + 1), video_count: 15, status: 'matched' }], video_count: 15, ignored_count: 1, unresolved_count: 0, message: '', checked_at: new Date().toISOString(),
+  } })
+  const wrapper = render()
+  try {
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '搜索')!.trigger('click')
+    await flushPromises()
+    wrapper.findComponent(Picker).vm.$emit('search')
+    await flushPromises()
+    expect(recognizeResource).toHaveBeenCalledExactlyOnceWith('cloud-claim')
+    expect(wrapper.findComponent(Workspace).get('[aria-label="分享文件分析"]').text()).toContain('第 1–14 集（共 14 集） · 15 个视频')
+    expect(wrapper.findComponent(Workspace).get('[aria-label="分享文件分析"]').text()).not.toContain('1–99')
+    expect(wrapper.findComponent({ name: 'DiscoveryAcquisitionDialog' }).props('open')).toBe(false)
+  }
+  finally { wrapper.unmount() }
+})
 
 it('uses actual unsubscribed seasons from Server defaults and can submit a valid first-time subscription', async () => {
   useRoute().params.mediaType = 'tv'

@@ -7,6 +7,7 @@ import MediaDetailHero from '@/components/media/MediaDetailHero.vue'
 import DiscoveryAcquisitionDialog from '@/components/server/DiscoveryAcquisitionDialog.vue'
 import DiscoverySearchWorkspace from '@/components/server/DiscoverySearchWorkspace.vue'
 import DiscoverySitePickerDialog from '@/components/server/DiscoverySitePickerDialog.vue'
+import { useServerResourceRecognition } from '@/composables/useServerResourceRecognition'
 import { ServerDataSource } from '@/services/datasource/server'
 import { registerLayoutBackHandler } from '@/services/layoutBackNavigation'
 import { publishFeedback } from '@/services/mediaActions'
@@ -42,6 +43,8 @@ const capabilities = ref(new Set<string>())
 const discoveryTypePolicy = ref<'default' | ServerDiscoveryTypePolicy>('default')
 const discoveryCloudTypes = ref<string[]>(['115', 'quark', 'magnet'])
 const copyingToken = ref('')
+const resourceSearchGeneration = ref(0)
+const resourceResultsOwner = ref('')
 let activeSearchScope: number[] = []
 let copyGeneration = 0
 const sitePickerOpen = ref(false)
@@ -81,6 +84,18 @@ const canSearch = computed(() => capabilities.value.has('discovery_search'))
 const canAcquire = computed(() => capabilities.value.has('acquisition_create'))
 const canSubscribe = computed(() => capabilities.value.has('subscription_create'))
 const mixedSupported = computed(() => capabilities.value.has('mixed_discovery_v1'))
+const recognitionSource = computed(() => {
+  const current = store.getSource(sourceId.value)
+  return current instanceof ServerDataSource ? current : null
+})
+const recognitionItems = computed(() => {
+  if (resourceResultsOwner.value !== `${route.fullPath}:${resourceSearchGeneration.value}`)
+    return []
+  const groups = searchState.value.groups.filter(group => group.items.length > 0)
+  return (groups.find(group => group.siteId === activeSiteId.value) ?? groups[0])?.items ?? []
+})
+const resourceRecognition = useServerResourceRecognition(recognitionItems, recognitionSource, computed(() => `${route.fullPath}:${resourceSearchGeneration.value}`), resultWorkspaceOpen)
+const { recognitions: resourceRecognitions, errors: resourceRecognitionErrors, loadingTokens: resourceRecognizingTokens } = resourceRecognition
 const followRoutesAvailable = computed(() => !followRouteLoading.value && !followRouteError.value
   && followRoutePreview.value?.available === true
   && followRoutePreview.value.routes.length === followForm.value.siteIds.length
@@ -285,8 +300,11 @@ async function runSearch(siteIds = selectedSiteIds.value, replaceAll = true, pag
     start: () => {
       error.value = ''
       searchState.value = beginResourceSearch(searchState.value, { sites: sites.value, siteIds: input.siteIds, replaceAll, page })
-      if (replaceAll)
+      if (replaceAll) {
+        resourceSearchGeneration.value++
         activeSiteId.value = undefined
+      }
+      resourceResultsOwner.value = `${route.fullPath}:${resourceSearchGeneration.value}`
       sitePickerOpen.value = false
       resultWorkspaceOpen.value = true
     },
@@ -775,8 +793,8 @@ onBeforeUnmount(() => {
       </section>
 
       <DiscoverySitePickerDialog :open="sitePickerOpen" :sites="sites" :selected-site-ids="selectedSiteIds" :loading="loadingSites" :mode="pendingSearchMode" :direct-kind="directKind" :direct-query="directQuery" :tmdb-id="detail.work.tmdbId" @close="sitePickerOpen = false" @search="runSearch()" @toggle-site="toggleSite" @toggle-all="toggleAllSites" @update-direct-kind="directKind = $event" @update-direct-query="directQuery = $event" />
-      <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :state="searchState" :active-site-id="activeSiteId" :can-acquire="canAcquire" :busy-token="busyToken" :mixed-supported="mixedSupported" :type-policy="discoveryTypePolicy" :cloud-types="discoveryCloudTypes" :copying-token="copyingToken" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="retrySite" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" @copy-resource="copyResourceLink" @update-type-policy="discoveryTypePolicy = $event" @update-cloud-types="discoveryCloudTypes = $event" @refresh="refreshResourceTypes" />
-      <DiscoveryAcquisitionDialog :key="sourceId" :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" :load-share-preview="loadAcquisitionSharePreview" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" />
+      <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :state="searchState" :active-site-id="activeSiteId" :can-acquire="canAcquire" :busy-token="busyToken" :mixed-supported="mixedSupported" :type-policy="discoveryTypePolicy" :cloud-types="discoveryCloudTypes" :copying-token="copyingToken" :recognitions="resourceRecognitions" :recognizing-tokens="resourceRecognizingTokens" :recognition-errors="resourceRecognitionErrors" @recognize="resourceRecognition.retry" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="retrySite" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" @copy-resource="copyResourceLink" @update-type-policy="discoveryTypePolicy = $event" @update-cloud-types="discoveryCloudTypes = $event" @refresh="refreshResourceTypes" />
+      <DiscoveryAcquisitionDialog :key="sourceId" :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" :load-share-preview="loadAcquisitionSharePreview" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" @share-analysis="resourceRecognition.acceptAnalysis" />
 
       <div v-if="followOpen" class="follow-layer fixed inset-0 z-[1210] grid place-items-center p-4" @click.self="!subscribing && (followOpen = false)">
         <section class="follow-card glass-panel max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-[28px] p-6 cinema-scrollbar">
