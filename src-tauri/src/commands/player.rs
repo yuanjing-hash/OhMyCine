@@ -6,11 +6,12 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use super::player_shared::{
-    prepare_external_subtitle, sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings,
-    MpvHttpHeader, MpvHttpReadProfile, MpvOrientationState,
+    prepare_external_subtitle, sanitize_http_headers, MpvBufferState, MpvDisplayBrightnessState,
+    MpvEngineSettings, MpvHttpHeader, MpvHttpReadProfile, MpvOrientationState, MpvSeekPrecision,
+    MpvSeekReceipt,
 };
 use crate::mpv::{
     mobile_proxy::AndroidStreamProxyState,
@@ -194,9 +195,10 @@ pub async fn mpv_load(
     audio_headers: Option<Vec<MpvHttpHeader>>,
     title: Option<String>,
     http_read_profile: Option<MpvHttpReadProfile>,
-    state: State<'_, MpvState>,
-    stream_proxy: State<'_, AndroidStreamProxyState>,
+    app: AppHandle,
 ) -> Result<(), String> {
+    let state = app.state::<MpvState>();
+    let stream_proxy = app.state::<AndroidStreamProxyState>();
     let _ = title;
     let headers = sanitize_http_headers(headers.unwrap_or_default())?;
     let audio_headers = sanitize_http_headers(audio_headers.unwrap_or_default())?;
@@ -339,9 +341,36 @@ pub async fn mpv_stop(
 }
 
 #[tauri::command]
-pub async fn mpv_seek(position: f64, state: State<'_, MpvState>) -> Result<(), String> {
+pub async fn mpv_seek(
+    position: f64,
+    precision: MpvSeekPrecision,
+    state: State<'_, MpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
+) -> Result<MpvSeekReceipt, String> {
+    if !position.is_finite() || position < 0.0 {
+        return Err("播放位置无效。".to_string());
+    }
+    let epoch = stream_proxy.diagnostic_epoch();
+    let _submission = stream_proxy.current_load_guard(epoch).await?;
     let mut player = state.lock().map_err(|err| err.to_string())?;
-    player.seek(position)
+    if player.playback_epoch() != Some(epoch) {
+        return Err("播放器正在切换媒体。".to_string());
+    }
+    player.seek(position, precision)
+}
+
+#[tauri::command]
+pub async fn mpv_buffer_state(
+    state: State<'_, MpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
+) -> Result<MpvBufferState, String> {
+    let epoch = stream_proxy.diagnostic_epoch();
+    let _submission = stream_proxy.current_load_guard(epoch).await?;
+    let player = state.lock().map_err(|_| "播放器状态暂不可用。".to_string())?;
+    if player.playback_epoch() != Some(epoch) {
+        return Err("播放器正在切换媒体。".to_string());
+    }
+    Ok(player.buffer_state())
 }
 
 #[tauri::command]

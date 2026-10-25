@@ -33,8 +33,12 @@ export function streamVariantDescription(variant: StreamVariant): string {
   return [resolution, bitrate, variant.videoCodec, variant.dynamicRange].filter(Boolean).join(' · ')
 }
 
-function formatBitrate(bitsPerSecond: number): string {
+export function formatBitrate(bitsPerSecond: number | null | undefined): string {
+  if (bitsPerSecond == null || !Number.isFinite(bitsPerSecond) || bitsPerSecond <= 0)
+    return '暂不可用'
   if (bitsPerSecond >= 1_000_000)
-    return `${(bitsPerSecond / 1_000_000).toFixed(bitsPerSecond >= 10_000_000 ? 0 : 1)} Mbps`
-  return `${Math.round(bitsPerSecond / 1000)} kbps`
+    return `${(bitsPerSecond / 1_000_000).toFixed(1)} Mbps`
+  if (bitsPerSecond >= 1000)
+    return `${Math.round(bitsPerSecond / 1000)} kbps`
+  return `${Math.round(bitsPerSecond)} bps`
 }

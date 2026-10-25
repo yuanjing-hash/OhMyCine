@@ -138,6 +138,7 @@ object MPVLib {
         const val FILE_LOADED = 8
         const val VIDEO_RECONFIG = 17
         const val AUDIO_RECONFIG = 18
+        const val SEEK = 20
         const val PLAYBACK_RESTART = 21
     }
 

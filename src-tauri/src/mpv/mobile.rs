@@ -36,6 +36,15 @@ pub struct AndroidMpvSnapshot {
     pub time: f64,
     pub duration: f64,
     pub paused: bool,
+    pub seeking: bool,
+    pub paused_for_cache: bool,
+    pub cache_buffering_state: Option<f64>,
+    pub cache_speed: Option<f64>,
+    pub vo_configured: bool,
+    pub file_loaded: bool,
+    pub seek_serial: u64,
+    pub restarted_seek_serial: u64,
+    pub seek_target: Option<f64>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -57,6 +66,8 @@ pub struct AndroidPlaybackDiagnostics {
     pub file_loaded: bool,
     pub video_format: Option<String>,
     pub audio_codec: Option<String>,
+    pub video_bitrate: Option<f64>,
+    pub audio_bitrate: Option<f64>,
     pub vo_configured: bool,
     pub hardware_decoder: Option<String>,
     pub video_output: String,

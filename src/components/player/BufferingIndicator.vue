@@ -3,6 +3,8 @@ import { computed } from 'vue'
 
 const props = defineProps<{
   speedBytesPerSecond: number
+  kind: 'seeking' | 'buffering'
+  percent: number | null
 }>()
 
 const formattedSpeed = computed(() => {
@@ -14,15 +16,17 @@ const formattedSpeed = computed(() => {
     return `${(speed / (1024 * 1024)).toFixed(2)} MB/s`
   if (speed >= 1024)
     return `${(speed / 1024).toFixed(1)} KB/s`
-  return speed > 0 ? `${Math.round(speed)} B/s` : '正在连接媒体源'
+  return speed > 0 ? `${Math.round(speed)} B/s` : ''
 })
 </script>
 
 <template>
   <div class="buffering-indicator pointer-events-none" role="status" aria-live="polite">
     <span class="buffering-spinner" aria-hidden="true" />
-    <strong>正在缓冲</strong>
-    <span>{{ formattedSpeed }}</span>
+    <strong>{{ kind === 'seeking' ? '正在定位' : '正在缓冲' }}</strong>
+    <span v-if="kind === 'buffering' && (formattedSpeed || percent != null)">
+      {{ [percent != null ? `${Math.round(percent)}%` : '', formattedSpeed].filter(Boolean).join(' · ') }}
+    </span>
   </div>
 </template>
 

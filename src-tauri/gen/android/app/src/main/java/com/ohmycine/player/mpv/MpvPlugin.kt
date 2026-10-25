@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.view.WindowManager
@@ -28,6 +27,7 @@ class LoadArgs {
     var audioPath: String? = null
     var title: String? = null
     var httpReadProfile: String? = null
+    var fileOptions: Map<String, String>? = null
 }
 
 @InvokeArg
@@ -46,6 +46,7 @@ class SubtitleArgs {
 @InvokeArg
 class SeekArgs {
     var position: Double = 0.0
+    var precision: String = "exact"
 }
 
 @InvokeArg
@@ -97,18 +98,22 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     private var originalWindowBrightness: Float? = null
 
     override fun load(webView: WebView) {
-        MpvSurfaceHost.install(activity, webView)
+        MpvSurfaceHost.install(activity, webView, this)
     }
 
     override fun onDestroy(activity: androidx.appcompat.app.AppCompatActivity) {
+        if (!MpvSurfaceHost.isOwnedBy(this)) return
         PlaybackService.stop(activity)
         exitPlaybackMode()
-        MpvSurfaceHost.destroy()
+        MpvSurfaceHost.destroy(this)
     }
 
     override fun onPause() {
-        if (playbackActive && !backgroundPlaybackEnabled)
-            runCatching { MpvSurfaceHost.pause(true) }
+        MpvSurfaceHost.activityPaused(backgroundPlaybackEnabled, this)
+    }
+
+    override fun onResume() {
+        MpvSurfaceHost.activityResumed(this)
     }
 
     @Command
@@ -116,12 +121,12 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
         val args = invoke.parseArgs(LoadArgs::class.java)
         enterPlaybackMode()
         try {
-            val playablePath = preparePlayablePath(args.path)
             MpvSurfaceHost.load(
-                playablePath,
-                args.audioPath?.trim()?.takeIf { it.isNotEmpty() }?.let(::preparePlayablePath),
+                args.path,
+                args.audioPath?.trim()?.takeIf { it.isNotEmpty() },
                 args.headers.orEmpty().map { MpvHeader(it.name, it.value) },
                 args.httpReadProfile,
+                args.fileOptions.orEmpty(),
             )
             currentMediaTitle = args.title?.trim()?.take(160).takeUnless { it.isNullOrEmpty() } ?: "正在播放"
             syncBackgroundPlaybackService()
@@ -154,7 +159,7 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun addSubtitle(invoke: Invoke) = resolve(invoke) {
         val args = invoke.parseArgs(SubtitleArgs::class.java)
-        MpvSurfaceHost.addSubtitle(preparePlayablePath(args.url), args.title, args.language)
+        MpvSurfaceHost.addSubtitle(args.url, args.title, args.language)
     }
 
     @Command
@@ -171,8 +176,9 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
-    fun seek(invoke: Invoke) = resolve(invoke) {
-        MpvSurfaceHost.seek(invoke.parseArgs(SeekArgs::class.java).position)
+    fun seek(invoke: Invoke) = resolveObject(invoke) {
+        val args = invoke.parseArgs(SeekArgs::class.java)
+        MpvSurfaceHost.seek(args.position, args.precision)
     }
 
     @Command
@@ -355,16 +361,6 @@ class MpvPlugin(private val activity: Activity) : Plugin(activity) {
         if (ContextCompat.checkSelfPermission(activity, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
             return
         ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9415)
-    }
-
-    private fun preparePlayablePath(path: String): String {
-        if (!path.startsWith("content://", ignoreCase = true))
-            return path
-
-        val descriptor = activity.contentResolver.openFileDescriptor(Uri.parse(path), "r")
-            ?: error("Android 无法读取所选媒体文件。")
-        val fd = descriptor.detachFd()
-        return "fdclose://$fd"
     }
 
     private fun resolve(invoke: Invoke, action: () -> Unit) {

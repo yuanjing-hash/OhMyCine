@@ -40,7 +40,7 @@ import { isNearbyDoubleTap, resolveTouchGestureAxis, touchSeekTarget, touchVerti
 import { matchPlaybackTrackPreference } from '@/services/playerTrackPreferences'
 import { isNativeAndroidRuntime } from '@/services/runtimePlatform'
 import { captureVideoFrame, notifyScreenshotSaved } from '@/services/screenshotSettings'
-import { usableStreamVariants } from '@/services/streamVariants'
+import { formatBitrate, usableStreamVariants } from '@/services/streamVariants'
 import { describeLocalSubtitleSearchProviders, downloadLocalSubtitle, importLocalSubtitle, listCachedSubtitles, loadSubtitleSearchSettings, searchLocalSubtitles } from '@/services/subtitle'
 import { subtitleEpisodeSearchKeywords, subtitleKeywordUsesMediaIdentity, subtitleMediaSearchTitle } from '@/services/subtitle/mediaContext'
 import { useDataSourceStore } from '@/stores/datasource'
@@ -58,6 +58,7 @@ const CONTEXT_MENU_MARGIN = 12
 const ARROW_TAP_SEEK_SECONDS = 5
 const ARROW_HOLD_DELAY = 350
 const REWIND_HOLD_INTERVAL = 220
+const REWIND_PREVIEW_INTERVAL = 500
 const MEDIA_PREFERENCE_SAVE_DELAY = 180
 const TOUCH_FEEDBACK_HIDE_DELAY = 850
 const TOUCH_CLICK_SUPPRESSION_MS = 650
@@ -244,6 +245,9 @@ let heldArrowKey: 'ArrowLeft' | 'ArrowRight' | null = null
 let heldArrowOwner: 'keyboard' | 'touch' | null = null
 let heldArrowTimer: number | undefined
 let rewindHoldTimer: number | undefined
+let rewindPreviewTimer: number | undefined
+let heldRewindTarget: number | null = null
+let heldArrowGeneration = 0
 let arrowHoldActivated = false
 let arrowBasePlaybackSpeed = 1
 let pendingKeyboardVolume: number | null = null
@@ -288,6 +292,9 @@ const {
   videoReady,
   fileLoaded,
   isBuffering,
+  isPlaybackWaiting,
+  bufferingKind,
+  bufferPercent,
   bufferSpeedBytesPerSecond,
   orientationSupported,
   orientationMode,
@@ -305,6 +312,7 @@ const {
   load,
   togglePause,
   seek: seekMpv,
+  cancelPendingSeek,
   seekRelative: seekRelativeMpv,
   setVolume,
   setVideoBrightness,
@@ -363,6 +371,8 @@ const playbackStatsHeadline = computed(() => `${formatPlaybackTime(currentTime.v
 const contextMenuDetails = computed<PlaybackContextMenuDetail[]>(() => [
   { label: '状态 / 速度', value: `${isPlaying.value ? 'Playing' : 'Paused'} · ${playbackSpeed.value.toFixed(2)}x` },
   { label: '播放位置', value: playbackStatsHeadline.value },
+  { label: '视频码率', value: formatBitrate(playbackDiagnostics.value?.videoBitrate) },
+  { label: '音频码率', value: formatBitrate(playbackDiagnostics.value?.audioBitrate) },
   { label: '音量', value: `${Math.round(volume.value)}%` },
   { label: '片源动态范围', value: `${videoDynamicRange.value.label} · ${videoDynamicRange.value.details}` },
   { label: '渲染目标', value: `${videoTargetDynamicRange.value.label} · ${videoTargetDynamicRange.value.details}` },
@@ -647,7 +657,7 @@ function handlePlayerTouchPointerEnd(event: PointerEvent, cancelled = false) {
   const completedArrowHold = session.holdArrowStarted && heldArrowOwner === 'touch' && arrowHoldActivated
   if (session.holdArrowStarted) {
     session.holdArrowStarted = false
-    void releaseHeldArrow(false, 'touch')
+    void releaseHeldArrow(false, 'touch', !cancelled)
   }
 
   if (completedArrowHold) {
@@ -1489,7 +1499,7 @@ function effectivePlaybackPosition(): number {
   const pending = pendingResumeSeek
   if (pending && pending.path === mediaPath.value)
     return Math.max(0, pending.position)
-  return Math.max(0, playbackHasFailed() || !fileLoaded.value ? lastConfirmedTime.value : currentTime.value)
+  return Math.max(0, playbackHasFailed() || !fileLoaded.value || isPlaybackWaiting.value ? lastConfirmedTime.value : currentTime.value)
 }
 
 function playbackHasFailed(): boolean {
@@ -1505,7 +1515,8 @@ function playbackEndedNaturally(): boolean {
 function hasConfirmedWatchedPosition(): boolean {
   return loadedPlaybackGeneration === playbackSessionGeneration && playbackProgressReady
     && fileLoaded.value && videoReady.value && renderStatus.value === 'ready'
-    && !pendingResumeSeek && !isBuffering.value && !isQueueSwitching.value && !isStreamVariantSwitching.value
+    && !pendingResumeSeek && !isPlaybackWaiting.value && !(heldArrowKey === 'ArrowLeft' && arrowHoldActivated)
+    && !isQueueSwitching.value && !isStreamVariantSwitching.value
     && !playbackHasFailed() && !playbackEndReason.value
     && playbackDiagnostics.value?.state === 'playing'
     && isCompletedPosition(lastConfirmedTime.value, lastConfirmedDuration.value)
@@ -3403,10 +3414,15 @@ function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight', owner: 'keyboard' | 'to
     return false
   heldArrowKey = key
   heldArrowOwner = owner
+  heldArrowGeneration = playbackSessionGeneration
   arrowHoldActivated = false
   arrowBasePlaybackSpeed = playbackSpeed.value
   heldArrowTimer = window.setTimeout(() => {
     heldArrowTimer = undefined
+    if (heldArrowGeneration !== playbackSessionGeneration) {
+      void releaseHeldArrow(false, owner)
+      return
+    }
     arrowHoldActivated = true
     if (key === 'ArrowRight') {
       const configuredSpeed = loadPlayerInteractionSettings().longPressPlaybackSpeed
@@ -3414,32 +3430,65 @@ function beginHeldArrow(key: 'ArrowLeft' | 'ArrowRight', owner: 'keyboard' | 'to
       showKeyboardOsd(`长按快进 · ${configuredSpeed}x`)
       return
     }
-    showKeyboardOsd('连续后退')
-    void seekRelative(-ARROW_TAP_SEEK_SECONDS)
+    cancelPendingResumeSeek()
+    heldRewindTarget = lastConfirmedTime.value
+    advanceHeldRewind()
+    previewHeldRewind()
     rewindHoldTimer = window.setInterval(() => {
-      void seekRelative(-ARROW_TAP_SEEK_SECONDS)
+      advanceHeldRewind()
     }, REWIND_HOLD_INTERVAL)
+    rewindPreviewTimer = window.setInterval(previewHeldRewind, REWIND_PREVIEW_INTERVAL)
   }, ARROW_HOLD_DELAY)
   return true
 }
 
-async function releaseHeldArrow(triggerTap: boolean, owner?: 'keyboard' | 'touch') {
+function advanceHeldRewind() {
+  if (heldArrowGeneration !== playbackSessionGeneration || heldRewindTarget == null) {
+    void releaseHeldArrow(false)
+    return
+  }
+  heldRewindTarget = Math.max(0, heldRewindTarget - ARROW_TAP_SEEK_SECONDS)
+  showKeyboardOsd(`连续后退 · ${formatPlaybackTime(heldRewindTarget)}`)
+}
+
+function previewHeldRewind() {
+  if (heldArrowGeneration !== playbackSessionGeneration || heldRewindTarget == null)
+    return
+  void seekMpv(heldRewindTarget, { precision: 'keyframes' }).catch(() => undefined)
+}
+
+async function releaseHeldArrow(triggerTap: boolean, owner?: 'keyboard' | 'touch', finishHold = triggerTap) {
   if (owner && heldArrowOwner !== owner)
     return
   const key = heldArrowKey
   const wasHold = arrowHoldActivated
+  const finalTarget = heldRewindTarget
+  const generation = heldArrowGeneration
   if (heldArrowTimer)
     window.clearTimeout(heldArrowTimer)
   if (rewindHoldTimer)
     window.clearInterval(rewindHoldTimer)
+  if (rewindPreviewTimer)
+    window.clearInterval(rewindPreviewTimer)
   heldArrowTimer = undefined
   rewindHoldTimer = undefined
+  rewindPreviewTimer = undefined
+  heldRewindTarget = null
   heldArrowKey = null
   heldArrowOwner = null
   arrowHoldActivated = false
   if (!key)
     return
+  if (key === 'ArrowLeft' && wasHold) {
+    if (finishHold && generation === playbackSessionGeneration && finalTarget != null)
+      await seekMpv(finalTarget, { precision: 'exact' })
+    else
+      cancelPendingSeek()
+    return
+  }
   if (key === 'ArrowRight' && wasHold) {
+    if (generation !== playbackSessionGeneration)
+      return
     await applyPlaybackSpeed(arrowBasePlaybackSpeed)
     showKeyboardOsd(`播放速度 · ${Number.isInteger(arrowBasePlaybackSpeed) ? arrowBasePlaybackSpeed.toFixed(1) : arrowBasePlaybackSpeed}x`)
     return
@@ -3712,6 +3761,8 @@ watch(
       <BufferingIndicator
         v-if="hasMedia && isBuffering"
         :speed-bytes-per-second="bufferSpeedBytesPerSecond"
+        :kind="bufferingKind"
+        :percent="bufferPercent"
       />
     </Transition>
 
@@ -4191,6 +4242,11 @@ watch(
   background: var(--player-chrome-surface-strong);
   box-shadow:
     var(--player-chrome-shadow);
+}
+
+.player-detail-panel {
+  max-height: calc(100svh - 7.5rem);
+  overflow-y: auto;
 }
 
 .context-menu-action {

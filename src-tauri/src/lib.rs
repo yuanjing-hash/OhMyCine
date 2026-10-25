@@ -47,7 +47,7 @@ use commands::player::{
     mpv_add_subtitle, mpv_apply_engine_settings, mpv_capture_screenshot,
     mpv_display_brightness_state, mpv_get_property, mpv_init_render_surface, mpv_load,
     mpv_orientation_state, mpv_pause, mpv_playback_diagnostics, mpv_render_status, mpv_resume,
-    mpv_seek, mpv_set_display_brightness, mpv_set_orientation, mpv_set_property,
+    mpv_buffer_state, mpv_seek, mpv_set_display_brightness, mpv_set_orientation, mpv_set_property,
     mpv_set_render_strategy, mpv_stop, mpv_track_state, mpv_update_render_surface_bounds,
     player_screenshot_directory_label,
 };
@@ -217,6 +217,7 @@ pub fn run() {
             mpv_resume,
             mpv_stop,
             mpv_seek,
+            mpv_buffer_state,
             mpv_get_property,
             mpv_set_property,
             mpv_track_state,

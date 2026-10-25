@@ -14,6 +14,45 @@ pub enum MpvHttpReadProfile {
     BoundedRangesV1,
 }
 
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MpvSeekPrecision {
+    Exact,
+    Keyframes,
+}
+
+impl MpvSeekPrecision {
+    #[cfg(not(mobile))]
+    pub fn flags(self) -> &'static str {
+        match self {
+            Self::Exact => "absolute+exact",
+            Self::Keyframes => "absolute+keyframes",
+        }
+    }
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpvBufferState {
+    pub position: f64,
+    pub seeking: bool,
+    pub paused_for_cache: bool,
+    pub cache_buffering_state: Option<f64>,
+    pub cache_speed: Option<f64>,
+    pub vo_configured: bool,
+    pub file_loaded: bool,
+    pub seek_serial: u64,
+    pub restarted_seek_serial: u64,
+    pub seek_target: Option<f64>,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpvSeekReceipt {
+    pub seek_serial: u64,
+    pub completed: bool,
+}
+
 pub fn http_read_profile_diagnostic(
     profile: Option<MpvHttpReadProfile>,
     supported: bool,
@@ -29,13 +68,20 @@ pub fn http_read_profile_diagnostic(
 
 /// loadfile's options are file-local; mpv restores prior values at the next load.
 /// Length quoting keeps commas, quotes and UTF-8 audio URLs inside one value.
-pub fn playback_file_options(audio_path: Option<&str>, bounded_ranges: bool) -> Option<String> {
+pub fn playback_file_options(
+    audio_path: Option<&str>,
+    bounded_ranges: bool,
+    prebuffer_network: bool,
+) -> Option<String> {
     let mut options = Vec::new();
     if bounded_ranges {
         options.push("curl-enabled=yes,curl-max-request-size=8388608".to_string());
     }
     if let Some(value) = audio_path {
         options.push(format!("audio-file=%{}%{}", value.len(), value));
+    }
+    if prebuffer_network {
+        options.push("cache-pause=yes,cache-pause-initial=yes,cache-pause-wait=1".to_string());
     }
     (!options.is_empty()).then(|| options.join(","))
 }
@@ -64,18 +110,18 @@ mod http_read_profile_tests {
     #[test]
     fn http_read_profile_options_are_file_local_and_audio_is_one_literal_value() {
         assert_eq!(
-            playback_file_options(None, true).as_deref(),
+            playback_file_options(None, true, false).as_deref(),
             Some("curl-enabled=yes,curl-max-request-size=8388608")
         );
-        assert_eq!(playback_file_options(None, false), None);
+        assert_eq!(playback_file_options(None, false, false), None);
         let audio = "https://example.invalid/音频?x=,curl-max-request-size=1";
         let quoted = format!("audio-file=%{}%{}", audio.len(), audio);
         assert_eq!(
-            playback_file_options(Some(audio), false),
+            playback_file_options(Some(audio), false, false),
             Some(quoted.clone())
         );
         assert_eq!(
-            playback_file_options(Some(audio), true),
+            playback_file_options(Some(audio), true, false),
             Some(format!(
                 "curl-enabled=yes,curl-max-request-size=8388608,{quoted}"
             ))

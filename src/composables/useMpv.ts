@@ -126,6 +126,8 @@ export interface MpvPlaybackDiagnostics {
   fileLoaded: boolean
   videoFormat?: string | null
   audioCodec?: string | null
+  videoBitrate: number | null
+  audioBitrate: number | null
   voConfigured: boolean
   hardwareDecoder?: string | null
   videoOutput: string
@@ -138,6 +140,42 @@ export interface MpvPlaybackDiagnostics {
 }
 
 export type MpvEndReason = 'eof' | 'stop' | 'quit' | 'error' | 'redirect'
+export type MpvSeekPrecision = 'exact' | 'keyframes'
+
+interface MpvBufferState {
+  position: number
+  seeking: boolean
+  pausedForCache: boolean
+  cacheBufferingState: number | null
+  cacheSpeed: number | null
+  voConfigured: boolean
+  fileLoaded: boolean
+  seekSerial: number
+  restartedSeekSerial: number
+  seekTarget: number | null
+}
+
+interface MpvSeekReceipt {
+  seekSerial: number
+  completed: boolean
+}
+
+interface SeekRequest {
+  sequence: number
+  generation: number
+  position: number
+  precision: MpvSeekPrecision
+  resolve: () => void
+  reject: (error: unknown) => void
+}
+
+interface SeekSettlement {
+  sequence: number
+  position: number
+  precision: MpvSeekPrecision
+  acknowledged: boolean
+  baselineSerial: number | null
+}
 
 export interface RenderSurfaceBounds {
   x: number
@@ -317,6 +355,12 @@ export function useMpv() {
   const videoReady = ref(false)
   const fileLoaded = ref(false)
   const isBuffering = ref(false)
+  const nativeSeeking = ref(false)
+  const nativeCachePaused = ref(false)
+  const seekPending = ref(false)
+  const isPlaybackWaiting = computed(() => seekPending.value || nativeSeeking.value || nativeCachePaused.value)
+  const bufferingKind = computed(() => nativeCachePaused.value ? 'buffering' as const : 'seeking' as const)
+  const bufferPercent = ref<number | null>(null)
   const bufferSpeedBytesPerSecond = ref(0)
   const orientationSupported = ref(false)
   const orientationMode = ref<MpvOrientationMode>('auto')
@@ -328,7 +372,6 @@ export function useMpv() {
   let bufferDisplayTimer: number | undefined
   let bufferPollInFlight = false
   let bufferPollingGeneration = 0
-  let engineReportsBuffering = false
   const trackRefreshTimers = new Set<number>()
   let subtitleDelayCommand = Promise.resolve()
   let subtitleDelayGeneration = 0
@@ -341,6 +384,11 @@ export function useMpv() {
   let disposed = false
   let diagnosticsRefreshPromise: Promise<void> | null = null
   let playbackTransitionPromise = Promise.resolve()
+  let seekSequence = 0
+  let pendingSeekRequest: SeekRequest | null = null
+  let seekSettlement: SeekSettlement | null = null
+  let seekDispatchInFlight = false
+  let pauseIntentSequence = 0
 
   const unlistenPromises = [
     listen<{ time: number }>('mpv:time-update', (event) => {
@@ -348,8 +396,10 @@ export function useMpv() {
         || playbackEndReason.value === 'error' || playbackEndReason.value === 'stop' || playbackEndReason.value === 'quit') {
         return
       }
-      currentTime.value = event.payload.time
-      lastConfirmedTime.value = event.payload.time
+      if (!isPlaybackWaiting.value) {
+        currentTime.value = event.payload.time
+        lastConfirmedTime.value = event.payload.time
+      }
     }),
     listen<{ duration: number }>('mpv:duration-change', (event) => {
       if (disposed || !playbackActive || mediaLoadPending || !Number.isFinite(event.payload.duration) || event.payload.duration <= 0)
@@ -437,13 +487,20 @@ export function useMpv() {
 
   async function readPlaybackDiagnostics(generation: number, colorGeneration: number) {
     const loadWasPending = mediaLoadPending
+    const seekAtRead = seekSequence
+    const seekAcknowledgedAtRead = seekSettlement?.sequence === seekAtRead && seekSettlement.acknowledged
     try {
       const diagnostics = await invoke<MpvPlaybackDiagnostics>('mpv_playback_diagnostics')
-      if (disposed || generation !== playbackGeneration || loadWasPending)
+      if (disposed || generation !== playbackGeneration || loadWasPending || seekAtRead !== seekSequence)
         return
 
       const currentColor = playbackActive && !mediaLoadPending && colorGeneration === videoColorGeneration
-      playbackDiagnostics.value = { ...diagnostics, color: currentColor ? diagnostics.color : null }
+      playbackDiagnostics.value = {
+        ...diagnostics,
+        color: currentColor ? diagnostics.color : null,
+        videoBitrate: playbackActive ? positiveRate(diagnostics.videoBitrate) : null,
+        audioBitrate: playbackActive ? positiveRate(diagnostics.audioBitrate) : null,
+      }
       if (currentColor)
         videoDynamicRange.value = describeVideoSourceColor(diagnostics.color)
       else
@@ -451,8 +508,14 @@ export function useMpv() {
       if (disposed || generation !== playbackGeneration)
         return
       if (playbackActive && !mediaLoadPending) {
-        playbackEndReason.value = diagnostics.state === 'error' ? 'error' : diagnostics.endReason
-        if (Number.isFinite(diagnostics.position) && diagnostics.position >= 0) {
+        const endedDuringSeek = diagnostics.endReason === 'eof' && isPlaybackWaiting.value
+        // A keep-open EOF from before the new seek is not its outcome. A fresh
+        // post-ack terminal EOF with no loaded file has actually closed this
+        // media, and cannot remain waiting for a restart that will never arrive.
+        const seekClosedAtEof = endedDuringSeek && diagnostics.state === 'ended'
+          && !diagnostics.fileLoaded && seekAcknowledgedAtRead
+        playbackEndReason.value = diagnostics.state === 'error' ? 'error' : endedDuringSeek && !seekClosedAtEof ? null : diagnostics.endReason
+        if (!isPlaybackWaiting.value && Number.isFinite(diagnostics.position) && diagnostics.position >= 0) {
           lastConfirmedTime.value = diagnostics.position
           currentTime.value = diagnostics.position
         }
@@ -460,15 +523,25 @@ export function useMpv() {
           lastConfirmedDuration.value = diagnostics.duration
           duration.value = diagnostics.duration
         }
+        if (seekClosedAtEof) {
+          cancelPendingSeek()
+          stopBufferingPolling()
+        }
       }
       if (playbackActive && !mediaLoadPending && diagnostics.state !== 'desktop')
         fileLoaded.value = diagnostics.fileLoaded
       if (playbackActive && !mediaLoadPending && diagnostics.state !== 'desktop' && diagnostics.fileLoaded && (diagnostics.videoFormat || diagnostics.state === 'playing'))
         videoReady.value = true
       if (!mediaLoadPending && (diagnostics.state === 'error' || diagnostics.state === 'ended' || diagnostics.state === 'idle')) {
-        isPlaying.value = false
+        if (diagnostics.state !== 'ended' || !isPlaybackWaiting.value)
+          isPlaying.value = false
         if (diagnostics.state === 'error')
           videoReady.value = false
+        if (diagnostics.state === 'error' || diagnostics.state === 'idle'
+          || (diagnostics.state === 'ended' && diagnostics.endReason !== 'eof')) {
+          cancelPendingSeek()
+          stopBufferingPolling()
+        }
       }
     }
     catch {
@@ -603,19 +676,6 @@ export function useMpv() {
     trackRefreshTimers.add(timer)
   }
 
-  async function readMpvProperty(prop: string): Promise<string> {
-    try {
-      return await invoke<string>('mpv_get_property', { prop })
-    }
-    catch {
-      return ''
-    }
-  }
-
-  function parseMpvBoolean(value: string): boolean {
-    return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
-  }
-
   function clearBufferDisplayTimer() {
     if (!bufferDisplayTimer)
       return
@@ -624,42 +684,76 @@ export function useMpv() {
   }
 
   function resetBufferingState() {
-    engineReportsBuffering = false
+    nativeSeeking.value = false
+    nativeCachePaused.value = false
     clearBufferDisplayTimer()
     isBuffering.value = false
+    bufferPercent.value = null
     bufferSpeedBytesPerSecond.value = 0
+  }
+
+  function updateWaitingPresentation() {
+    if (!isPlaybackWaiting.value) {
+      clearBufferDisplayTimer()
+      isBuffering.value = false
+      return
+    }
+    if (!isBuffering.value && !bufferDisplayTimer) {
+      const generation = bufferPollingGeneration
+      bufferDisplayTimer = window.setTimeout(() => {
+        bufferDisplayTimer = undefined
+        if (generation === bufferPollingGeneration && isPlaybackWaiting.value)
+          isBuffering.value = true
+      }, BUFFER_DISPLAY_DELAY_MS)
+    }
   }
 
   async function refreshBufferingState(generation: number) {
     if (bufferPollInFlight)
       return
 
+    const playback = playbackGeneration
+    const sequence = seekSequence
+    const acknowledgedBeforeSample = seekSettlement?.sequence === sequence && seekSettlement.acknowledged
     bufferPollInFlight = true
     try {
-      const [pausedForCache, cacheSpeed] = await Promise.all([
-        readMpvProperty('paused-for-cache'),
-        readMpvProperty('cache-speed'),
-      ])
-      if (generation !== bufferPollingGeneration)
-        return
-
-      const buffering = parseMpvBoolean(pausedForCache)
-      const speed = Number.parseFloat(cacheSpeed)
-      bufferSpeedBytesPerSecond.value = Number.isFinite(speed) && speed > 0 ? speed : 0
-      engineReportsBuffering = buffering
-
-      if (!buffering) {
-        resetBufferingState()
+      const state = await invoke<MpvBufferState>('mpv_buffer_state')
+      if (disposed || generation !== bufferPollingGeneration || playback !== playbackGeneration
+        || sequence !== seekSequence || !playbackActive || mediaLoadPending) {
         return
       }
 
-      if (!isBuffering.value && !bufferDisplayTimer) {
-        bufferDisplayTimer = window.setTimeout(() => {
-          bufferDisplayTimer = undefined
-          if (generation === bufferPollingGeneration && engineReportsBuffering)
-            isBuffering.value = true
-        }, BUFFER_DISPLAY_DELAY_MS)
+      nativeSeeking.value = state.seeking
+      nativeCachePaused.value = state.pausedForCache
+      bufferSpeedBytesPerSecond.value = positiveRate(state.cacheSpeed) ?? 0
+      bufferPercent.value = state.cacheBufferingState != null && Number.isFinite(state.cacheBufferingState)
+        ? Math.max(0, Math.min(100, state.cacheBufferingState))
+        : null
+      const settlement = seekSettlement
+      // Readiness is a post-ack native sample, not the seek command's return. A
+      // keyframe preview may land before its requested time; the released exact
+      // target must match, including a no-op seek that emits no restart event.
+      const tolerance = Math.max(0.75, playbackSpeed.value * (BUFFER_POLL_INTERVAL_MS / 1000 + 0.25))
+      if (settlement?.sequence === sequence && acknowledgedBeforeSample && settlement.baselineSerial != null
+        && state.seekSerial > settlement.baselineSerial && state.restartedSeekSerial === state.seekSerial
+        && (settlement.precision === 'keyframes' || state.seekTarget == null || Math.abs(state.seekTarget - settlement.position) <= 0.001)
+        && !state.seeking && !state.pausedForCache && state.fileLoaded && state.voConfigured
+        && Number.isFinite(state.position) && state.position >= 0
+        // An observed target and its restart stay valid after playback moves
+        // forward. A fixed upper position window can otherwise wait forever
+        // after a delayed UI/native sample has missed the presented target.
+        && (settlement.precision === 'keyframes' || state.seekTarget != null
+          || state.position >= settlement.position - tolerance
+          || playbackDiagnostics.value?.endReason === 'eof')) {
+        seekSettlement = null
+        seekPending.value = false
+        currentTime.value = state.position
+        lastConfirmedTime.value = state.position
       }
+      updateWaitingPresentation()
+    }
+    catch {
+      // An unavailable sample is not evidence that an outstanding seek settled.
     }
     finally {
       bufferPollInFlight = false
@@ -741,6 +835,8 @@ export function useMpv() {
 
   async function load(path: string, options: MpvLoadOptions = {}) {
     const generation = ++playbackGeneration
+    pauseIntentSequence += 1
+    cancelPendingSeek()
     playbackActive = true
     mediaLoadPending = true
     clearTrackRefreshTimers()
@@ -843,14 +939,92 @@ export function useMpv() {
   }
 
   async function togglePause() {
-    await invoke<void>(isPlaying.value ? 'mpv_pause' : 'mpv_resume')
-    isPlaying.value = !isPlaying.value
+    const generation = playbackGeneration
+    const intent = ++pauseIntentSequence
+    const playing = !isPlaying.value
+    isPlaying.value = playing
+    await queuePlaybackTransition(async () => {
+      if (!isCurrentPlaybackGeneration(generation) || intent !== pauseIntentSequence)
+        return
+      await invoke<void>(playing ? 'mpv_resume' : 'mpv_pause')
+    })
   }
 
-  async function seek(position: number, options: { optimistic?: boolean } = {}) {
-    await invoke<void>('mpv_seek', { position })
+  function seek(position: number, options: { optimistic?: boolean, precision?: MpvSeekPrecision } = {}): Promise<void> {
+    if (!Number.isFinite(position) || position < 0)
+      return Promise.reject(new Error('播放位置无效。'))
+    if (disposed || !playbackActive || mediaLoadPending)
+      return Promise.resolve()
+    const target = Math.max(0, Math.min(duration.value || Number.MAX_SAFE_INTEGER, position))
+    const sequence = ++seekSequence
+    const precision = options.precision ?? 'exact'
+    pendingSeekRequest?.resolve()
+    seekSettlement = { sequence, position: target, precision, acknowledged: false, baselineSerial: null }
+    seekPending.value = true
     if (options.optimistic !== false)
-      currentTime.value = position
+      currentTime.value = target
+    updateWaitingPresentation()
+    const submitted = new Promise<void>((resolve, reject) => {
+      pendingSeekRequest = { sequence, generation: playbackGeneration, position: target, precision, resolve, reject }
+    })
+    void dispatchPendingSeeks()
+    return submitted
+  }
+
+  async function dispatchPendingSeeks() {
+    if (seekDispatchInFlight)
+      return
+    seekDispatchInFlight = true
+    try {
+      while (pendingSeekRequest) {
+        const request = pendingSeekRequest
+        pendingSeekRequest = null
+        try {
+          await queuePlaybackTransition(async () => {
+            // Check inside the load/stop executor. A check after await alone
+            // cannot retract an obsolete seek already applied to a new source.
+            if (!isCurrentPlaybackGeneration(request.generation) || request.sequence !== seekSequence)
+              return
+            const receipt = await invoke<MpvSeekReceipt>('mpv_seek', { position: request.position, precision: request.precision })
+            if (isCurrentPlaybackGeneration(request.generation) && seekSettlement?.sequence === request.sequence) {
+              if (receipt.completed) {
+                // Native skipped a genuine ready-position no-op; no seek/restart
+                // event is required for a command that was never submitted.
+                seekSettlement = null
+                seekPending.value = false
+                updateWaitingPresentation()
+              }
+              else {
+                seekSettlement.acknowledged = true
+                seekSettlement.baselineSerial = receipt.seekSerial
+                void refreshBufferingState(bufferPollingGeneration)
+              }
+            }
+          })
+          request.resolve()
+        }
+        catch (error) {
+          if (isCurrentPlaybackGeneration(request.generation) && seekSettlement?.sequence === request.sequence) {
+            seekSettlement = null
+            seekPending.value = false
+            updateWaitingPresentation()
+          }
+          request.reject(error)
+        }
+      }
+    }
+    finally {
+      seekDispatchInFlight = false
+    }
+  }
+
+  function cancelPendingSeek() {
+    seekSequence += 1
+    pendingSeekRequest?.resolve()
+    pendingSeekRequest = null
+    seekSettlement = null
+    seekPending.value = false
+    updateWaitingPresentation()
   }
 
   async function seekRelative(offset: number) {
@@ -1044,6 +1218,8 @@ export function useMpv() {
 
   async function stop() {
     const generation = ++playbackGeneration
+    pauseIntentSequence += 1
+    cancelPendingSeek()
     playbackActive = false
     mediaLoadPending = false
     clearTrackRefreshTimers()
@@ -1075,6 +1251,7 @@ export function useMpv() {
   onUnmounted(() => {
     disposed = true
     playbackGeneration += 1
+    cancelPendingSeek()
     resetVideoColorState()
     stopBufferingPolling()
     if (renderDiagnosticsTimer)
@@ -1116,6 +1293,9 @@ export function useMpv() {
     videoReady,
     fileLoaded,
     isBuffering,
+    isPlaybackWaiting,
+    bufferingKind,
+    bufferPercent,
     bufferSpeedBytesPerSecond,
     orientationSupported,
     orientationMode,
@@ -1137,6 +1317,7 @@ export function useMpv() {
     load,
     togglePause,
     seek,
+    cancelPendingSeek,
     seekRelative,
     setVolume,
     setVideoBrightness,
@@ -1152,6 +1333,10 @@ export function useMpv() {
     setVideoFit,
     stop,
   }
+}
+
+function positiveRate(value: number | null | undefined): number | null {
+  return value != null && Number.isFinite(value) && value > 0 ? value : null
 }
 
 function toMpvHeaderPayload(headers: Readonly<Record<string, string>> | undefined): MpvHttpHeaderPayload[] | undefined {

@@ -1,12 +1,15 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use super::player_shared::{
-    prepare_external_subtitle, sanitize_http_headers, MpvDisplayBrightnessState, MpvEngineSettings,
-    MpvHttpHeader, MpvHttpReadProfile, MpvOrientationState,
+    prepare_external_subtitle, sanitize_http_headers, MpvBufferState, MpvDisplayBrightnessState,
+    MpvEngineSettings, MpvHttpHeader, MpvHttpReadProfile, MpvOrientationState, MpvSeekPrecision,
+    MpvSeekReceipt,
 };
 use crate::mpv::{
-    mobile::{AndroidMpvState, AndroidPlaybackDiagnostics, AndroidSurfaceStatus},
+    mobile::{AndroidMpvSnapshot, AndroidMpvState, AndroidPlaybackDiagnostics, AndroidSurfaceStatus},
     mobile_proxy::AndroidStreamProxyState,
     render::{MpvRenderState, RenderBackendKind, RenderStatus},
     surface::{RenderSurfaceBounds, ZOrderStrategy},
@@ -20,6 +23,7 @@ struct LoadPayload {
     audio_path: Option<String>,
     title: Option<String>,
     http_read_profile: Option<MpvHttpReadProfile>,
+    file_options: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -34,6 +38,7 @@ struct SubtitlePayload {
 #[serde(rename_all = "camelCase")]
 struct SeekPayload {
     position: f64,
+    precision: MpvSeekPrecision,
 }
 
 #[derive(Clone, Serialize)]
@@ -138,13 +143,23 @@ pub async fn mpv_load(
     audio_headers: Option<Vec<MpvHttpHeader>>,
     title: Option<String>,
     http_read_profile: Option<MpvHttpReadProfile>,
-    state: State<'_, AndroidMpvState>,
-    stream_proxy: State<'_, AndroidStreamProxyState>,
+    app: AppHandle,
 ) -> Result<(), String> {
+    let state = app.state::<AndroidMpvState>();
+    let stream_proxy = app.state::<AndroidStreamProxyState>();
     if path.trim().is_empty() {
         return Err("播放地址为空。".to_string());
     }
     let epoch = stream_proxy.begin_load().await;
+    let file_options = if is_remote_http_stream(&path) {
+        BTreeMap::from([
+            ("cache-pause".to_string(), "yes".to_string()),
+            ("cache-pause-initial".to_string(), "yes".to_string()),
+            ("cache-pause-wait".to_string(), "1".to_string()),
+        ])
+    } else {
+        BTreeMap::new()
+    };
     let headers = sanitize_http_headers(headers.unwrap_or_default())?;
     let audio_headers = sanitize_http_headers(audio_headers.unwrap_or_default())?;
     let (path, headers) = if is_remote_http_stream(&path) {
@@ -180,6 +195,7 @@ pub async fn mpv_load(
         headers,
         audio_path,
         http_read_profile,
+        file_options,
         title: title.and_then(|value| {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.chars().take(160).collect())
@@ -265,11 +281,40 @@ pub async fn mpv_stop(
 }
 
 #[tauri::command]
-pub async fn mpv_seek(position: f64, state: State<'_, AndroidMpvState>) -> Result<(), String> {
+pub async fn mpv_seek(
+    position: f64,
+    precision: MpvSeekPrecision,
+    state: State<'_, AndroidMpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
+) -> Result<MpvSeekReceipt, String> {
     if !position.is_finite() || position < 0.0 {
         return Err("播放位置无效。".to_string());
     }
-    state.run("seek", SeekPayload { position }).await
+    let epoch = stream_proxy.diagnostic_epoch();
+    let _submission = stream_proxy.current_load_guard(epoch).await?;
+    state.run("seek", SeekPayload { position, precision }).await
+}
+
+#[tauri::command]
+pub async fn mpv_buffer_state(
+    state: State<'_, AndroidMpvState>,
+    stream_proxy: State<'_, AndroidStreamProxyState>,
+) -> Result<MpvBufferState, String> {
+    let epoch = stream_proxy.diagnostic_epoch();
+    let _submission = stream_proxy.current_load_guard(epoch).await?;
+    let snapshot: AndroidMpvSnapshot = state.run("snapshot", ()).await?;
+    Ok(MpvBufferState {
+        position: snapshot.time,
+        seeking: snapshot.seeking,
+        paused_for_cache: snapshot.paused_for_cache,
+        cache_buffering_state: snapshot.cache_buffering_state,
+        cache_speed: snapshot.cache_speed,
+        vo_configured: snapshot.vo_configured,
+        file_loaded: snapshot.file_loaded,
+        seek_serial: snapshot.seek_serial,
+        restarted_seek_serial: snapshot.restarted_seek_serial,
+        seek_target: snapshot.seek_target,
+    })
 }
 
 #[tauri::command]

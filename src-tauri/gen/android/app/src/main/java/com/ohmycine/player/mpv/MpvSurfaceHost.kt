@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewGroup
@@ -35,6 +37,17 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
     private var surfaceView: OhMyCineMpvSurfaceView? = null
     private var surfaceContainer: FrameLayout? = null
+    private var mediaContext: Context? = null
+    private var activityOwner: Any? = null
+    private var hostEpoch = 0L
+    @Volatile
+    private var activityForeground = true
+    @Volatile
+    private var surfaceEpoch = 0L
+    // fd:// deliberately leaves the descriptor with this owner. Every native
+    // entry gets fresh opens; END_FILE releases them after its consumers stop.
+    private val entryInputs = mutableMapOf<Long, MutableList<NativeMediaInput>>()
+    private val endedInputsDuringBinding = mutableSetOf<Long>()
     private var hdrCapabilities: AndroidHdrCapabilities? = null
     @Volatile
     private var sourceMetadataReady = false
@@ -88,6 +101,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     private var hdrTargetObservation: HdrTargetObservation? = null
     @Volatile
     private var playbackGeneration = 0L
+    private var seekSerial = 0L
+    private var restartedSeekSerial = 0L
+    private var seekTarget: Double? = null
+    private var seekAwaitingStart = false
     @Volatile
     private var loadPrepared = false
     @Volatile
@@ -148,45 +165,59 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     @Volatile
     private var httpReadProfileDiagnostic: String? = null
 
-    fun install(activity: Activity, webView: WebView) {
+    @Synchronized
+    fun install(activity: Activity, webView: WebView, owner: Any = activity) {
+        if (activityOwner !== owner && surfaceView != null) destroy()
+        val epoch = ++hostEpoch
+        activityOwner = owner
+        mediaContext = activity.applicationContext
+        activityForeground = true
         webView.post {
-            if (surfaceView != null)
-                return@post
+            synchronized(MpvSurfaceHost) {
+                if (epoch != hostEpoch || activityOwner !== owner || surfaceView != null)
+                    return@post
 
-            try {
-                val parent = webView.parent as? ViewGroup
-                    ?: error("Android WebView 容器尚未准备完成。")
-                val index = parent.indexOfChild(webView)
-                val layoutParams = webView.layoutParams
-                val surface = OhMyCineMpvSurfaceView(activity)
-                val container = FrameLayout(activity).apply {
-                    setBackgroundColor(Color.BLACK)
+                try {
+                    val parent = webView.parent as? ViewGroup
+                        ?: error("Android WebView 容器尚未准备完成。")
+                    val index = parent.indexOfChild(webView)
+                    val layoutParams = webView.layoutParams
+                    val surface = OhMyCineMpvSurfaceView(activity)
+                    val container = FrameLayout(activity).apply {
+                        setBackgroundColor(Color.BLACK)
+                    }
+
+                    parent.removeView(webView)
+                    webView.setBackgroundColor(Color.TRANSPARENT)
+                    webView.background?.alpha = 0
+                    container.addView(surface, FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    ))
+                    container.addView(webView, FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    ))
+                    parent.addView(container, index, layoutParams)
+                    surfaceContainer = container
+                    surfaceView = surface
+                    hdrCapabilities = AndroidHdrCapabilities(activity) { refreshColorPolicy() }
+                    surface.initialize()
+                    initializationError = null
+                } catch (error: Exception) {
+                    initializationError = error.message ?: "Android 播放器初始化失败。"
                 }
-
-                parent.removeView(webView)
-                webView.setBackgroundColor(Color.TRANSPARENT)
-                webView.background?.alpha = 0
-                container.addView(surface, FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                ))
-                container.addView(webView, FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                ))
-                parent.addView(container, index, layoutParams)
-                surfaceContainer = container
-                surfaceView = surface
-                hdrCapabilities = AndroidHdrCapabilities(activity) { refreshColorPolicy() }
-                surface.initialize()
-                initializationError = null
-            } catch (error: Exception) {
-                initializationError = error.message ?: "Android 播放器初始化失败。"
             }
         }
     }
 
-    fun destroy() {
+    @Synchronized
+    fun isOwnedBy(owner: Any): Boolean = activityOwner === owner
+
+    @Synchronized
+    fun destroy(owner: Any? = null) {
+        if (owner != null && activityOwner !== owner) return
+        hostEpoch += 1
         synchronized(attemptStateLock) {
             playbackGeneration += 1
             nativeEntryId = null
@@ -200,8 +231,13 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         hdrCapabilities?.close()
         hdrCapabilities = null
         surfaceView?.destroy()
+        closeAllEntryInputs()
         surfaceView = null
         surfaceContainer = null
+        mediaContext = null
+        activityOwner = null
+        activityForeground = false
+        surfaceEpoch += 1
         pendingLoad = null
         currentLoad = null
         nativeFileActive = false
@@ -240,13 +276,27 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     fun initializationError(): String? = initializationError
 
     @Synchronized
-    fun load(path: String, audioPath: String?, headers: List<MpvHeader>, httpReadProfile: String? = null) {
+    fun load(path: String, audioPath: String?, headers: List<MpvHeader>, httpReadProfile: String? = null,
+        fileOptions: Map<String, String> = emptyMap()) {
         initializationError?.let { error(it) }
         require(httpReadProfile == null || httpReadProfile == "bounded_ranges_v1") { "播放读取配置无效。" }
-        val request = PendingLoad(path, audioPath, headers, httpReadProfile)
-        pendingLoad = request
-        if (!isReady())
+        require(fileOptions.all { (name, value) ->
+            (name == "cache-pause" || name == "cache-pause-initial") && value == "yes"
+                || name == "cache-pause-wait" && value == "1"
+        }) { "播放缓存配置无效。" }
+        val request = PendingLoad(path, audioPath, headers, httpReadProfile, fileOptions.toMap())
+        if (!isReady()) {
+            // A new logical request retires suspended recovery immediately,
+            // even though its first native load must wait for a Surface.
+            if (currentLoad != null || rendererTransition != null || pendingLoad != null) stop()
+            clearPlaybackFacts()
+            playbackState = "loading"
+            lastPlaybackEvent = "waiting-surface"
+            lastPlaybackError = null
+            pendingLoad = request
             return
+        }
+        pendingLoad = request
         play(request)
     }
 
@@ -256,7 +306,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         httpReadProfileDiagnostic = null
         val replacingNativeFile = synchronized(attemptStateLock) {
             val replacing = nativeFileActive
-            closingEntryId = nativeEntryId.takeIf { replacing }
+            closingEntryId = if (replacing) nativeEntryId ?: closingEntryId else null
             nativeEntryId = null
             bindingEntryGeneration = null
             pendingNativeCallbacks.clear()
@@ -307,8 +357,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             else "当前引擎未启用分段读取，夸克原画可能缓冲。"
         }
         val options = mutableListOf<String>()
+        if (cacheMode != "no")
+            request.fileOptions.forEach { (name, value) -> options.add("$name=$value") }
         if (bounded) options.add("curl-enabled=yes,curl-max-request-size=8388608")
-        request.audioPath?.let { options.add("audio-file=%${it.toByteArray(Charsets.UTF_8).size}%$it") }
         if (position != null && position.isFinite() && position >= 0.0)
             options.add("start=$position")
         options.add("pause=${if (paused) "yes" else "no"}")
@@ -328,11 +379,29 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         // START callback/property happens to arrive first while loadfile returns.
         // Do not hold attemptStateLock across a synchronous native call: on_load
         // must remain able to clear FSR and continue on the native event thread.
+        val inputs = mutableListOf<NativeMediaInput>()
         val result = runCatching {
-            MPVLib.loadFileChecked(arrayOf("loadfile", request.path, "replace", "-1", options.joinToString(",")))
+            val video = openNativeInput(request.path).also(inputs::add)
+            request.audioPath?.let { path ->
+                val audio = openNativeInput(path).also(inputs::add)
+                options.add("audio-file=%${audio.path.toByteArray(Charsets.UTF_8).size}%${audio.path}")
+            }
+            check(synchronized(attemptStateLock) {
+                generation == playbackGeneration && currentLoad === request && bindingEntryGeneration == generation
+            }) { "播放请求已经被替换。" }
+            MPVLib.loadFileChecked(arrayOf("loadfile", video.path, "replace", "-1", options.joinToString(",")))
         }
         val entryId = result.getOrNull()
+        var inputsAlreadyEnded = false
         val bound = synchronized(attemptStateLock) {
+            // Keep accepted inputs until that immutable entry's native END even
+            // if a simultaneous cancellation has already retired its callbacks.
+            if (entryId != null && entryId > 0) {
+                inputsAlreadyEnded = endedInputsDuringBinding.remove(entryId)
+                if (!inputsAlreadyEnded)
+                    entryInputs.getOrPut(entryId) { mutableListOf() }.addAll(inputs)
+            }
+            endedInputsDuringBinding.clear()
             if (generation != playbackGeneration || currentLoad !== request
                 || bindingEntryGeneration != generation) {
                 false
@@ -347,10 +416,40 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 }
             }
         }
+        if (entryId == null || entryId <= 0 || inputsAlreadyEnded)
+            inputs.forEach { it.close() }
         if (!bound && generation == playbackGeneration)
             failRenderer("媒体加载命令被拒绝（mpv 错误 ${entryId ?: "unknown"}）。", generation)
         resumeNativeCallbacks()
         check(bound) { "媒体加载命令被拒绝。" }
+    }
+
+    private fun openNativeInput(path: String): NativeMediaInput {
+        if (!path.startsWith("content://", ignoreCase = true))
+            return NativeMediaInput(path, null)
+        val descriptor = mediaContext?.contentResolver?.openFileDescriptor(Uri.parse(path), "r")
+            ?: error("Android 无法读取所选媒体文件。")
+        return NativeMediaInput("fd://${descriptor.fd}", descriptor)
+    }
+
+    private fun closeEntryInputs(entryId: Long) {
+        val inputs = synchronized(attemptStateLock) {
+            entryInputs.remove(entryId).also {
+                // Native may finish before loadFileChecked returns its ID. That
+                // binder must close the accepted inputs instead of retaining them.
+                if (it == null && bindingEntryGeneration != null)
+                    endedInputsDuringBinding.add(entryId)
+            }
+        } ?: return
+        inputs.forEach { it.close() }
+    }
+
+    private fun closeAllEntryInputs() {
+        val inputs = synchronized(attemptStateLock) {
+            endedInputsDuringBinding.clear()
+            entryInputs.values.flatten().also { entryInputs.clear() }
+        }
+        inputs.forEach { it.close() }
     }
 
     @Synchronized
@@ -387,36 +486,45 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
     }
 
+    @Synchronized
     fun addSubtitle(url: String, title: String?, language: String?) {
-        requireInitialized()
-        externalSubtitles.add(ExternalSubtitle(url, title, language))
+        requireInitialized(allowSuspendedIntent = true)
+        val subtitle = ExternalSubtitle(url, title, language)
         val transition = rendererTransition
         if (transition != null) {
+            externalSubtitles.add(subtitle)
             transition.selection.externalSubtitleUrl = url
             return
         }
-        MPVLib.command(arrayOf("sub-add", url, "select", title ?: "", language ?: ""))
+        loadExternalSubtitle(subtitle, "select")
+        externalSubtitles.add(subtitle)
     }
 
+    @Synchronized
     fun pause(paused: Boolean) {
-        requireInitialized()
-        rendererTransition?.paused = paused
+        requireInitialized(allowSuspendedIntent = true)
+        rendererTransition?.let { transition ->
+            transition.paused = paused
+            if (transition.stage != "reloading" && transition.stage != "restoring") return
+        }
         MPVLib.setPropertyBoolean("pause", paused)
     }
 
+    @Synchronized
     fun stop() {
         capturePlaybackFacts()
         pendingLoad = null
         synchronized(attemptStateLock) {
             playbackGeneration += 1
             currentLoad = null
-            closingEntryId = nativeEntryId
+            closingEntryId = nativeEntryId ?: closingEntryId
             nativeEntryId = null
             bindingEntryGeneration = null
             pendingNativeCallbacks.clear()
             nativeCallbackOverflowGeneration = null
             nativeLoadIssued = false
             nativeAttemptStarted = false
+            resetSeekFacts()
         }
         endReason = "stop"
         loadPrepared = false
@@ -434,20 +542,56 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         fsrReason = null
     }
 
-    fun seek(position: Double) {
-        requireInitialized()
+    @Synchronized
+    fun seek(position: Double, precision: String = "exact"): MpvSeekReceipt {
+        requireInitialized(allowSuspendedIntent = true)
+        require(position.isFinite() && position >= 0.0) { "播放位置无效。" }
+        require(precision == "exact" || precision == "keyframes") { "跳转精度无效。" }
+        val baseline = synchronized(attemptStateLock) { seekSerial }
+        val nativePosition = safeNonNegativeDouble("time-pos")
+        val noOp = rendererTransition == null && initialized && fileLoaded && nativeFileActive
+            && playbackState == "playing" && endReason == null
+            && safePropertyBoolean("vo-configured") == true && safePropertyBoolean("seeking") != true
+            && safePropertyBoolean("paused-for-cache") != true
+            && synchronized(attemptStateLock) { !seekAwaitingStart && seekSerial == restartedSeekSerial }
+            && nativePosition != null && kotlin.math.abs(nativePosition - position) <= 0.001
+        if (noOp) return MpvSeekReceipt(baseline, true)
+        synchronized(attemptStateLock) { seekAwaitingStart = true }
         pendingRendererResume = null
+        rendererTransition?.let { transition ->
+            transition.position = position
+            if (transition.stage != "reloading" && transition.stage != "restoring") {
+                transition.pendingSeek = true
+                return MpvSeekReceipt(baseline, false)
+            }
+            pendingRendererResume = position
+        }
         if (endReason == "eof" && fileLoaded) {
             endReason = null
             playbackState = "playing"
         }
-        MPVLib.command(arrayOf("seek", position.toString(), "absolute+exact"))
+        val accepted = MPVLib.commandChecked(arrayOf("seek", position.toString(), "absolute+$precision")) >= 0
+        if (!accepted) synchronized(attemptStateLock) { seekAwaitingStart = false }
+        check(accepted) {
+            "原生跳转命令被拒绝。"
+        }
+        return MpvSeekReceipt(baseline, false)
     }
 
+    @Synchronized
     fun setProperty(name: String, value: String) {
-        requireInitialized()
+        requireInitialized(allowSuspendedIntent = true)
+        if (name == "pause") {
+            pause(value == "true" || value == "1" || value == "yes")
+            return
+        }
+        if (name == "time-pos") {
+            seek(value.toDouble())
+            return
+        }
         rendererTransition?.let { transition ->
             when (name) {
+                "vid" -> transition.selection.video = value
                 "aid" -> transition.selection.audio = value
                 "sid" -> {
                     transition.selection.subtitle = value
@@ -456,6 +600,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 "pause" -> transition.paused = value == "true" || value == "1" || value == "yes"
                 in transition.settings -> transition.settings[name] = value
             }
+            if (transition.stage != "reloading" && transition.stage != "restoring") return
         }
         when (name) {
             "volume", "time-pos", "duration", "speed", "panscan", "video-zoom",
@@ -468,7 +613,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     fun getProperty(name: String): String {
         requireInitialized()
         return when (name) {
-            "pause", "paused-for-cache" -> (MPVLib.getPropertyBoolean(name) ?: false).toString()
+            "pause" -> snapshot().paused.toString()
+            "seeking" -> snapshot().seeking.toString()
+            "paused-for-cache" -> snapshot().pausedForCache.toString()
             "time-pos" -> snapshot().time.toString()
             "duration" -> snapshot().duration.toString()
             "volume", "speed", "panscan", "video-zoom",
@@ -486,14 +633,66 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
 
     fun snapshot(): MpvSnapshot {
         capturePlaybackFacts()
+        val active = initialized && fileLoaded && nativeFileActive && nativeLoadIssued
+        val seek = synchronized(attemptStateLock) {
+            SeekObservation(seekSerial, restartedSeekSerial, seekTarget, seekAwaitingStart)
+        }
         return MpvSnapshot(
             time = lastPosition,
             duration = lastDuration,
-            paused = if (initialized && playbackState == "playing") MPVLib.getPropertyBoolean("pause") ?: true else true,
+            paused = rendererTransition?.paused
+                ?: if (initialized && playbackState == "playing") MPVLib.getPropertyBoolean("pause") ?: true else true,
+            seeking = rendererTransitionPending || seek.awaitingStart
+                || active && (seek.serial > seek.restartedSerial || safePropertyBoolean("seeking") == true),
+            pausedForCache = active && safePropertyBoolean("paused-for-cache") == true,
+            cacheBufferingState = if (active) safeNonNegativeDouble("cache-buffering-state") else null,
+            cacheSpeed = if (active) safeNonNegativeDouble("cache-speed") else null,
+            voConfigured = active && safePropertyBoolean("vo-configured") == true,
+            fileLoaded = fileLoaded,
+            seekSerial = seek.serial,
+            restartedSeekSerial = seek.restartedSerial,
+            seekTarget = seek.target,
         )
     }
 
+    @Synchronized
+    fun activityPaused(allowBackgroundPlayback: Boolean, owner: Any? = null) {
+        if (owner != null && activityOwner !== owner) return
+        activityForeground = false
+        if (!hasActivePlayback() || !initialized) return
+        if (!allowBackgroundPlayback) pause(true)
+        suspendPausedVideo()
+    }
+
+    @Synchronized
+    fun activityResumed(owner: Any? = null) {
+        if (owner != null && activityOwner !== owner) return
+        activityForeground = true
+        rendererTransition?.let { finishRendererTransition(it) }
+    }
+
+    @Synchronized
+    private fun suspendPausedVideo(): Boolean {
+        if (!initialized || !hasActivePlayback() || currentLoad == null || playbackState == "error") return false
+        val previous = rendererTransition
+        if (previous?.reason == "surface" && previous.stage != "reloading" && previous.stage != "restoring") return true
+        val paused = previous?.paused ?: (safePropertyBoolean("pause") ?: false)
+        if ((!paused && previous?.reason != "surface")
+            || (!expectsVideo && !nativeHasVideoTrack() && previous?.reason != "surface")) return false
+        if (previous != null && previous.stage != "reloading" && previous.stage != "restoring") {
+            previous.reason = "surface"
+            return true
+        }
+        capturePlaybackFacts()
+        // A loading decoder may still expose zero/the predecessor's time. The
+        // retained latest seek intent wins until that reload has been confirmed.
+        val position = previous?.position ?: lastPosition
+        beginRendererTransition(activeGpuContext, activeVideoOutput, position, paused, previous, reason = "surface")
+        return rendererTransition != null
+    }
+
     private fun clearPlaybackFacts() {
+        synchronized(attemptStateLock) { resetSeekFacts() }
         endReason = null
         lastPosition = 0.0
         lastDuration = 0.0
@@ -506,6 +705,13 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         expectsVideo = false
         hdrTargetObservation = null
         videoOutputReadinessGeneration += 1
+    }
+
+    private fun resetSeekFacts() {
+        seekSerial = 0L
+        restartedSeekSerial = 0L
+        seekTarget = null
+        seekAwaitingStart = false
     }
 
     private fun resetAttemptDiagnostics() {
@@ -592,6 +798,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             fileLoaded = fileLoaded,
             videoFormat = lastVideoFormat,
             audioCodec = lastAudioCodec,
+            videoBitrate = if (fileLoaded && nativeFileActive) safeNonNegativeDouble("video-bitrate")?.takeIf { it > 0.0 } else null,
+            audioBitrate = if (fileLoaded && nativeFileActive) safeNonNegativeDouble("audio-bitrate")?.takeIf { it > 0.0 } else null,
             voConfigured = safePropertyBoolean("vo-configured") ?: false,
             hardwareDecoder = lastHardwareDecoder,
             videoOutput = activeVideoOutput,
@@ -644,7 +852,8 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 }
                 while (pendingNativeCallbacks.isNotEmpty()) {
                     val callback = pendingNativeCallbacks.removeFirst()
-                    if (callback.entryId == nativeEntryId || callback.entryId == closingEntryId)
+                    if (callback.entryId == nativeEntryId || callback.entryId == closingEntryId
+                        || entryInputs.containsKey(callback.entryId))
                         return@synchronized callback to playbackGeneration
                 }
                 nativeCallbacksDraining = false
@@ -771,8 +980,32 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
     }
 
-    override fun event(eventId: Int, entryId: Long) =
-        dispatchNativeCallback(entryId) { handleNativeEvent(eventId, entryId, it) }
+    override fun event(eventId: Int, entryId: Long) {
+        // Stamp at callback receipt, before any UI work can delay the SEEK or
+        // restart fact. A delayed callback may see an already advancing frame;
+        // only a still-active native seek proves time-pos is its exact target.
+        val target = if (eventId == MPVLib.MpvEvent.SEEK && safePropertyBoolean("seeking") == true)
+            safeNonNegativeDouble("time-pos") else null
+        val stamped = stampNativeSeek(eventId, entryId, playbackGeneration, target)
+        dispatchNativeCallback(entryId) {
+            if (!stamped) stampNativeSeek(eventId, entryId, it, target)
+            handleNativeEvent(eventId, entryId, it)
+        }
+    }
+
+    private fun stampNativeSeek(eventId: Int, entryId: Long, generation: Long, target: Double?): Boolean =
+        synchronized(attemptStateLock) {
+            if (!ownsNativeEntry(entryId, generation) || !nativeAttemptStarted) return@synchronized false
+            when (eventId) {
+                MPVLib.MpvEvent.SEEK -> {
+                    seekSerial += 1
+                    seekTarget = target
+                    seekAwaitingStart = false
+                }
+                MPVLib.MpvEvent.PLAYBACK_RESTART -> restartedSeekSerial = seekSerial
+            }
+            true
+        }
 
     private fun handleNativeEvent(eventId: Int, entryId: Long, generation: Long) {
         if (eventId != MPVLib.MpvEvent.START_FILE
@@ -823,6 +1056,9 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 // VIDEO_RECONFIG supplies current decoded-frame metadata; old VO metadata
                 // can still be unavailable or stale while FILE_LOADED is being delivered.
                 captureSourceMetadata()
+                rendererTransition?.takeIf { it.stage == "reloading" && it.pendingSeek && ownsTransition(it) }?.let { transition ->
+                    surfaceView?.post { submitDeferredSeek(transition, entryId, generation) }
+                }
                 confirmRendererTransition()
                 refreshColorPolicy()
                 monitorVideoOutputReadiness()
@@ -868,8 +1104,14 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
     }
 
-    override fun eventEndFile(reason: Int, error: Int, entryId: Long, insertId: Long, insertCount: Int) =
-        dispatchNativeCallback(entryId) { handleNativeEnd(reason, error, entryId, insertId, insertCount, it) }
+    override fun eventEndFile(reason: Int, error: Int, entryId: Long, insertId: Long, insertCount: Int) {
+        // Resource lifetime follows the native terminal receipt, independently
+        // of state callbacks which a later stop/load intentionally retires.
+        closeEntryInputs(entryId)
+        dispatchNativeCallback(entryId) {
+            handleNativeEnd(reason, error, entryId, insertId, insertCount, it)
+        }
+    }
 
     private fun handleNativeEnd(reason: Int, error: Int, entryId: Long, insertId: Long,
         insertCount: Int, generation: Long) {
@@ -884,6 +1126,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 closingEntryId = null
                 if (!nativeLoadIssued && currentLoad != null && waitingForStartFile && !stopRequested) {
                     closingTransition = rendererTransition?.takeIf { it.stage == "waiting-stop" }
+                    closingTransition?.stage = "suspended"
                     fileLoaded = false
                     sourceMetadataReady = false
                 }
@@ -930,6 +1173,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
                 waitingForStartFile = redirected
                 rendererTransition = null
                 rendererTransitionPending = false
+                seekAwaitingStart = false
                 hdrHintRequested = false
                 hdrTargetObservation = null
                 false
@@ -1070,6 +1314,7 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             sourceMetadataReady = false
             rendererTransition = null
             rendererTransitionPending = false
+            seekAwaitingStart = false
             hdrHintRequested = false
             hdrTargetObservation = null
             rendererNeedsConfiguration = true
@@ -1093,14 +1338,16 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
     }
 
     private fun beginRendererTransition(context: String, videoOutput: String, position: Double, paused: Boolean,
-        previous: RendererTransition? = null, preserveTracks: Boolean = true) {
+        previous: RendererTransition? = null, preserveTracks: Boolean = true, reason: String = "renderer") {
         val surface = surfaceView ?: return
         val request = currentLoad ?: return
         val transition = RendererTransition(context, videoOutput, request, position, paused,
-            if (preserveTracks) previous?.selection ?: currentTrackSelection() else RendererTrackSelection(null, null, null),
-            previous?.settings ?: listOf("speed", "volume", "mute", "sub-delay", "video-zoom", "panscan", "brightness")
+            if (preserveTracks) previous?.selection ?: currentTrackSelection() else RendererTrackSelection(null, null, null, null),
+            previous?.settings ?: listOf("speed", "volume", "mute", "sub-delay", "video-zoom", "panscan", "brightness",
+                "audio-delay", "sub-scale", "sub-pos", "sub-visibility", "video-aspect-override")
                 .mapNotNull { name -> safePropertyString(name)?.let { name to it } }.toMap().toMutableMap(),
-            playbackGeneration)
+            playbackGeneration, reason = reason,
+            pendingSeek = previous?.pendingSeek == true || synchronized(attemptStateLock) { seekAwaitingStart })
         rendererTransition = transition
         rendererTransitionPending = true
         synchronized(attemptStateLock) {
@@ -1124,26 +1371,46 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         if (nativeFileActive) {
             if (MPVLib.stopAsync() < 0) failRenderer("渲染切换未能停止旧的媒体链。")
         } else {
+            transition.stage = "suspended"
             surface.post { finishRendererTransition(transition) }
         }
         surface.postDelayed({
-            if (rendererTransition === transition && transition.generation == playbackGeneration)
-                failRenderer("渲染切换超时，请打开播放诊断查看原生错误。")
+            if (ownsTransition(transition) && transition.stage == "waiting-stop")
+                failRenderer("媒体链关闭超时，请打开播放诊断查看原生错误。", transition.generation)
         }, RENDERER_TRANSITION_TIMEOUT_MS)
+    }
+
+    private fun ownsTransition(transition: RendererTransition): Boolean =
+        rendererTransition === transition && transition.generation == playbackGeneration
+            && transition.request === currentLoad && !stopRequested && playbackState != "error"
+
+    @Synchronized
+    private fun submitDeferredSeek(transition: RendererTransition, entryId: Long, generation: Long) {
+        if (!ownsTransition(transition) || transition.stage != "reloading" || !transition.pendingSeek
+            || !ownsNativeEntry(entryId, generation) || !fileLoaded
+            || !surfaceAttached || transition.surfaceEpoch != surfaceEpoch) return
+        transition.pendingSeek = false
+        if (MPVLib.commandChecked(arrayOf("seek", transition.position.toString(), "absolute+exact")) < 0)
+            failRenderer("恢复后的原生跳转命令被拒绝。", generation)
     }
 
     @Synchronized
     private fun finishRendererTransition(transition: RendererTransition) {
-        if (rendererTransition !== transition || transition.generation != playbackGeneration
-            || !initialized || !surfaceAttached || playbackState == "error" || nativeFileActive)
+        if (!ownsTransition(transition) || transition.stage != "suspended"
+            || !initialized || !surfaceAttached || nativeFileActive || closingEntryId != null
+            || transition.reason == "surface" && !activityForeground)
             return
+        val epoch = surfaceEpoch
         if (!clearManagedFsrShader()) return
         runCatching { configureRenderer(transition.context, transition.videoOutput) }
             .onFailure { failRenderer("${rendererName(transition.context)} 渲染配置被拒绝，请打开播放诊断查看原因。") }
         if (playbackState == "error") return
+        if (!ownsTransition(transition) || epoch != surfaceEpoch || !surfaceAttached
+            || transition.reason == "surface" && !activityForeground) return
         transition.context = activeGpuContext
         transition.videoOutput = activeVideoOutput
         transition.stage = "reloading"
+        transition.surfaceEpoch = epoch
         pendingRendererResume = transition.position.takeIf { it > 0.0 }
         fileLoaded = false
         sourceMetadataReady = false
@@ -1151,12 +1418,21 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         loadPrepared = true
         playbackTransport = if (transition.request.path.startsWith("http://127.0.0.1:")) "rust-loopback" else "direct"
         runCatching { loadNativeFile(transition.request, transition.position, transition.paused) }
-            .onFailure { failRenderer("渲染切换后的媒体重新加载失败。") }
+            .onFailure { if (ownsTransition(transition)) failRenderer("渲染切换后的媒体重新加载失败。", transition.generation) }
+        surfaceView?.postDelayed({
+            if (ownsTransition(transition) && transition.stage in setOf("reloading", "restoring")
+                && transition.surfaceEpoch == epoch && surfaceEpoch == epoch)
+                failRenderer("媒体恢复等待原生画面超时，请打开播放诊断查看原因。", transition.generation)
+        }, RENDERER_TRANSITION_TIMEOUT_MS)
     }
 
     private fun confirmRendererTransition() {
         val transition = rendererTransition ?: return
         if (transition.stage != "reloading" || !fileLoaded || !sourceMetadataReady || !surfaceAttached
+            || !ownsTransition(transition) || transition.surfaceEpoch != surfaceEpoch
+            || transition.reason == "surface" && (!activityForeground || !nativeVideoPresented)
+            || synchronized(attemptStateLock) { seekAwaitingStart }
+            || safePropertyBoolean("seeking") == true
             || safePropertyBoolean("vo-configured") != true
             || safePropertyString("current-vo") != transition.videoOutput)
             return
@@ -1167,23 +1443,56 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             return
         // FILE_LOADED/VIDEO_RECONFIG may precede the seek. Keep the bounded
         // transition pending until native playback proves the saved position.
-        restoredPosition?.let { lastPosition = it }
-        pendingRendererResume = null
-        rendererTransition = null
-        rendererTransitionPending = false
-        playbackState = "playing"
-        lastPlaybackEvent = "video-output-selected"
-        for (subtitle in externalSubtitles.toList()) {
-            runCatching {
-                MPVLib.commandChecked(arrayOf("sub-add", subtitle.url, "auto", subtitle.title ?: "", subtitle.language ?: ""))
+        val post = synchronized(attemptStateLock) {
+            if (!ownsTransition(transition) || transition.stage != "reloading") false else {
+                transition.stage = "restoring"
+                true
             }
         }
-        val selected = transition.selection
-        selected.audio?.let { MPVLib.setPropertyString("aid", it) }
-        val subtitleId = selected.externalSubtitleUrl?.let { trackIdForExternalSubtitle(it) } ?: selected.subtitle
-        subtitleId?.let { MPVLib.setPropertyString("sid", it) }
-        for ((name, value) in transition.settings) MPVLib.setPropertyString(name, value)
-        refreshColorPolicy()
+        if (post) surfaceView?.post { restoreRendererTransition(transition) }
+    }
+
+    @Synchronized
+    private fun restoreRendererTransition(transition: RendererTransition) {
+        if (!ownsTransition(transition) || transition.stage != "restoring"
+            || transition.surfaceEpoch != surfaceEpoch || !surfaceAttached
+            || transition.reason == "surface" && !activityForeground) return
+        // Commands can change the target between the confirmation sample and
+        // this main-thread transaction; wait for the newest target again.
+        val position = safeNonNegativeDouble("time-pos")
+        if (safePropertyBoolean("seeking") == true || position == null
+            || kotlin.math.abs(position - transition.position) > 5.0) {
+            transition.stage = "reloading"
+            return
+        }
+        runCatching {
+            for (subtitle in externalSubtitles.toList()) {
+                if (!ownsTransition(transition)) return
+                loadExternalSubtitle(subtitle, "auto")
+            }
+            if (!ownsTransition(transition)) return
+            val selected = transition.selection
+            selected.video?.let { MPVLib.setPropertyString("vid", it) }
+            selected.audio?.let { MPVLib.setPropertyString("aid", it) }
+            val subtitleId = selected.externalSubtitleUrl?.let { trackIdForExternalSubtitle(it) } ?: selected.subtitle
+            subtitleId?.let { MPVLib.setPropertyString("sid", it) }
+            for ((name, value) in transition.settings) {
+                if (!ownsTransition(transition)) return
+                MPVLib.setPropertyString(name, value)
+            }
+            if (!ownsTransition(transition)) return
+            MPVLib.setPropertyBoolean("pause", transition.paused)
+            synchronized(attemptStateLock) {
+                if (!ownsTransition(transition)) return
+                lastPosition = position
+                pendingRendererResume = null
+                rendererTransition = null
+                rendererTransitionPending = false
+                playbackState = "playing"
+                lastPlaybackEvent = "video-output-selected"
+            }
+            refreshColorPolicy()
+        }.onFailure { if (ownsTransition(transition)) failRenderer("媒体恢复时无法还原播放设置。", transition.generation) }
     }
 
     private fun currentTrackSelection(): RendererTrackSelection {
@@ -1194,15 +1503,38 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
             if (safePropertyString("$prefix/type") == "sub" && safePropertyString("$prefix/id") == subtitle)
                 safePropertyString("$prefix/external-filename") else null
         }
-        return RendererTrackSelection(safePropertyString("aid"), subtitle, external)
+        val logicalExternal = externalSubtitles.firstOrNull { it.nativeUrl == external }?.url ?: external
+        return RendererTrackSelection(safePropertyString("vid"), safePropertyString("aid"), subtitle, logicalExternal)
     }
 
     private fun trackIdForExternalSubtitle(url: String): String? {
+        val nativeUrl = externalSubtitles.firstOrNull { it.url == url }?.nativeUrl ?: url
         val count = MPVLib.getPropertyInt("track-list/count") ?: 0
         return (0 until count).firstNotNullOfOrNull { index ->
             val prefix = "track-list/$index"
-            if (safePropertyString("$prefix/type") == "sub" && safePropertyString("$prefix/external-filename") == url)
+            if (safePropertyString("$prefix/type") == "sub" && safePropertyString("$prefix/external-filename") == nativeUrl)
                 safePropertyString("$prefix/id") else null
+        }
+    }
+
+    private fun loadExternalSubtitle(subtitle: ExternalSubtitle, selection: String) {
+        val entry = nativeEntryId ?: error("当前媒体尚未加载，无法添加字幕。")
+        val input = openNativeInput(subtitle.url)
+        try {
+            check(MPVLib.commandChecked(arrayOf("sub-add", input.path, selection,
+                subtitle.title ?: "", subtitle.language ?: "")) >= 0) { "字幕加载命令被拒绝。" }
+            val retained = synchronized(attemptStateLock) {
+                val ownedInputs = entryInputs[entry]
+                if (nativeEntryId != entry || !nativeLoadIssued || ownedInputs == null) false else {
+                    ownedInputs.add(input)
+                    true
+                }
+            }
+            check(retained) { "字幕所属媒体已经被替换。" }
+            subtitle.nativeUrl = input.path
+        } catch (error: Exception) {
+            input.close()
+            throw error
         }
     }
 
@@ -1517,6 +1849,10 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         return runCatching { MPVLib.getPropertyBoolean(name) }.getOrNull()
     }
 
+    private fun safeNonNegativeDouble(name: String): Double? =
+        if (!initialized) null else runCatching { MPVLib.getPropertyDouble(name) }.getOrNull()
+            ?.takeIf { it.isFinite() && it >= 0.0 }
+
     private fun sanitizeDiagnosticLine(prefix: String, text: String): String {
         val cleanPrefix = prefix.replace(Regex("[^A-Za-z0-9_.-]"), "").take(32)
         val cleanText = text
@@ -1541,8 +1877,11 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         MPVLib.removeLogObserver(this)
     }
 
-    private fun requireInitialized() {
-        check(isReady()) { "Android 播放器表面尚未准备完成。" }
+    private fun requireInitialized(allowSuspendedIntent: Boolean = false) {
+        val retainedIntent = allowSuspendedIntent && rendererTransition?.let {
+            it.reason == "surface" && ownsTransition(it)
+        } == true
+        check(initialized && (surfaceAttached || retainedIntent)) { "Android 播放器表面尚未准备完成。" }
     }
 
     private class OhMyCineMpvSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
@@ -1633,45 +1972,58 @@ internal object MpvSurfaceHost : MPVLib.EventObserver, MPVLib.LogObserver {
         }
 
         override fun surfaceCreated(holder: SurfaceHolder) {
-            MPVLib.attachSurface(holder.surface)
-            MPVLib.setOptionString("force-window", "yes")
-            surfaceAttached = true
-            rendererNeedsConfiguration = true
-            rendererTransition?.takeIf { it.stage == "waiting-stop" && !nativeFileActive }?.let {
-                finishRendererTransition(it)
-                return
+            synchronized(MpvSurfaceHost) {
+                if (destroyed || surfaceView !== this) return
+                surfaceEpoch += 1
+                MPVLib.attachSurface(holder.surface)
+                MPVLib.setOptionString("force-window", "yes")
+                surfaceAttached = true
+                rendererNeedsConfiguration = true
+                rendererTransition?.let {
+                    finishRendererTransition(it)
+                    return
+                }
+                runCatching { configureRenderer(activeGpuContext, activeVideoOutput) }
+                    .onFailure { failRenderer("${rendererName(activeGpuContext)} 表面配置被拒绝，请打开播放诊断查看原因。") }
+                if (playbackState != "error") lastPlaybackEvent = "surface-attached"
+                pendingLoad?.let { play(it) }
+                refreshColorPolicy()
+                monitorVideoOutputReadiness()
             }
-            runCatching { configureRenderer(activeGpuContext, activeVideoOutput) }
-                .onFailure { failRenderer("${rendererName(activeGpuContext)} 表面配置被拒绝，请打开播放诊断查看原因。") }
-            if (playbackState != "error") lastPlaybackEvent = "surface-attached"
-            pendingLoad?.let { play(it) }
-            refreshColorPolicy()
-            monitorVideoOutputReadiness()
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-            surfaceWidth = width.coerceAtLeast(0)
-            surfaceHeight = height.coerceAtLeast(0)
-            MPVLib.setPropertyString("android-surface-size", "${width}x$height")
-            refreshFsrTargetParameters()
-            refreshColorPolicy()
+            synchronized(MpvSurfaceHost) {
+                if (destroyed || surfaceView !== this || !surfaceAttached) return
+                surfaceWidth = width.coerceAtLeast(0)
+                surfaceHeight = height.coerceAtLeast(0)
+                MPVLib.setPropertyString("android-surface-size", "${width}x$height")
+                refreshFsrTargetParameters()
+                refreshColorPolicy()
+            }
         }
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
-            if (!surfaceAttached)
-                return
-            capturePlaybackFacts()
-            surfaceAttached = false
-            nativeVideoPresented = false
-            videoOutputReadinessGeneration += 1
-            hdrTargetObservation = null
-            MPVLib.setPropertyString("vo", "null")
-            MPVLib.setPropertyString("force-window", "no")
-            MPVLib.detachSurface()
-            rendererNeedsConfiguration = true
-            lastPlaybackEvent = "surface-detached"
-            hdrHintRequested = false
-            clearManagedFsrShader()
+            synchronized(MpvSurfaceHost) {
+                if (destroyed || surfaceView !== this || !surfaceAttached)
+                    return
+                capturePlaybackFacts()
+                // Retire a paused chain before changing wid/VO. Its eventual END
+                // acknowledges intentional closure and cannot fail the restored file.
+                suspendPausedVideo()
+                surfaceEpoch += 1
+                surfaceAttached = false
+                nativeVideoPresented = false
+                videoOutputReadinessGeneration += 1
+                hdrTargetObservation = null
+                MPVLib.setPropertyString("vo", "null")
+                MPVLib.setPropertyString("force-window", "no")
+                MPVLib.detachSurface()
+                rendererNeedsConfiguration = true
+                if (playbackState != "error") lastPlaybackEvent = "surface-detached"
+                hdrHintRequested = false
+                clearManagedFsrShader()
+            }
         }
     }
 
@@ -1710,8 +2062,14 @@ internal data class MpvEngineSettings(
     val fsrDenoise: Boolean,
     val fsrTarget: String,
 )
-internal data class PendingLoad(val path: String, val audioPath: String?, val headers: List<MpvHeader>, val httpReadProfile: String? = null)
-internal data class MpvSnapshot(val time: Double, val duration: Double, val paused: Boolean)
+internal data class PendingLoad(val path: String, val audioPath: String?, val headers: List<MpvHeader>,
+    val httpReadProfile: String? = null, val fileOptions: Map<String, String> = emptyMap())
+internal data class MpvSnapshot(val time: Double, val duration: Double, val paused: Boolean,
+    val seeking: Boolean, val pausedForCache: Boolean, val cacheBufferingState: Double?,
+    val cacheSpeed: Double?, val voConfigured: Boolean, val fileLoaded: Boolean,
+    val seekSerial: Long, val restartedSeekSerial: Long, val seekTarget: Double?)
+internal data class MpvSeekReceipt(val seekSerial: Long, val completed: Boolean)
+private data class SeekObservation(val serial: Long, val restartedSerial: Long, val target: Double?, val awaitingStart: Boolean)
 internal data class MpvTrack(
     val id: Long,
     val kind: String,
@@ -1737,6 +2095,8 @@ internal data class MpvPlaybackDiagnostics(
     val fileLoaded: Boolean,
     val videoFormat: String?,
     val audioCodec: String?,
+    val videoBitrate: Double?,
+    val audioBitrate: Double?,
     val voConfigured: Boolean,
     val hardwareDecoder: String?,
     val videoOutput: String,
@@ -1748,16 +2108,22 @@ internal data class MpvPlaybackDiagnostics(
     val logs: List<String>,
 )
 
-private data class ExternalSubtitle(val url: String, val title: String?, val language: String?)
-private data class RendererTrackSelection(var audio: String?, var subtitle: String?, var externalSubtitleUrl: String?)
+private data class NativeMediaInput(val path: String, val descriptor: ParcelFileDescriptor?) {
+    fun close() { runCatching { descriptor?.close() } }
+}
+private data class ExternalSubtitle(val url: String, val title: String?, val language: String?, var nativeUrl: String? = null)
+private data class RendererTrackSelection(var video: String?, var audio: String?, var subtitle: String?, var externalSubtitleUrl: String?)
 private data class RendererTransition(
     var context: String,
     var videoOutput: String,
     val request: PendingLoad,
-    val position: Double,
+    var position: Double,
     var paused: Boolean,
     val selection: RendererTrackSelection,
     val settings: MutableMap<String, String>,
     val generation: Long,
     var stage: String = "waiting-stop",
+    var reason: String = "renderer",
+    var surfaceEpoch: Long = -1L,
+    var pendingSeek: Boolean = false,
 )

@@ -15,6 +15,7 @@ use libmpv_sys::{
     mpv_event_id_MPV_EVENT_FILE_LOADED, mpv_event_id_MPV_EVENT_HOOK,
     mpv_event_id_MPV_EVENT_LOG_MESSAGE, mpv_event_id_MPV_EVENT_NONE,
     mpv_event_id_MPV_EVENT_PLAYBACK_RESTART, mpv_event_id_MPV_EVENT_START_FILE,
+    mpv_event_id_MPV_EVENT_SEEK,
     mpv_event_id_MPV_EVENT_VIDEO_RECONFIG, mpv_event_log_message, mpv_event_start_file,
     mpv_format_MPV_FORMAT_DOUBLE, mpv_format_MPV_FORMAT_FLAG, mpv_format_MPV_FORMAT_INT64,
     mpv_format_MPV_FORMAT_NODE, mpv_format_MPV_FORMAT_NODE_ARRAY, mpv_format_MPV_FORMAT_NODE_MAP,
@@ -35,7 +36,8 @@ use super::{
     surface::{NativeRenderSurface, OwnerWindowEvent, RenderSurfaceBounds, ZOrderStrategy},
 };
 use crate::commands::player_shared::{
-    http_read_profile_diagnostic, playback_file_options, MpvEngineSettings, MpvHttpReadProfile,
+    http_read_profile_diagnostic, playback_file_options, MpvBufferState, MpvEngineSettings,
+    MpvHttpReadProfile, MpvSeekPrecision, MpvSeekReceipt,
 };
 
 pub type MpvState = Arc<Mutex<MpvPlayer>>;
@@ -114,6 +116,8 @@ pub struct DesktopPlaybackDiagnostics {
     pub file_loaded: bool,
     pub video_format: Option<String>,
     pub audio_codec: Option<String>,
+    pub video_bitrate: Option<f64>,
+    pub audio_bitrate: Option<f64>,
     pub vo_configured: bool,
     pub hardware_decoder: Option<String>,
     pub video_output: String,
@@ -157,6 +161,11 @@ pub struct MpvPlayer {
     expected_entry_id: Option<i64>,
     event_entry_id: Option<i64>,
     logs_frozen: bool,
+    seek_serial: u64,
+    restarted_seek_serial: u64,
+    seek_target: Option<f64>,
+    awaiting_seek_start: bool,
+    pending_event_batch: MpvEventBatch,
     initialization_logs: NativeLogBuffer,
     playback_logs: NativeLogBuffer,
 }
@@ -225,6 +234,11 @@ impl MpvPlayer {
             expected_entry_id: None,
             event_entry_id: None,
             logs_frozen: true,
+            seek_serial: 0,
+            restarted_seek_serial: 0,
+            seek_target: None,
+            awaiting_seek_start: false,
+            pending_event_batch: MpvEventBatch::default(),
             initialization_logs: NativeLogBuffer::default(),
             playback_logs: NativeLogBuffer::default(),
         };
@@ -271,6 +285,11 @@ impl MpvPlayer {
             self.drain_events(64);
         }
         self.playback_epoch = Some(epoch);
+        self.seek_serial = 0;
+        self.restarted_seek_serial = 0;
+        self.seek_target = None;
+        self.awaiting_seek_start = false;
+        self.pending_event_batch = MpvEventBatch::default();
         self.http_read_profile_diagnostic = None;
         self.expected_entry_id = None;
         self.logs_frozen = true;
@@ -330,8 +349,15 @@ impl MpvPlayer {
                 == Some("curl-enabled");
         self.http_read_profile_diagnostic =
             http_read_profile_diagnostic(http_read_profile, profile_supported);
-        let file_options =
-            playback_file_options(audio_path, http_read_profile.is_some() && profile_supported);
+        let prebuffer_network = self.engine_settings.cache_mode != "disabled"
+            && reqwest::Url::parse(path)
+                .map(|url| matches!(url.scheme(), "http" | "https"))
+                .unwrap_or(false);
+        let file_options = playback_file_options(
+            audio_path,
+            http_read_profile.is_some() && profile_supported,
+            prebuffer_network,
+        );
         self.playback_state = "loading".to_string();
         self.last_playback_event = "load-command".to_string();
         self.last_playback_error = None;
@@ -458,6 +484,8 @@ impl MpvPlayer {
             file_loaded: self.file_loaded,
             video_format: self.last_video_format.borrow().clone(),
             audio_codec: self.last_audio_codec.borrow().clone(),
+            video_bitrate: self.playback_bitrate("video-bitrate"),
+            audio_bitrate: self.playback_bitrate("audio-bitrate"),
             vo_configured: self.initialized
                 && self.get_property_flag("vo-configured").unwrap_or(0) != 0,
             hardware_decoder: self.last_hardware_decoder.borrow().clone(),
@@ -468,6 +496,38 @@ impl MpvPlayer {
             fsr_reason: self.fsr_reason.clone(),
             color: Some(self.color_diagnostics()),
             logs: self.native_log_snapshot(),
+        }
+    }
+
+    fn playback_bitrate(&self, property: &str) -> Option<f64> {
+        if !self.initialized || !self.file_loaded {
+            return None;
+        }
+        self.get_property_double(property)
+            .ok()
+            .filter(|value| value.is_finite() && *value > 0.0)
+    }
+
+    pub fn buffer_state(&self) -> MpvBufferState {
+        let number = |property: &str| {
+            self.get_property_double(property)
+                .ok()
+                .filter(|value| value.is_finite() && *value >= 0.0)
+        };
+        MpvBufferState {
+            position: self.time_pos(),
+            seeking: self.awaiting_seek_start
+                || (self.initialized && self.get_property_flag("seeking").unwrap_or(0) != 0),
+            paused_for_cache: self.initialized
+                && self.get_property_flag("paused-for-cache").unwrap_or(0) != 0,
+            cache_buffering_state: number("cache-buffering-state"),
+            cache_speed: number("cache-speed"),
+            vo_configured: self.initialized
+                && self.get_property_flag("vo-configured").unwrap_or(0) != 0,
+            file_loaded: self.file_loaded,
+            seek_serial: self.seek_serial,
+            restarted_seek_serial: self.restarted_seek_serial,
+            seek_target: self.seek_target,
         }
     }
 
@@ -861,9 +921,26 @@ impl MpvPlayer {
         result.and(clear_result)
     }
 
-    pub fn seek(&mut self, position: f64) -> Result<(), String> {
+    pub fn seek(&mut self, position: f64, precision: MpvSeekPrecision) -> Result<MpvSeekReceipt, String> {
         self.ensure_initialized_fallback()?;
-        self.command(&["seek", &position.to_string(), "absolute"])
+        // Retire already queued SEEK/RESTART events before recording the baseline.
+        // Keep the same bounded event budget as the regular event pump.
+        self.pending_event_batch = self.drain_events(64);
+        let receipt = MpvSeekReceipt {
+            seek_serial: self.seek_serial,
+            completed: !self.awaiting_seek_start
+                && self.seek_serial == self.restarted_seek_serial
+                && self.file_loaded
+                && self.get_property_flag("vo-configured").unwrap_or(0) != 0
+                && self.get_property_flag("seeking").unwrap_or(0) == 0
+                && self.get_property_flag("paused-for-cache").unwrap_or(0) == 0
+                && (self.time_pos() - position).abs() <= 0.001,
+        };
+        if !receipt.completed {
+            self.command(&["seek", &position.to_string(), precision.flags()])?;
+            self.awaiting_seek_start = true;
+        }
+        Ok(receipt)
     }
 
     pub fn track_state(&mut self) -> Result<MpvTrackState, String> {
@@ -1324,7 +1401,9 @@ impl MpvPlayer {
     }
 
     pub fn drain_events(&mut self, max_events: usize) -> MpvEventBatch {
-        let mut batch = MpvEventBatch::default();
+        // Seek receipts may drain native events to establish their baseline.
+        // Preserve their UI notifications for the ordinary forwarder to emit.
+        let mut batch = std::mem::take(&mut self.pending_event_batch);
         if !self.initialized {
             return batch;
         }
@@ -1409,6 +1488,24 @@ impl MpvPlayer {
                 }
                 self.capture_playback_facts();
                 self.apply_fsr_runtime_safely();
+            } else if event_id == mpv_event_id_MPV_EVENT_SEEK {
+                if !self.current_native_entry()
+                    || self.playback_state == "error"
+                    || self.stop_requested
+                {
+                    continue;
+                }
+                self.seek_serial = self.seek_serial.wrapping_add(1);
+                self.awaiting_seek_start = false;
+                // While restart is pending mpv exposes its actual seek target.
+                // A late-drained event after restart exposes advancing frame time,
+                // which must not be mislabeled as that original target.
+                self.seek_target = if self.get_property_flag("seeking").unwrap_or(0) != 0 {
+                    self.get_property_double("time-pos").ok()
+                        .filter(|value| value.is_finite() && *value >= 0.0)
+                } else {
+                    None
+                };
             } else if event_id == mpv_event_id_MPV_EVENT_PLAYBACK_RESTART {
                 if !self.current_native_entry()
                     || self.playback_state == "error"
@@ -1417,6 +1514,7 @@ impl MpvPlayer {
                     continue;
                 }
                 self.color_metadata_ready = self.file_loaded && !self.stop_requested;
+                self.restarted_seek_serial = self.seek_serial;
                 self.apply_fsr_runtime_safely();
             } else if event_id == mpv_event_id_MPV_EVENT_END_FILE {
                 let end_file = unsafe { (*event).data.cast::<mpv_event_end_file>().as_ref() };
