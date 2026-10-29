@@ -1,5 +1,7 @@
 import type { ServerDataSource, ServerDiscoveryStreamHandle } from '@/services/datasource/server'
+import type { ServerSubtitlePolicy } from '@/services/serverSubtitlePolicy'
 import { ServerRequestError } from '@/services/datasource/server'
+import { parseServerSubtitlePolicy } from '@/services/serverSubtitlePolicy'
 import { parseServerWorkItemIdentity } from './datasource/serverIdentity'
 
 export interface ServerDiscoveryWork {
@@ -45,6 +47,8 @@ export interface ServerResourceItem {
   matchedName?: string
   sourceKind?: string
   cloudProvider?: string
+  contentInspection?: boolean
+  payloadKind?: string
   resultType?: string
   origins?: { kind: 'tg' | 'plugin', name: string, postUrl?: string }[]
   acquisitionAvailable?: boolean
@@ -155,12 +159,14 @@ export interface ServerFollowSnapshot {
   site_ids: number[]
   media_library_id: number
   schedule: { kind: string, minutes: number }
-  filters: Record<string, unknown>
+  filters: Record<string, unknown> & { subtitles?: ServerSubtitlePolicy }
   max_resources_per_run: number
   download_priority: number
 }
 export interface ServerFollowDefaults {
   snapshot: ServerFollowSnapshot
+  policyDefaultsRevision?: number
+  subtitlePolicySupported?: boolean
   seasons: { seasonNumber: number, name: string, missing: number }[]
   sites: { id: number, name: string, site_type: string }[]
   downloaders: ServerDownloadOption[]
@@ -288,6 +294,10 @@ export async function getServerFollowDefaults(source: ServerDataSource, tmdbId: 
   if ((number(snapshot.version) ?? 0) < 2 || snapshot.routing_policy !== 'source_priority')
     throw new Error('当前 Server 不支持按资源来源自动选择下载器，请先升级 Server。')
   const schedule = record(snapshot.schedule)
+  const filters = record(snapshot.filters)
+  const subtitles = parseServerSubtitlePolicy(filters.subtitles)
+  if (filters.subtitles !== undefined && !subtitles)
+    throw new Error('Server 返回的字幕策略无效，请刷新后重试。')
   const sites = array(data.sites).flatMap((value) => {
     const item = record(value)
     const id = number(item.id)
@@ -321,10 +331,12 @@ export async function getServerFollowDefaults(source: ServerDataSource, tmdbId: 
       site_ids: array(snapshot.site_ids).flatMap(value => typeof value === 'number' ? [value] : []),
       media_library_id: number(snapshot.media_library_id) ?? 0,
       schedule: { kind: text(schedule.kind) ?? 'interval', minutes: number(schedule.minutes) ?? 360 },
-      filters: record(snapshot.filters),
+      filters: { ...filters, ...(subtitles ? { subtitles } : {}) },
       max_resources_per_run: number(snapshot.max_resources_per_run) ?? 3,
       download_priority: number(snapshot.download_priority) ?? 0,
     },
+    policyDefaultsRevision: number(data.policy_defaults_revision),
+    subtitlePolicySupported: subtitles !== undefined,
     seasons: [...new Map(seasons.map(season => [season.seasonNumber, season])).values()].sort((left, right) => left.seasonNumber - right.seasonNumber),
     sites,
     downloaders,
@@ -513,7 +525,7 @@ function parseGroup(value: unknown): ServerResourceGroup | null {
     const token = text(result.token)
     const title = text(result.title)
     return token && title
-      ? [{ token, title, subtitle: text(result.subtitle), sizeBytes: number(result.size_bytes), seeders: number(result.seeders), promotion: text(result.promotion), quality: text(result.quality), matchedName: text(result.matched_name), sourceKind: text(result.source_kind), cloudProvider: text(result.cloud_provider), resultType: text(result.result_type), expiresAt: text(result.expires_at), acquisitionAvailable: typeof result.acquisition_available === 'boolean' ? result.acquisition_available : undefined, acquisitionReason: text(result.acquisition_reason), origins: parseOrigins(result) }]
+      ? [{ token, title, subtitle: text(result.subtitle), sizeBytes: number(result.size_bytes), seeders: number(result.seeders), promotion: text(result.promotion), quality: text(result.quality), matchedName: text(result.matched_name), sourceKind: text(result.source_kind), cloudProvider: text(result.cloud_provider), resultType: text(result.result_type), contentInspection: result.content_inspection === true, payloadKind: text(result.payload_kind), expiresAt: text(result.expires_at), acquisitionAvailable: typeof result.acquisition_available === 'boolean' ? result.acquisition_available : undefined, acquisitionReason: text(result.acquisition_reason), origins: parseOrigins(result) }]
       : []
   }) }
 }

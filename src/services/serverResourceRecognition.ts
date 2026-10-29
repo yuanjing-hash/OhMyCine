@@ -15,13 +15,15 @@ export interface ServerResourceRecognition {
 }
 
 export function isServerCloudResource(item: ServerResourceItem): boolean {
+  if (item.sourceKind === 'bt' || item.sourceKind === 'pt' || item.payloadKind === 'torrent' || item.payloadKind === 'magnet')
+    return false
   return item.sourceKind === '115_share' || item.sourceKind === 'quark_share' || !!item.cloudProvider
     || (!!item.resultType && item.resultType !== 'magnet' && item.resultType !== 'ed2k')
 }
 
-export async function recognizeServerResource(source: ServerDataSource, token: string): Promise<ServerResourceRecognition> {
+export async function recognizeServerResource(source: ServerDataSource, token: string, titleOnly = false): Promise<ServerResourceRecognition> {
   try {
-    return parseServerResourceRecognition(await source.recognizeDiscoveryResource(token))
+    return parseServerResourceRecognition(await source.recognizeDiscoveryResource(token, titleOnly))
   }
   catch (reason) {
     if (reason instanceof ServerRequestError && (reason.status === 405 || (reason.status === 404 && !reason.code)))

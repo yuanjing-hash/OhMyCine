@@ -391,3 +391,37 @@ it('shows a mixed partial batch immediately and retains its claims after a later
   }
   finally { wrapper.unmount() }
 })
+
+
+it('edits the Server-provided subtitle preference and preserves all other frozen filters', async () => {
+  useRoute().params.mediaType = 'tv'
+  const defaults = await subscriptionDefaults()
+  defaults.subtitlePolicySupported = true
+  defaults.policyDefaultsRevision = 7
+  defaults.snapshot.filters = { min_seeders: 2, subtitles: { mode: 'prefer', languages: ['zh-Hans', 'zh-Hant'] } }
+  followDefaults.mockResolvedValue(defaults)
+  const wrapper = render()
+  try {
+    await openSubscription(wrapper)
+    const editor = wrapper.get('[aria-label="订阅字幕策略"]')
+    expect(editor.text()).toContain('简体中文 · 1')
+    expect(editor.text()).toContain('繁体中文 · 2')
+    await editor.get('select').setValue('require')
+    await confirmSubscription(wrapper).trigger('click'); await flushPromises()
+    const payload = createFollow.mock.calls.at(-1)?.[0]
+    expect(payload.snapshot.filters).toEqual({ min_seeders: 2, subtitles: { mode: 'require', languages: ['zh-Hans', 'zh-Hant'] } })
+    expect(payload.policy_defaults_revision).toBeUndefined()
+  } finally { wrapper.unmount() }
+})
+it('does not synthesize subtitle settings when an older Server does not advertise them', async () => {
+  useRoute().params.mediaType = 'tv'
+  const defaults = await subscriptionDefaults()
+  followDefaults.mockResolvedValue(defaults)
+  const wrapper = render()
+  try {
+    await openSubscription(wrapper)
+    expect(wrapper.find('[aria-label="订阅字幕策略"]').exists()).toBe(false)
+    await confirmSubscription(wrapper).trigger('click'); await flushPromises()
+    expect(createFollow.mock.calls.at(-1)?.[0].snapshot.filters).toEqual({})
+  } finally { wrapper.unmount() }
+})
