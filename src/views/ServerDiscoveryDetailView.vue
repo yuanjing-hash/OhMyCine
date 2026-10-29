@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { ServerAcquisitionStatus, ServerCoverageSummary, ServerDiscoveryDetail, ServerDiscoveryTypePolicy, ServerFollowDefaults, ServerFollowRoutePreview, ServerLibraryOption, ServerResourceItem, ServerResourceSearchInput, ServerRouteRecommendation, ServerSearchSite } from '@/services/serverDiscovery'
+import type { ServerContentSelection } from '@/services/serverResourceContent'
 import type { ServerShareSelection } from '@/services/serverSharePreview'
+import type { ServerSubtitleLanguage, ServerSubtitlePolicy } from '@/services/serverSubtitlePolicy'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaDetailHero from '@/components/media/MediaDetailHero.vue'
@@ -13,7 +15,9 @@ import { registerLayoutBackHandler } from '@/services/layoutBackNavigation'
 import { publishFeedback } from '@/services/mediaActions'
 import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerFollowDefaults, getServerFollowRoutePreview, getServerResourceLink, getServerRouteRecommendation, getServerSearchSites, isTerminalServerAcquisition, serverAcquisitionLabel, streamServerResources } from '@/services/serverDiscovery'
 import { beginResourceSearch, emptyResourceSearch, finishResourceSearch, reduceResourceSearch, resourceGroupRetryPage, ResourceSearchController } from '@/services/serverDiscoverySearch'
+import { serverResourceAllowsWhole } from '@/services/serverResourceContent'
 import { previewServerShare } from '@/services/serverSharePreview'
+import { serverSubtitleLanguages } from '@/services/serverSubtitlePolicy'
 import { useAcquisitionWorkspaceStore } from '@/stores/acquisitionWorkspace'
 import { useDataSourceStore } from '@/stores/datasource'
 import { useSearchWorkspaceStore } from '@/stores/searchWorkspace'
@@ -58,6 +62,7 @@ const followDefaults = ref<ServerFollowDefaults | null>(null)
 const followRoutePreview = ref<ServerFollowRoutePreview | null>(null)
 const followRouteLoading = ref(false)
 const followRouteError = ref('')
+const subtitlePolicy = ref<ServerSubtitlePolicy>({ mode: 'ignore', languages: [] })
 const followForm = ref({ seasons: [] as number[], siteIds: [] as number[], libraryId: 0, minutes: 360, maxResources: 3, priority: 0 })
 const pendingSearchMode = ref<'aggregate' | 'direct'>('aggregate')
 const directKind = ref<'title' | 'tmdb'>('title')
@@ -120,6 +125,8 @@ const followBlockedReason = computed(() => {
     return '检查间隔须为 10 至 10080 分钟的整数。'
   if (!Number.isInteger(followForm.value.maxResources) || followForm.value.maxResources < 1 || followForm.value.maxResources > 20)
     return '每次下载资源数须为 1 至 20 的整数。'
+  if (followDefaults.value?.subtitlePolicySupported && subtitlePolicy.value.mode !== 'ignore' && !subtitlePolicy.value.languages.length)
+    return '请选择至少一种字幕语言，或选择不限制字幕。'
   if (followRouteLoading.value)
     return '正在检查下载路由，请稍候。'
   if (followRouteError.value)
@@ -439,7 +446,7 @@ async function loadAcquisitionSharePreview(downloaderId: string) {
   return preview
 }
 
-async function submitAcquisition(options: { downloaderId: string, libraryId: number, shareSelection?: ServerShareSelection }) {
+async function submitAcquisition(options: { downloaderId: string, libraryId: number, shareSelection?: ServerShareSelection, contentSelection?: ServerContentSelection, contentMode?: 'all' | 'files' }) {
   const resource = selectedResource.value
   const work = detail.value?.work
   if (submitting.value || !resource || !work?.tmdbId)
@@ -448,7 +455,12 @@ async function submitAcquisition(options: { downloaderId: string, libraryId: num
   const generation = routeGeneration
   const submittedMediaType = mediaType.value
   const current = () => origin === sourceId.value && generation === routeGeneration && selectedResource.value?.token === resource.token && acquisitionDialogOpen.value
-  if ((routeRecommendation.value?.sourceKind === 'quark_share' || routeRecommendation.value?.sourceKind === '115_share') && !options.shareSelection) {
+  const whole = options.contentMode === 'all' && serverResourceAllowsWhole(resource, routeRecommendation.value?.sourceKind) && !options.contentSelection
+  if (resource.contentInspection && !options.contentSelection && !whole) {
+    publishFeedback({ id: Date.now(), kind: 'error', message: '请先确认需要下载的实际文件。' })
+    return
+  }
+  if ((routeRecommendation.value?.sourceKind === 'quark_share' || routeRecommendation.value?.sourceKind === '115_share') && !options.shareSelection && !options.contentSelection) {
     publishFeedback({ id: Date.now(), kind: 'error', message: '请先预览分享并选择需要转存的文件。' })
     return
   }
@@ -465,6 +477,8 @@ async function submitAcquisition(options: { downloaderId: string, libraryId: num
       priority: 0,
       expected_tmdb_id: work.tmdbId,
       expected_media_type: submittedMediaType,
+      ...(resource.contentInspection ? { content_mode: whole ? 'all' as const : 'files' as const } : {}),
+      ...(options.contentSelection ? { content_selection_token: options.contentSelection.selectionToken } : {}),
       ...(options.shareSelection ? { preview_token: options.shareSelection.previewToken, selected_entry_tokens: options.shareSelection.entryTokens } : {}),
     })
     if (!current() || store.getSource(origin) !== source)
@@ -482,8 +496,10 @@ async function submitAcquisition(options: { downloaderId: string, libraryId: num
       publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
   }
   finally {
-    submitting.value = false
-    busyToken.value = ''
+    if (origin === sourceId.value && generation === routeGeneration && busyToken.value === resource.token) {
+      submitting.value = false
+      busyToken.value = ''
+    }
   }
 }
 
@@ -548,6 +564,7 @@ async function openFollow() {
     if (!current())
       return
     followDefaults.value = defaults
+    subtitlePolicy.value = defaults.snapshot.filters.subtitles ? { mode: defaults.snapshot.filters.subtitles.mode, languages: [...defaults.snapshot.filters.subtitles.languages] } : { mode: 'ignore', languages: [] }
     const ordinary = defaults.seasons.filter(item => item.seasonNumber > 0 && !defaults.subscribedSeasons.includes(item.seasonNumber))
     const selected = defaults.snapshot.seasons.filter(season => ordinary.some(item => item.seasonNumber === season))
     const preferred = ordinary.find(item => item.missing > 0) ?? ordinary[0]
@@ -616,6 +633,11 @@ watch(followOpen, (open) => {
   }
 }, { flush: 'sync' })
 
+function toggleSubtitleLanguage(value: ServerSubtitleLanguage) {
+  const list = subtitlePolicy.value.languages
+  subtitlePolicy.value.languages = list.includes(value) ? list.filter(item => item !== value) : [...list, value]
+}
+
 function toggleFollowSite(id: number) {
   followForm.value.siteIds = followForm.value.siteIds.includes(id) ? followForm.value.siteIds.filter(value => value !== id) : [...followForm.value.siteIds, id]
 }
@@ -636,7 +658,7 @@ async function createFollow() {
   let source: ServerDataSource | undefined
   const current = () => owner === followGeneration && followOpen.value && origin === sourceId.value && ownerRoute === route.fullPath && (!source || store.getSource(origin) === source)
   const base = followDefaults.value.snapshot
-  const payload = { tmdb_id: work.tmdbId, title: work.title, year: work.year, snapshot: { ...base, seasons: [...followForm.value.seasons], site_ids: [...followForm.value.siteIds], media_library_id: followForm.value.libraryId, schedule: { kind: 'interval', minutes: followForm.value.minutes }, max_resources_per_run: followForm.value.maxResources, download_priority: followForm.value.priority } }
+  const payload = { tmdb_id: work.tmdbId, title: work.title, year: work.year, snapshot: { ...base, filters: { ...base.filters, ...(followDefaults.value.subtitlePolicySupported ? { subtitles: { mode: subtitlePolicy.value.mode, languages: [...subtitlePolicy.value.languages] } } : {}) }, seasons: [...followForm.value.seasons], site_ids: [...followForm.value.siteIds], media_library_id: followForm.value.libraryId, schedule: { kind: 'interval', minutes: followForm.value.minutes }, max_resources_per_run: followForm.value.maxResources, download_priority: followForm.value.priority } }
   subscribing.value = true
   try {
     source = await resolveSource(origin)
@@ -786,8 +808,8 @@ onBeforeUnmount(() => {
       </section>
 
       <DiscoverySitePickerDialog :open="sitePickerOpen" :sites="sites" :selected-site-ids="selectedSiteIds" :loading="loadingSites" :mode="pendingSearchMode" :direct-kind="directKind" :direct-query="directQuery" :tmdb-id="detail.work.tmdbId" @close="sitePickerOpen = false" @search="runSearch()" @toggle-site="toggleSite" @toggle-all="toggleAllSites" @update-direct-kind="directKind = $event" @update-direct-query="directQuery = $event" />
-      <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :state="searchState" :active-site-id="activeSiteId" :can-acquire="canAcquire" :busy-token="busyToken" :mixed-supported="mixedSupported" :type-policy="discoveryTypePolicy" :cloud-types="discoveryCloudTypes" :copying-token="copyingToken" :recognitions="resourceRecognitions" :recognizing-tokens="resourceRecognizingTokens" :recognition-errors="resourceRecognitionErrors" @recognize="resourceRecognition.retry" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="retrySite" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" @copy-resource="copyResourceLink" @update-type-policy="discoveryTypePolicy = $event" @update-cloud-types="discoveryCloudTypes = $event" @refresh="refreshResourceTypes" />
-      <DiscoveryAcquisitionDialog :key="sourceId" :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" :load-share-preview="loadAcquisitionSharePreview" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" @share-analysis="resourceRecognition.acceptAnalysis" />
+      <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :state="searchState" :active-site-id="activeSiteId" :can-acquire="canAcquire" :busy-token="busyToken" :mixed-supported="mixedSupported" :type-policy="discoveryTypePolicy" :cloud-types="discoveryCloudTypes" :copying-token="copyingToken" :recognitions="resourceRecognitions" :recognizing-tokens="resourceRecognizingTokens" :recognition-errors="resourceRecognitionErrors" :source="recognitionSource" :content-previews="resourceRecognition.contentPreviews.value" :content-errors="resourceRecognition.contentErrors.value" :inspecting-tokens="resourceRecognition.inspectingTokens.value" :coverages="resourceRecognition.coverages.value" @inspect="resourceRecognition.retryContent" @recognize="resourceRecognition.retry" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="retrySite" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" @copy-resource="copyResourceLink" @update-type-policy="discoveryTypePolicy = $event" @update-cloud-types="discoveryCloudTypes = $event" @refresh="refreshResourceTypes" />
+      <DiscoveryAcquisitionDialog :key="sourceId" :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" :load-share-preview="loadAcquisitionSharePreview" :source="recognitionSource" :content-preview="selectedResource ? resourceRecognition.contentPreviews.value[selectedResource.token] : undefined" @content-preview="resourceRecognition.acceptContent" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" @share-analysis="resourceRecognition.acceptAnalysis" />
 
       <div v-if="followOpen" class="follow-layer fixed inset-0 z-[1210] grid place-items-center p-4" @click.self="!subscribing && (followOpen = false)">
         <section class="follow-card glass-panel max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-[28px] p-6 cinema-scrollbar">
@@ -833,6 +855,19 @@ onBeforeUnmount(() => {
             <div class="grid gap-3 md:grid-cols-2">
               <label class="text-xs text-white/48">目标媒体库<select v-model="followForm.libraryId" class="follow-input mt-2 w-full rounded-2xl p-3 text-white"><option :value="0" disabled>请选择媒体库</option><option v-for="item in followDefaults.mediaLibraries" :key="item.id" :value="item.id">{{ item.name }}</option></select></label><label class="text-xs text-white/48">检查间隔（分钟）<input v-model.number="followForm.minutes" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="10" max="10080"></label><label class="text-xs text-white/48">每次最多下载资源数<input v-model.number="followForm.maxResources" class="follow-input mt-2 w-full rounded-2xl p-3 text-white" type="number" min="1" max="20"></label>
             </div>
+            <section v-if="followDefaults.subtitlePolicySupported" class="rounded-2xl border border-white/10 p-4" aria-label="订阅字幕策略">
+              <label class="text-xs text-white/60">字幕偏好<select v-model="subtitlePolicy.mode" class="follow-input mt-2 w-full rounded-xl p-3 text-white"><option value="ignore">不限制字幕</option><option value="prefer">优先对应字幕，缺少时仍下载</option><option value="require">必须有对应字幕</option></select></label>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button v-for="language in serverSubtitleLanguages" :key="language.value" type="button" class="rounded-lg border border-white/15 px-3 py-2 text-xs" :aria-pressed="subtitlePolicy.languages.includes(language.value)" :disabled="subtitlePolicy.mode === 'ignore'" @click="toggleSubtitleLanguage(language.value)">
+                  {{ language.label }}<template v-if="subtitlePolicy.languages.includes(language.value)">
+                    · {{ subtitlePolicy.languages.indexOf(language.value) + 1 }}
+                  </template>
+                </button>
+              </div>
+              <p class="mt-2 text-xs text-white/45">
+                按所选顺序优先匹配。字幕文件名与发布者声明会标明证据来源，未知字幕不会冒充已核实字幕。
+              </p>
+            </section>
             <div class="rounded-2xl border border-white/10 bg-white/[.035] p-4 text-sm">
               <p class="font-semibold text-white/88">
                 按资源来源自动选择下载器

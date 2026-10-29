@@ -1,6 +1,7 @@
 import type { ServerCredentialValue } from './credentialStore'
 import type { OnlineLibrarySummary } from './serverOnline'
 import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaAcquisitionState, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderCollectionOption, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
+import type { ServerContentPreviewInput, ServerContentSelectionInput } from '@/services/serverResourceContent'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { registerServerArtworkSource, unregisterServerArtworkSource } from '@/services/imageCache'
@@ -528,11 +529,19 @@ export class ServerDataSource implements DataSource {
     return this.request('/api/v1/player/discovery/share-preview', 'POST', payload)
   }
 
-  async recognizeDiscoveryResource(resultToken: string): Promise<unknown> {
-    return this.request('/api/v1/player/discovery/torrent-results/recognize', 'POST', { result_token: resultToken })
+  async recognizeDiscoveryResource(resultToken: string, titleOnly = false): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/torrent-results/recognize', 'POST', { result_token: resultToken, ...(titleOnly ? { title_only: true } : {}) })
   }
 
-  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id?: number, priority: number, expected_tmdb_id?: number, expected_media_type?: 'movie' | 'tv', preview_token?: string, selected_entry_tokens?: string[] }): Promise<unknown> {
+  async previewDiscoveryContent(payload: ServerContentPreviewInput): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/content-preview', 'POST', { result_token: payload.result_token, ...(payload.downloader_id ? { downloader_id: payload.downloader_id } : {}), ...(payload.preview_token ? { preview_token: payload.preview_token } : {}), ...(payload.offset !== undefined ? { offset: payload.offset } : {}), ...(payload.limit !== undefined ? { limit: payload.limit } : {}) })
+  }
+
+  async selectDiscoveryContent(payload: ServerContentSelectionInput): Promise<unknown> {
+    return this.request('/api/v1/player/discovery/content-selection', 'POST', { result_token: payload.result_token, preview_token: payload.preview_token, selected_entry_tokens: [...payload.selected_entry_tokens] })
+  }
+
+  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id?: number, priority: number, expected_tmdb_id?: number, expected_media_type?: 'movie' | 'tv', content_mode?: 'all' | 'files', content_selection_token?: string, preview_token?: string, selected_entry_tokens?: string[] }): Promise<unknown> {
     return this.request('/api/v1/player/discovery/downloads', 'POST', payload)
   }
 

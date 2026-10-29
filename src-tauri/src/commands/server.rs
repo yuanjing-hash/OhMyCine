@@ -120,6 +120,7 @@ pub struct ServerSseEvent {
 pub async fn server_request_json(request: ServerJsonRequest) -> Result<ServerJsonResponse, String> {
     let url = server_url(&request.base_url, &request.path)?;
     let method = server_method(&request.method)?;
+    validate_content_request(&method, &request.path, request.body.as_ref())?;
     let token = request.access_token.as_deref().unwrap_or_default().trim();
     if token.len() > MAX_TOKEN_LENGTH || token.chars().any(char::is_control) {
         return Err("Server access token is invalid.".to_string());
@@ -593,7 +594,86 @@ fn server_method(method: &str) -> Result<Method, String> {
     }
 }
 
+fn validate_content_request(
+    method: &Method,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(), String> {
+    let route = path.split('?').next().unwrap_or(path);
+    if !route.starts_with("/api/v1/player/discovery/content-") {
+        return Ok(());
+    }
+    let preview = path == "/api/v1/player/discovery/content-preview";
+    let selection = path == "/api/v1/player/discovery/content-selection";
+    if *method != Method::POST || (!preview && !selection) {
+        return Err("Server content request route is invalid.".to_string());
+    }
+    let object = body
+        .and_then(Value::as_object)
+        .ok_or("Server content request body is invalid.")?;
+    let valid_token = |value: Option<&Value>| {
+        value.and_then(Value::as_str).is_some_and(|token| {
+            !token.is_empty()
+                && token.len() <= 8192
+                && !token.chars().any(char::is_whitespace)
+                && !token.chars().any(char::is_control)
+        })
+    };
+    let allowed = if preview {
+        &[
+            "result_token",
+            "downloader_id",
+            "preview_token",
+            "offset",
+            "limit",
+        ][..]
+    } else {
+        &["result_token", "preview_token", "selected_entry_tokens"][..]
+    };
+    if object.keys().any(|key| !allowed.contains(&key.as_str()))
+        || !valid_token(object.get("result_token"))
+    {
+        return Err("Server content request fields are invalid.".to_string());
+    }
+    for key in ["downloader_id", "preview_token"] {
+        if object.contains_key(key) && !valid_token(object.get(key)) {
+            return Err("Server content token is invalid.".to_string());
+        }
+    }
+    if preview {
+        for (key, maximum) in [("offset", 10000), ("limit", 200)] {
+            if object
+                .get(key)
+                .is_some_and(|value| !value.as_u64().is_some_and(|count| count <= maximum))
+            {
+                return Err("Server content page is invalid.".to_string());
+            }
+        }
+    } else {
+        let entries = object
+            .get("selected_entry_tokens")
+            .and_then(Value::as_array)
+            .ok_or("Server content selection is invalid.")?;
+        if !valid_token(object.get("preview_token"))
+            || entries.is_empty()
+            || entries.len() > 500
+            || entries.iter().any(|value| !valid_token(Some(value)))
+        {
+            return Err("Server content selection is invalid.".to_string());
+        }
+        let distinct: std::collections::HashSet<_> =
+            entries.iter().filter_map(Value::as_str).collect();
+        if distinct.len() != entries.len() {
+            return Err("Server content selection repeats a file.".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn server_json_timeout(method: &Method, path: &str) -> Duration {
+    if *method == Method::POST && path == "/api/v1/player/discovery/content-preview" {
+        return Duration::from_secs(70);
+    }
     if *method == Method::POST && path == "/api/v1/player/discovery/torrent-results/recognize" {
         Duration::from_secs(60)
     } else if *method == Method::POST && path == "/api/v1/player/discovery/share-preview" {
@@ -604,6 +684,12 @@ fn server_json_timeout(method: &Method, path: &str) -> Duration {
 }
 
 fn server_json_body_limit(method: &Method, path: &str) -> usize {
+    if *method == Method::POST && path == "/api/v1/player/discovery/content-preview" {
+        return 8 * 1024;
+    }
+    if *method == Method::POST && path == "/api/v1/player/discovery/content-selection" {
+        return 32 * 1024;
+    }
     if *method == Method::POST && path == "/api/v1/player/discovery/downloads" {
         256 * 1024
     } else {
@@ -614,6 +700,89 @@ fn server_json_body_limit(method: &Method, path: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn content_encoded_bodies_are_rejected_before_network_dispatch() {
+        let cases = [
+            (
+                "/api/v1/player/discovery/content-preview",
+                serde_json::json!({"result_token":"r".repeat(8192)}),
+            ),
+            (
+                "/api/v1/player/discovery/content-selection",
+                serde_json::json!({"result_token":"r", "preview_token":"p", "selected_entry_tokens": (0..500).map(|id| format!("{id}-{}", "f".repeat(70))).collect::<Vec<_>>() }),
+            ),
+        ];
+        for (path, body) in cases {
+            let response = server_request_json(ServerJsonRequest {
+                base_url: "http://127.0.0.1:1".to_string(),
+                method: "POST".to_string(),
+                path: path.to_string(),
+                access_token: Some(format!("omc_player_{}", "a".repeat(43))),
+                body: Some(body),
+            })
+            .await;
+            assert_eq!(
+                response.err().as_deref(),
+                Some("Server request body is too large.")
+            );
+        }
+    }
+
+    #[test]
+    fn content_requests_have_exact_routes_fields_and_budgets() {
+        let preview = "/api/v1/player/discovery/content-preview";
+        let selection = "/api/v1/player/discovery/content-selection";
+        let body = serde_json::json!({"result_token":"result", "limit":200});
+        assert!(validate_content_request(&Method::POST, preview, Some(&body)).is_ok());
+        assert_eq!(
+            server_json_timeout(&Method::POST, preview),
+            Duration::from_secs(70)
+        );
+        assert_eq!(server_json_body_limit(&Method::POST, preview), 8 * 1024);
+        assert_eq!(server_json_body_limit(&Method::POST, selection), 32 * 1024);
+        assert_eq!(
+            server_json_timeout(&Method::POST, selection),
+            Duration::from_secs(20)
+        );
+        for path in [
+            format!("{preview}?extra=1"),
+            format!("{preview}/"),
+            "/api/v1/player/discovery/content-unknown".to_string(),
+        ] {
+            assert!(validate_content_request(&Method::POST, &path, Some(&body)).is_err());
+        }
+        assert!(validate_content_request(&Method::GET, preview, Some(&body)).is_err());
+        assert!(validate_content_request(&Method::PUT, selection, Some(&body)).is_err());
+        assert!(validate_content_request(
+            &Method::POST,
+            preview,
+            Some(&serde_json::json!({"result_token":"r", "url":"private"}))
+        )
+        .is_err());
+        assert!(validate_content_request(
+            &Method::POST,
+            preview,
+            Some(&serde_json::json!({"result_token":"r", "limit":201}))
+        )
+        .is_err());
+        assert!(validate_content_request(&Method::POST, selection, Some(&serde_json::json!({"result_token":"r", "preview_token":"p", "selected_entry_tokens":["f"]}))).is_ok());
+        for entries in [
+            serde_json::json!([]),
+            serde_json::json!(["f", "f"]),
+            serde_json::json!([12]),
+        ] {
+            assert!(validate_content_request(&Method::POST, selection, Some(&serde_json::json!({"result_token":"r", "preview_token":"p", "selected_entry_tokens":entries}))).is_err());
+        }
+        assert_eq!(
+            server_json_timeout(&Method::GET, preview),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            server_json_body_limit(&Method::POST, "/api/v1/player/discovery/results/link"),
+            MAX_REQUEST_BODY_BYTES
+        );
+    }
 
     #[test]
     fn share_preview_limits_are_scoped_to_exact_player_methods_and_paths() {

@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import type { ServerDataSource } from '@/services/datasource/server'
 import type { ServerLibraryOption, ServerResourceItem, ServerRouteRecommendation } from '@/services/serverDiscovery'
+import type { ServerContentPreview, ServerContentSelection } from '@/services/serverResourceContent'
 import type { ShareContentAnalysis } from '@/services/serverShareContent'
 import type { ServerSharePreview, ServerShareSelection } from '@/services/serverSharePreview'
 import { computed, ref, watch } from 'vue'
+import DiscoveryResourceContent from '@/components/server/DiscoveryResourceContent.vue'
 import DiscoverySharePreview from '@/components/server/DiscoverySharePreview.vue'
+import { serverResourceAllowsWhole } from '@/services/serverResourceContent'
 
 const props = defineProps<{
   open: boolean
@@ -13,6 +17,8 @@ const props = defineProps<{
   routeError: string
   loading: boolean
   submitting: boolean
+  source?: ServerDataSource | null
+  contentPreview?: ServerContentPreview
   loadSharePreview: (downloaderId: string) => Promise<ServerSharePreview>
 }>()
 
@@ -20,15 +26,21 @@ const emit = defineEmits<{
   close: []
   selectLibrary: [libraryId: number]
   retry: [libraryId?: number]
-  confirm: [value: { downloaderId: string, libraryId: number, shareSelection?: ServerShareSelection }]
+  confirm: [value: { downloaderId: string, libraryId: number, shareSelection?: ServerShareSelection, contentSelection?: ServerContentSelection, contentMode?: 'all' | 'files' }]
   shareAnalysis: [token: string, analysis: ShareContentAnalysis]
+  contentPreview: [token: string, preview: ServerContentPreview]
 }>()
 
+const wholeResource = ref(false)
+const canGetWholeResource = computed(() => serverResourceAllowsWhole(props.resource, props.recommendation?.sourceKind))
+const contentSelection = ref<ServerContentSelection | null>(null)
+const modernContent = computed(() => props.resource?.contentInspection === true)
 const step = ref<1 | 2 | 3>(1)
 const downloaderId = ref('')
 const libraryId = ref(0)
 const shareSelection = ref<ServerShareSelection | null>(null)
 const isShare = computed(() => props.recommendation?.sourceKind === '115_share' || props.recommendation?.sourceKind === 'quark_share')
+const selectionMissing = computed(() => modernContent.value ? !(wholeResource.value && canGetWholeResource.value) && !contentSelection.value : isShare.value && !shareSelection.value)
 const routeChoices = computed(() => props.recommendation?.choices.filter(item => item.libraryId === libraryId.value) ?? [])
 const selectedChoice = computed(() => routeChoices.value.find(item => item.downloaderId === downloaderId.value && item.enabled))
 const selectedLibrary = computed(() => props.libraries.find(item => item.id === libraryId.value))
@@ -40,6 +52,8 @@ watch(() => props.open, (open) => {
   downloaderId.value = ''
   libraryId.value = 0
   shareSelection.value = null
+  contentSelection.value = null
+  wholeResource.value = false
 }, { immediate: true })
 
 watch(() => [props.recommendation, props.open] as const, ([value]) => {
@@ -59,16 +73,23 @@ function selectLibrary(id: number) {
   libraryId.value = id
   downloaderId.value = ''
   shareSelection.value = null
+  contentSelection.value = null
+  wholeResource.value = false
   emit('selectLibrary', id)
 }
 
 function confirm() {
-  if (props.loading || props.routeError || props.submitting || !selectedChoice.value || !libraryId.value || (isShare.value && !shareSelection.value))
+  if (props.loading || props.routeError || props.submitting || !selectedChoice.value || !libraryId.value || selectionMissing.value)
     return
-  emit('confirm', { downloaderId: downloaderId.value, libraryId: libraryId.value, ...(shareSelection.value ? { shareSelection: shareSelection.value } : {}) })
+  emit('confirm', { downloaderId: downloaderId.value, libraryId: libraryId.value, ...(shareSelection.value ? { shareSelection: shareSelection.value } : {}), ...(contentSelection.value && !wholeResource.value ? { contentSelection: contentSelection.value } : {}), ...(modernContent.value ? { contentMode: wholeResource.value && canGetWholeResource.value ? 'all' as const : 'files' as const } : {}) })
 }
 watch([downloaderId, libraryId, () => props.resource?.token, step], () => {
   shareSelection.value = null
+  contentSelection.value = null
+  wholeResource.value = false
+})
+watch(wholeResource, () => {
+  contentSelection.value = null
 })
 </script>
 
@@ -156,7 +177,12 @@ watch([downloaderId, libraryId, () => props.resource?.token, step], () => {
                   Server 会在下载前验证该资源与当前 TMDB 海报身份；明显不匹配时不会开始下载或错误入库。
                 </p>
               </div>
-              <DiscoverySharePreview v-if="isShare && resource && selectedChoice" :result-token="resource.token" :downloader-id="downloaderId" :provider-label="recommendation?.sourceKind === 'quark_share' ? '夸克分享' : '115 分享'" :load="loadSharePreview" @change="shareSelection = $event" @analysis="(token, analysis) => emit('shareAnalysis', token, analysis)" />
+              <label v-if="canGetWholeResource" class="mt-4 block rounded-xl border border-white/15 p-3 text-sm"><input v-model="wholeResource" type="checkbox"> 明确获取整个资源</label>
+              <p v-if="canGetWholeResource && wholeResource" class="mt-2 text-xs text-amber-200" role="status">
+                内部文件未经本次选择核实，将获取完整资源，可能包含已在库或无关文件。
+              </p>
+              <DiscoveryResourceContent v-if="modernContent && resource && selectedChoice" :key="`${resource.token}:${libraryId}:${downloaderId}`" :result-token="resource.token" :source="source ?? null" :preview="contentPreview" :can-select="!wholeResource" :auto-load="true" @change="contentSelection = $event" @preview="(token, preview) => emit('contentPreview', token, preview)" />
+              <DiscoverySharePreview v-else-if="isShare && resource && selectedChoice" :result-token="resource.token" :downloader-id="downloaderId" :provider-label="recommendation?.sourceKind === 'quark_share' ? '夸克分享' : '115 分享'" :load="loadSharePreview" @change="shareSelection = $event" @analysis="(token, analysis) => emit('shareAnalysis', token, analysis)" />
             </template>
           </main>
 
@@ -167,7 +193,7 @@ watch([downloaderId, libraryId, () => props.resource?.token, step], () => {
             <button v-if="step < 3" class="primary-button" type="button" :disabled="loading || Boolean(routeError) || step === 1 && !libraryId || step === 2 && !selectedChoice" @click="step = step === 1 ? 2 : 3">
               下一步
             </button>
-            <button v-else class="primary-button" type="button" :disabled="submitting || loading || Boolean(routeError) || !selectedChoice || isShare && !shareSelection" @click="confirm">
+            <button v-else class="primary-button" type="button" :disabled="submitting || loading || Boolean(routeError) || !selectedChoice || selectionMissing" @click="confirm">
               {{ submitting ? '正在创建任务…' : '确认入库' }}
             </button>
           </footer>

@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import type { ServerDiscoveryTypePolicy, ServerResourceGroup, ServerResourceItem } from '@/services/serverDiscovery'
+import type { ServerDataSource } from '@/services/datasource/server'
+import type { ServerCoverageSummary, ServerDiscoveryTypePolicy, ServerResourceGroup, ServerResourceItem } from '@/services/serverDiscovery'
+
 import type { ResourceSearchActivity, ResourceSearchState } from '@/services/serverDiscoverySearch'
+import type { ServerContentPreview } from '@/services/serverResourceContent'
 import type { ServerResourceRecognition } from '@/services/serverResourceRecognition'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import DiscoveryResourceContent from '@/components/server/DiscoveryResourceContent.vue'
 import DiscoveryResourceRecognition from '@/components/server/DiscoveryResourceRecognition.vue'
 import { serverDiscoveryTypeOptions, serverResourceTypeLabel } from '@/services/serverDiscovery'
 import { resourceGroupIsPrevious, resourceGroupPageIsChanging, searchIncompleteLabel, searchPhaseLabel } from '@/services/serverDiscoverySearch'
@@ -22,6 +26,11 @@ const props = defineProps<{
   recognitions?: Record<string, ServerResourceRecognition>
   recognizingTokens?: string[]
   recognitionErrors?: Record<string, string>
+  source?: ServerDataSource | null
+  contentPreviews?: Record<string, ServerContentPreview>
+  contentErrors?: Record<string, string>
+  inspectingTokens?: string[]
+  coverages?: Record<string, ServerCoverageSummary>
 }>()
 
 const emit = defineEmits<{
@@ -36,6 +45,7 @@ const emit = defineEmits<{
   updateCloudTypes: [value: string[]]
   refresh: []
   recognize: [token: string]
+  inspect: [token: string]
 }>()
 
 const searching = computed(() => props.state.outcome === 'running')
@@ -329,7 +339,11 @@ function origins(item: ServerResourceItem) {
                     <p v-if="unavailable(item)" class="mt-2 text-xs text-[var(--color-text-secondary)]" role="status">
                       {{ unavailable(item) }}
                     </p>
-                    <DiscoveryResourceRecognition :cloud="isServerCloudResource(item)" :result="recognitions?.[item.token]" :loading="recognizingTokens?.includes(item.token)" :error="recognitionErrors?.[item.token]" />
+                    <DiscoveryResourceRecognition :cloud="isServerCloudResource(item)" :title-only="item.contentInspection" :result="recognitions?.[item.token]" :loading="recognizingTokens?.includes(item.token)" :error="recognitionErrors?.[item.token]" />
+                    <DiscoveryResourceContent v-if="item.contentInspection" :result-token="item.token" :source="source ?? null" :preview="contentPreviews?.[item.token]" :loading="inspectingTokens?.includes(item.token)" :error="contentErrors?.[item.token]" @retry="emit('inspect', item.token)" />
+                    <p v-if="coverages?.[item.token]" class="mt-2 text-xs text-white/50">
+                      作品库内覆盖：{{ coverages[item.token]?.present }} / {{ coverages[item.token]?.total }} · {{ coverages[item.token]?.status === 'unknown' ? '状态待确认' : '以实际媒体库为准' }}
+                    </p>
                   </div>
                   <div class="flex shrink-0 flex-wrap justify-end gap-2">
                     <button class="page-button" type="button" :disabled="recognizingTokens?.includes(item.token) || !!activeGroup.unavailableReason" @click="emit('recognize', item.token)">
