@@ -405,8 +405,9 @@ jobs:
           fs.writeFileSync(cargoPath, updatedCargo)
           NODE
 
+      # tauri-build 2.6 expects the pre-Cargo-1.100 GNU build directory layout.
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: x86_64-pc-windows-gnu
 
