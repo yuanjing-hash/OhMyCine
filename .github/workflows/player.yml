@@ -98,7 +98,8 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      - uses: dtolnay/rust-toolchain@stable
+      # tauri-build 2.6 expects the pre-Cargo-1.100 GNU build directory layout.
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: x86_64-pc-windows-gnu
 

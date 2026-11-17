@@ -105,7 +105,13 @@ export interface ServerFollowRoutePreview {
   routes: Array<{ siteId: number, siteName: string, sourceKind: string, recommended: ServerRoutePair | null, reasonCode?: string, reasonMessage?: string }>
 }
 export interface ServerCoverageSummary { status: string, present: number, missing: number, total: number }
+export type ServerAcquisitionState = 'waiting_capacity' | 'active' | 'observing' | 'reconnecting' | 'cloud_ready' | 'cancelled_stop_pending' | 'clock_unknown'
 export interface ServerAcquisitionStatus {
+  acquisitionState?: ServerAcquisitionState
+  offlineStartedAt?: string
+  offlineDeadlineAt?: string
+  offlineReadyAt?: string
+  offlineStartProvenance?: 'dispatch' | 'accepted' | 'provider_added'
   id?: string
   title?: string
   mediaType: 'movie' | 'tv'
@@ -129,27 +135,50 @@ export interface ServerAcquisitionStatus {
   updatedAt?: string
 }
 export interface ServerAcquisitionPage { list: ServerAcquisitionStatus[], total: number, page: number, pageSize: number }
-export function isTerminalServerAcquisition(value: Pick<ServerAcquisitionStatus, 'stage' | 'status'>): boolean {
+export function isTerminalServerAcquisition(value: Pick<ServerAcquisitionStatus, 'stage' | 'status' | 'acquisitionState'>): boolean {
+  if (value.stage === 'download' && value.acquisitionState === 'cancelled_stop_pending')
+    return false
   return value.stage === 'idle' || ['failed', 'cancelled', 'canceled', 'unavailable'].includes(value.status)
     || (value.stage === 'library' && value.status === 'completed')
 }
 
-export function serverAcquisitionLabel(value: Pick<ServerAcquisitionStatus, 'stage' | 'status' | 'lastErrorCode'> | null | undefined): string {
+export function serverAcquisitionLabel(value: Pick<ServerAcquisitionStatus, 'stage' | 'status' | 'lastErrorCode' | 'acquisitionState'> | null | undefined): string {
   if (!value || value.stage === 'idle')
     return '尚未入库'
   if (value.stage === 'library' && value.status === 'completed')
     return '已入库'
+  if (value.stage === 'download' && value.acquisitionState === 'cancelled_stop_pending')
+    return '已取消 · 云端收尾中'
   if (value.status === 'unavailable')
     return '任务状态暂不可用'
   if (value.status === 'failed')
     return '入库需要处理'
   if (value.status === 'cancelled' || value.status === 'canceled')
     return '入库已取消'
+  if (value.status === 'paused')
+    return '入库已暂停'
+  if (value.stage === 'download' && value.acquisitionState)
+    return ({ waiting_capacity: '等待下载器空位', active: '正在获取资源', observing: '正在获取 · 定期核对', reconnecting: '等待下载器恢复', cloud_ready: '云端所需文件已就绪', cancelled_stop_pending: '已取消 · 云端收尾中', clock_unknown: '等待核实云端起始时间' })[value.acquisitionState]
   if (value.status === 'queued')
     return '等待执行'
   if (value.status === 'publishing')
     return value.lastErrorCode === 'acquisition_publication_unverified' ? '入库结果待核对' : '正在发布入库目录'
   return ({ download: '正在下载', organize: '正在整理', transfer: '正在传输', import: '正在刮削入库', subscription: '订阅等待中' } as Record<string, string>)[value.stage] ?? value.stage
+}
+
+export function serverAcquisitionTiming(value: Pick<ServerAcquisitionStatus, 'offlineStartedAt' | 'offlineDeadlineAt' | 'offlineReadyAt' | 'offlineStartProvenance'> | null): string {
+  if (!value)
+    return ''
+  const format = (time?: string) => time && Number.isFinite(Date.parse(time)) ? new Date(time).toLocaleString('zh-CN', { hour12: false }) : ''
+  const ready = format(value.offlineReadyAt)
+  if (ready)
+    return `云端就绪：${ready}；后续传输与入库继续处理。`
+  const started = format(value.offlineStartedAt)
+  const deadline = format(value.offlineDeadlineAt)
+  if (!started || !deadline)
+    return ''
+  const provenance = { dispatch: '云端提交', accepted: '云端受理', provider_added: '云端添加' }
+  return `${value.offlineStartProvenance ? provenance[value.offlineStartProvenance] : '云端起始'}：${started} · 离线截止：${deadline}`
 }
 
 export interface ServerFollowSnapshot {
@@ -570,7 +599,19 @@ function hasDiscoveryControl(value: string, rejectSpace = false) {
 }
 
 function parseAcquisition(data: Record<string, unknown>, fallbackMediaType: 'movie' | 'tv' = 'movie', fallbackTMDBId = 0): ServerAcquisitionStatus {
+  const state = text(data.acquisition_state)
+  const acquisitionState = state && ['waiting_capacity', 'active', 'observing', 'reconnecting', 'cloud_ready', 'cancelled_stop_pending', 'clock_unknown'].includes(state) ? state as ServerAcquisitionState : undefined
+  const timestamp = (value: unknown) => typeof value === 'string' && value.length <= 64 && Number.isFinite(Date.parse(value)) ? value : undefined
+  const offlineStartedAt = timestamp(data.offline_started_at)
+  const offlineDeadlineAt = timestamp(data.offline_deadline_at)
+  const offlineReadyAt = timestamp(data.offline_ready_at)
+  const offlineStartProvenance = data.offline_start_provenance === 'dispatch' || data.offline_start_provenance === 'accepted' || data.offline_start_provenance === 'provider_added' ? data.offline_start_provenance : undefined
   return {
+    ...(acquisitionState ? { acquisitionState } : {}),
+    ...(offlineStartedAt ? { offlineStartedAt } : {}),
+    ...(offlineDeadlineAt ? { offlineDeadlineAt } : {}),
+    ...(offlineReadyAt ? { offlineReadyAt } : {}),
+    ...(offlineStartProvenance ? { offlineStartProvenance } : {}),
     id: text(data.id),
     title: text(data.title),
     mediaType: data.media_type === 'tv' ? 'tv' : fallbackMediaType,

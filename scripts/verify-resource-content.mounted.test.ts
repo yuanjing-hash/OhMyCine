@@ -6,7 +6,8 @@ import { defineComponent, ref, shallowRef } from 'vue'
 import Content from '../src/components/server/DiscoveryResourceContent.vue'
 import Acquisition from '../src/components/server/DiscoveryAcquisitionDialog.vue'
 import { useServerResourceRecognition } from '../src/composables/useServerResourceRecognition'
-import { ServerDataSource } from '../src/services/datasource/server'
+import { ServerDataSource, ServerRequestError } from '../src/services/datasource/server'
+import { getServerAcquisition, isTerminalServerAcquisition, serverAcquisitionLabel, serverAcquisitionTiming } from '../src/services/serverDiscovery'
 import { parseServerResourceContent } from '../src/services/serverResourceContent'
 import { parseServerSubtitlePolicy } from '../src/services/serverSubtitlePolicy'
 
@@ -119,9 +120,38 @@ it('rejects expired/unsafe content, strips private metadata, and validates subti
 })
 
 it('sends the frozen opaque selection through the final download field and never native file indices', async () => {
-  const server = await fixture(() => ({}))
+  const server = await fixture(path => path.includes('/acquisition') ? { stage: 'download', status: 'retry_wait', acquisition_state: 'observing', offline_started_at: '2026-11-13T00:00:00Z', offline_deadline_at: '2026-11-13T00:30:00Z', offline_start_provenance: 'dispatch' } : {})
   await server.source.createDiscoveryDownload({ result_token: 'result', downloader_id: 'qbit', priority: 0, content_selection_token: 'opaque-selected-files' })
   expect(server.calls.at(-1)).toEqual({ path: '/api/v1/player/discovery/downloads', body: { result_token: 'result', downloader_id: 'qbit', priority: 0, content_selection_token: 'opaque-selected-files' } })
+  const acquisition = await getServerAcquisition(server.source, 'movie', 100)
+  expect(serverAcquisitionLabel(acquisition)).toBe('正在获取 · 定期核对')
+  expect(serverAcquisitionLabel({ ...acquisition, status: 'failed', acquisitionState: 'cloud_ready' })).toBe('入库需要处理')
+  expect(serverAcquisitionLabel({ ...acquisition, status: 'paused', acquisitionState: 'cloud_ready' })).toBe('入库已暂停')
+  expect(serverAcquisitionLabel({ ...acquisition, status: 'cancelled', acquisitionState: 'cancelled_stop_pending' })).toBe('已取消 · 云端收尾中')
+  expect(isTerminalServerAcquisition({ ...acquisition, status: 'cancelled', acquisitionState: 'cancelled_stop_pending' })).toBe(false)
+  expect(isTerminalServerAcquisition({ ...acquisition, status: 'cancelled', acquisitionState: undefined })).toBe(true)
+  expect(serverAcquisitionTiming(acquisition)).toContain('云端提交')
+  const warning = { version: 1, reason: 'offline_deadline_exceeded', timeout_minutes: 30, confirmation_token: 'a'.repeat(64) }
+  const bodies: unknown[] = []
+  let version = 1
+  const guarded = new ServerDataSource({ readCredential: async () => ({ accessToken: `omc_player_${'b'.repeat(43)}` }), bridge: { request: async request => {
+    bodies.push(request.body)
+    return { status: 409, body: { code: 40901, message: '需要确认', data: { error_code: 'offline_resource_confirmation_required', offline_failure_warning: { ...warning, version, private_url: 'secret', old_owner_id: 99 }, private_url: 'secret' } } }
+  } } })
+  await guarded.init({ id: 'guarded', name: 'Guarded', type: 'server', enabled: true, order: 0, url: 'http://server.example.test', extra: { credentialRef: 'fixture-only' } })
+  cleanup.push(() => guarded.destroy())
+  const input = { result_token: 'result', downloader_id: 'qbit', priority: 0, content_selection_token: 'opaque-selected-files' }
+  const error = await guarded.createDiscoveryDownload(input).catch(error => error) as ServerRequestError
+  expect(error).toBeInstanceOf(ServerRequestError)
+  expect(error.code).toBe('offline_resource_confirmation_required')
+  expect(error.offlineFailureWarning).toEqual({ version: 1, reason: 'offline_deadline_exceeded', timeoutMinutes: 30, confirmationToken: warning.confirmation_token })
+  expect(JSON.stringify(error)).not.toContain('secret')
+  expect(bodies[0]).not.toHaveProperty('offline_failure_override_token')
+  version = 2
+  const unsupported = await guarded.createDiscoveryDownload({ ...input, offline_failure_override_token: warning.confirmation_token }).catch(error => error) as ServerRequestError
+  expect(unsupported.offlineFailureWarning).toBeUndefined()
+  expect(bodies[1]).toEqual({ ...input, offline_failure_override_token: warning.confirmation_token })
+
 })
 
 it('keeps files mode blocked after metadata failure, and requires explicit whole-resource opt-in for trusted BT', async () => {
@@ -138,6 +168,17 @@ it('keeps files mode blocked after metadata failure, and requires explicit whole
   expect(button('确认入库').attributes('disabled')).toBeUndefined()
   await button('确认入库').trigger('click')
   expect(wrapper.emitted('confirm')?.[0]?.[0]).toEqual({ downloaderId: 'qbit', libraryId: 1, contentMode: 'all' })
+  await wrapper.setProps({ offlineFailureWarning: { version: 1, reason: 'offline_deadline_exceeded', timeoutMinutes: 30, confirmationToken: 'a'.repeat(64) } })
+  expect(wrapper.get('footer').findAll('button').map(button => button.text())).toEqual(['选择其他资源', '继续下载'])
+  await button('继续下载').trigger('click')
+  expect(wrapper.emitted('continueDownload')).toHaveLength(1)
+  await wrapper.setProps({ submitting: true })
+  expect(button('继续下载').attributes('disabled')).toBeDefined()
+  await wrapper.setProps({ submitting: false })
+  await button('选择其他资源').trigger('click')
+  expect(wrapper.emitted('chooseOtherResource')).toHaveLength(1)
+  await wrapper.setProps({ offlineFailureWarning: undefined })
+
   await wrapper.get('input[type="checkbox"]').setValue(false)
   expect(button('确认入库').attributes('disabled')).toBeDefined()
 })

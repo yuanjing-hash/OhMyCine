@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { useRoute } from 'vue-router'
+import { ServerRequestError } from '../src/services/datasource/server'
 import Detail from '../src/views/ServerDiscoveryDetailView.vue'
 import Picker from '../src/components/server/DiscoverySitePickerDialog.vue'
 import Workspace from '../src/components/server/DiscoverySearchWorkspace.vue'
@@ -14,6 +15,8 @@ const acquisition = vi.hoisted(() => vi.fn())
 const followDefaults = vi.hoisted(() => vi.fn())
 const followPreview = vi.hoisted(() => vi.fn())
 const createFollow = vi.hoisted(() => vi.fn())
+const createDownload = vi.hoisted(() => vi.fn())
+const recommendRoute = vi.hoisted(() => vi.fn())
 const recognizeResource = vi.hoisted(() => vi.fn())
 const resourceFixture = vi.hoisted(() => ({ item: { token: 'fixture-token', title: 'Fixture result', resultType: 'magnet' } as Record<string, unknown> }))
 vi.mock('vue-router', async () => {
@@ -21,8 +24,9 @@ vi.mock('vue-router', async () => {
   const route = reactive({ params: { sourceId: 'fixture', provider: 'tmdb', mediaType: 'movie', providerId: '100' }, query: {}, fullPath: '/fixture' })
   return { useRoute: () => route, useRouter: () => ({ replace: vi.fn() }) }
 })
-vi.mock('@/services/datasource/server', () => ({ ServerDataSource: class {
-  async refreshCapabilities() { return ['discovery_search', 'mixed_discovery_v1', 'subscription_create'] }
+vi.mock('@/services/datasource/server', () => ({ ServerRequestError: class extends Error { constructor(message: string, readonly status: number, readonly code?: string, readonly offlineFailureWarning?: unknown) { super(message) } }, ServerDataSource: class {
+  async refreshCapabilities() { return ['discovery_search', 'mixed_discovery_v1', 'subscription_create', 'acquisition_create'] }
+  createDiscoveryDownload(input: unknown) { return createDownload(input) }
   createDiscoveryFollow(input: unknown) { return createFollow(input) }
   recognizeDiscoveryResource(token: string) { return recognizeResource(token) }
 } }))
@@ -41,7 +45,7 @@ vi.mock('@/services/serverDiscovery', async original => ({
   getServerDiscoveryDetail: details,
   getServerCoverage: coverage, getServerAcquisition: acquisition,
   getServerSearchSites: siteLists,
-  getServerFollowDefaults: followDefaults, getServerFollowRoutePreview: followPreview, getServerResourceLink: vi.fn(), getServerRouteRecommendation: vi.fn(),
+  getServerFollowDefaults: followDefaults, getServerFollowRoutePreview: followPreview, getServerResourceLink: vi.fn(), getServerRouteRecommendation: recommendRoute,
   streamServerResources: async (_source: unknown, input: Record<string, unknown>, event: (value: unknown) => void) => {
     calls.push(input)
     event({ type: 'site', group: { siteId: 8, siteName: 'PanSou', status: 'success', page: input.page, hasNext: input.page === 1, skipped: 0, snapshotId: 'owned-snapshot', items: [resourceFixture.item] } })
@@ -57,6 +61,8 @@ beforeEach(() => {
   followDefaults.mockReset()
   followPreview.mockReset().mockImplementation(async (_source, siteIds: number[], libraryId: number) => ({ available: true, routes: siteIds.map(siteId => ({ siteId, siteName: `站点 ${siteId}`, sourceKind: 'bt', recommended: { downloaderId: 'qbit', libraryId } })) }))
   createFollow.mockReset().mockResolvedValue({})
+  createDownload.mockReset().mockResolvedValue({ id: 'accepted' })
+  recommendRoute.mockReset().mockResolvedValue({ sourceKind: 'bt', recommended: { downloaderId: 'qbit', libraryId: 1 }, choices: [{ downloaderId: 'qbit', downloaderName: 'qB', libraryId: 1, libraryName: 'Library', enabled: true }] })
   recognizeResource.mockReset().mockResolvedValue({ status: 'matched', title: 'Fixture', media_type: 'movie' })
   resourceFixture.item = { token: 'fixture-token', title: 'Fixture result', resultType: 'magnet' }
   const route = useRoute()
@@ -424,4 +430,45 @@ it('does not synthesize subtitle settings when an older Server does not advertis
     await confirmSubscription(wrapper).trigger('click'); await flushPromises()
     expect(createFollow.mock.calls.at(-1)?.[0].snapshot.filters).toEqual({})
   } finally { wrapper.unmount() }
+})
+
+it('keeps one frozen Server acquisition through confirmation, lost ACK and stale source retirement', async () => {
+  const warning = { version: 1 as const, reason: 'offline_deadline_exceeded' as const, timeoutMinutes: 30 as const, confirmationToken: 'a'.repeat(64) }
+  const needsConfirmation = () => new ServerRequestError('需要确认', 409, 'offline_resource_confirmation_required', warning)
+  const wrapper = render()
+  try {
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '搜索')!.trigger('click'); await flushPromises()
+    wrapper.findComponent(Picker).vm.$emit('search'); await flushPromises()
+    const dialog = () => wrapper.findComponent({ name: 'DiscoveryAcquisitionDialog' })
+    const open = async () => { wrapper.findComponent(Workspace).vm.$emit('selectResource', resourceFixture.item); await flushPromises() }
+    const selection = { downloaderId: 'qbit', libraryId: 1, contentSelection: { selectionToken: 'exact-selection' } }
+    createDownload.mockRejectedValueOnce(needsConfirmation())
+    await open(); dialog().vm.$emit('confirm', selection); await flushPromises()
+    expect(dialog().props('offlineFailureWarning')).toEqual(warning)
+    dialog().vm.$emit('chooseOtherResource'); await flushPromises()
+    expect(createDownload).toHaveBeenCalledTimes(1)
+    expect(dialog().props('open')).toBe(false)
+    createDownload.mockRejectedValueOnce(needsConfirmation())
+    await open(); dialog().vm.$emit('confirm', selection); await flushPromises()
+    const original = createDownload.mock.calls.at(-1)![0]
+    expect(original).toMatchObject({ result_token: 'fixture-token', content_selection_token: 'exact-selection', downloader_id: 'qbit', media_library_id: 1 })
+    expect(original).not.toHaveProperty('offline_failure_override_token')
+    createDownload.mockRejectedValueOnce(new Error('reply lost'))
+    dialog().vm.$emit('continueDownload'); await flushPromises()
+    const confirmed = { ...original, offline_failure_override_token: warning.confirmationToken }
+    expect(createDownload.mock.calls.at(-1)![0]).toEqual(confirmed)
+    expect(dialog().props('offlineFailureWarning')).toEqual(warning)
+    let finish!: (value: unknown) => void
+    createDownload.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    dialog().vm.$emit('continueDownload'); dialog().vm.$emit('continueDownload'); await flushPromises()
+    expect(createDownload).toHaveBeenCalledTimes(4)
+    expect(createDownload.mock.calls.at(-1)![0]).toEqual(confirmed)
+    const route = useRoute(); route.params.sourceId = 'next'; route.fullPath = '/next'; await flushPromises()
+    finish({ id: 'accepted-on-original-server' }); await flushPromises()
+    expect(dialog().props('open')).toBe(false)
+    expect(dialog().props('offlineFailureWarning')).toBeUndefined()
+    expect(dialog().props('submitting')).toBe(false)
+  }
+  finally { wrapper.unmount() }
 })

@@ -1,20 +1,23 @@
 <script setup lang="ts">
+import type { ServerDiscoveryDownloadInput } from '@/services/datasource/server'
 import type { ServerAcquisitionStatus, ServerCoverageSummary, ServerDiscoveryDetail, ServerDiscoveryTypePolicy, ServerFollowDefaults, ServerFollowRoutePreview, ServerLibraryOption, ServerResourceItem, ServerResourceSearchInput, ServerRouteRecommendation, ServerSearchSite } from '@/services/serverDiscovery'
+import type { ServerOfflineFailureWarning } from '@/services/serverOfflineFailure'
 import type { ServerContentSelection } from '@/services/serverResourceContent'
 import type { ServerShareSelection } from '@/services/serverSharePreview'
 import type { ServerSubtitleLanguage, ServerSubtitlePolicy } from '@/services/serverSubtitlePolicy'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MediaDetailHero from '@/components/media/MediaDetailHero.vue'
 import DiscoveryAcquisitionDialog from '@/components/server/DiscoveryAcquisitionDialog.vue'
 import DiscoverySearchWorkspace from '@/components/server/DiscoverySearchWorkspace.vue'
 import DiscoverySitePickerDialog from '@/components/server/DiscoverySitePickerDialog.vue'
 import { useServerResourceRecognition } from '@/composables/useServerResourceRecognition'
-import { ServerDataSource } from '@/services/datasource/server'
+import { ServerDataSource, ServerRequestError } from '@/services/datasource/server'
 import { registerLayoutBackHandler } from '@/services/layoutBackNavigation'
 import { publishFeedback } from '@/services/mediaActions'
-import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerFollowDefaults, getServerFollowRoutePreview, getServerResourceLink, getServerRouteRecommendation, getServerSearchSites, isTerminalServerAcquisition, serverAcquisitionLabel, streamServerResources } from '@/services/serverDiscovery'
+import { getServerAcquisition, getServerCoverage, getServerDiscoveryDetail, getServerFollowDefaults, getServerFollowRoutePreview, getServerResourceLink, getServerRouteRecommendation, getServerSearchSites, isTerminalServerAcquisition, serverAcquisitionLabel, serverAcquisitionTiming, streamServerResources } from '@/services/serverDiscovery'
 import { beginResourceSearch, emptyResourceSearch, finishResourceSearch, reduceResourceSearch, resourceGroupRetryPage, ResourceSearchController } from '@/services/serverDiscoverySearch'
+import { serverOfflineConfirmationCode } from '@/services/serverOfflineFailure'
 import { serverResourceAllowsWhole } from '@/services/serverResourceContent'
 import { previewServerShare } from '@/services/serverSharePreview'
 import { serverSubtitleLanguages } from '@/services/serverSubtitlePolicy'
@@ -55,6 +58,9 @@ const sitePickerOpen = ref(false)
 const resultWorkspaceOpen = ref(false)
 const acquisitionDialogOpen = ref(false)
 const selectedResource = ref<ServerResourceItem | null>(null)
+interface OfflineAcquisitionConfirmation { warning: ServerOfflineFailureWarning, source: ServerDataSource, ownerKey: string, payload: ServerDiscoveryDownloadInput }
+const offlineConfirmation = shallowRef<OfflineAcquisitionConfirmation | null>(null)
+let acquisitionSubmitSequence = 0
 const followOpen = ref(false)
 const followLoading = ref(false)
 const subscribing = ref(false)
@@ -93,6 +99,12 @@ const recognitionSource = computed(() => {
   const current = store.getSource(sourceId.value)
   return current instanceof ServerDataSource ? current : null
 })
+const acquisitionOwnerKey = computed(() => {
+  const config = store.orderedConfigs.find(item => item.id === sourceId.value)
+  return JSON.stringify([sourceId.value, config?.url, config?.extra?.credentialRef, config?.extra?.credentialVersion])
+})
+watch([recognitionSource, acquisitionOwnerKey, acquisitionDialogOpen, () => selectedResource.value?.token], () => invalidateAcquisitionConfirmation(), { flush: 'sync' })
+
 const recognitionItems = computed(() => {
   if (resourceResultsOwner.value !== `${route.fullPath}:${resourceSearchGeneration.value}`)
     return []
@@ -401,6 +413,7 @@ function refreshResourceTypes() {
 }
 
 async function loadRouteRecommendation(libraryId?: number) {
+  invalidateAcquisitionConfirmation()
   const resource = selectedResource.value
   if (!resource)
     return
@@ -446,15 +459,34 @@ async function loadAcquisitionSharePreview(downloaderId: string) {
   return preview
 }
 
+function invalidateAcquisitionConfirmation() {
+  offlineConfirmation.value = null
+  acquisitionSubmitSequence++
+  submitting.value = false
+  busyToken.value = ''
+}
+
+function chooseOtherAcquisitionResource() {
+  acquisitionDialogOpen.value = false
+  invalidateAcquisitionConfirmation()
+}
+
+async function continueOfflineAcquisition() {
+  const pending = offlineConfirmation.value
+  if (!pending || submitting.value)
+    return
+  if (pending.ownerKey !== acquisitionOwnerKey.value || recognitionSource.value !== pending.source) {
+    invalidateAcquisitionConfirmation()
+    return
+  }
+  await sendAcquisition(pending.payload, pending.source)
+}
+
 async function submitAcquisition(options: { downloaderId: string, libraryId: number, shareSelection?: ServerShareSelection, contentSelection?: ServerContentSelection, contentMode?: 'all' | 'files' }) {
   const resource = selectedResource.value
   const work = detail.value?.work
-  if (submitting.value || !resource || !work?.tmdbId)
+  if (submitting.value || offlineConfirmation.value || !resource || !work?.tmdbId)
     return
-  const origin = sourceId.value
-  const generation = routeGeneration
-  const submittedMediaType = mediaType.value
-  const current = () => origin === sourceId.value && generation === routeGeneration && selectedResource.value?.token === resource.token && acquisitionDialogOpen.value
   const whole = options.contentMode === 'all' && serverResourceAllowsWhole(resource, routeRecommendation.value?.sourceKind) && !options.contentSelection
   if (resource.contentInspection && !options.contentSelection && !whole) {
     publishFeedback({ id: Date.now(), kind: 'error', message: '请先确认需要下载的实际文件。' })
@@ -464,39 +496,64 @@ async function submitAcquisition(options: { downloaderId: string, libraryId: num
     publishFeedback({ id: Date.now(), kind: 'error', message: '请先预览分享并选择需要转存的文件。' })
     return
   }
+  await sendAcquisition({
+    result_token: resource.token,
+    downloader_id: options.downloaderId,
+    media_library_id: options.libraryId,
+    priority: 0,
+    expected_tmdb_id: work.tmdbId,
+    expected_media_type: mediaType.value,
+    ...(resource.contentInspection ? { content_mode: whole ? 'all' as const : 'files' as const } : {}),
+    ...(options.contentSelection ? { content_selection_token: options.contentSelection.selectionToken } : {}),
+    ...(options.shareSelection ? { preview_token: options.shareSelection.previewToken, selected_entry_tokens: [...options.shareSelection.entryTokens] } : {}),
+  })
+}
+
+async function sendAcquisition(payload: ServerDiscoveryDownloadInput, originalSource?: ServerDataSource) {
+  const resource = selectedResource.value
+  const work = detail.value?.work
+  if (!resource || !work?.tmdbId || !acquisitionDialogOpen.value)
+    return
+  const origin = sourceId.value
+  const ownerKey = acquisitionOwnerKey.value
+  const generation = routeGeneration
+  const sequence = ++acquisitionSubmitSequence
+  let source = originalSource
+  const current = () => sequence === acquisitionSubmitSequence && origin === sourceId.value && ownerKey === acquisitionOwnerKey.value && generation === routeGeneration && selectedResource.value?.token === resource.token && acquisitionDialogOpen.value && (!source || store.getSource(origin) === source)
   submitting.value = true
   busyToken.value = resource.token
   try {
-    const source = await resolveSource()
-    if (!current() || store.getSource(origin) !== source)
+    source ??= await resolveSource()
+    if (!current())
       return
-    await source.createDiscoveryDownload({
-      result_token: resource.token,
-      downloader_id: options.downloaderId,
-      media_library_id: options.libraryId,
-      priority: 0,
-      expected_tmdb_id: work.tmdbId,
-      expected_media_type: submittedMediaType,
-      ...(resource.contentInspection ? { content_mode: whole ? 'all' as const : 'files' as const } : {}),
-      ...(options.contentSelection ? { content_selection_token: options.contentSelection.selectionToken } : {}),
-      ...(options.shareSelection ? { preview_token: options.shareSelection.previewToken, selected_entry_tokens: options.shareSelection.entryTokens } : {}),
-    })
-    if (!current() || store.getSource(origin) !== source)
+    await source.createDiscoveryDownload(payload)
+    if (!current())
       return
-    const result = await getServerAcquisition(source, submittedMediaType, work.tmdbId)
-    if (!current() || store.getSource(origin) !== source)
-      return
-    acquisition.value = result
+    // Acceptance ends this submission. A later status-read failure must not reopen it.
+    offlineConfirmation.value = null
     acquisitionDialogOpen.value = false
-    scheduleStatusRefresh(true)
     publishFeedback({ id: Date.now(), kind: 'success', message: `《${work.title}》已进入 Server 入库流程，可从右侧“入库任务”持续查看。` })
+    try {
+      const result = await getServerAcquisition(source, payload.expected_media_type ?? 'movie', work.tmdbId)
+      if (origin !== sourceId.value || ownerKey !== acquisitionOwnerKey.value || generation !== routeGeneration || store.getSource(origin) !== source)
+        return
+      acquisition.value = result
+      scheduleStatusRefresh(true)
+    }
+    catch { /* Accepted task remains available in the existing Server acquisition workspace. */ }
   }
   catch (reason) {
-    if (current())
-      publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
+    if (!current())
+      return
+    if (source && reason instanceof ServerRequestError && reason.code === serverOfflineConfirmationCode && reason.offlineFailureWarning) {
+      offlineConfirmation.value = { source, ownerKey, warning: reason.offlineFailureWarning, payload: { ...payload, offline_failure_override_token: reason.offlineFailureWarning.confirmationToken } }
+      return
+    }
+    // Retain the exact token/request after a lost reply for Server's accepted-task replay.
+    publishFeedback({ id: Date.now(), kind: 'error', message: message(reason) })
   }
   finally {
-    if (origin === sourceId.value && generation === routeGeneration && busyToken.value === resource.token) {
+    if (sequence === acquisitionSubmitSequence) {
       submitting.value = false
       busyToken.value = ''
     }
@@ -802,6 +859,9 @@ onBeforeUnmount(() => {
             </template>
           </p>
         </div>
+        <p v-if="serverAcquisitionTiming(acquisition)" class="w-full text-xs text-white/45">
+          {{ serverAcquisitionTiming(acquisition) }}
+        </p>
         <div v-if="acquisitionProgress != null" class="h-1.5 w-40 overflow-hidden rounded-full bg-white/8">
           <div class="h-full rounded-full bg-white/80" :style="{ width: `${acquisitionProgress}%` }" />
         </div>
@@ -809,7 +869,7 @@ onBeforeUnmount(() => {
 
       <DiscoverySitePickerDialog :open="sitePickerOpen" :sites="sites" :selected-site-ids="selectedSiteIds" :loading="loadingSites" :mode="pendingSearchMode" :direct-kind="directKind" :direct-query="directQuery" :tmdb-id="detail.work.tmdbId" @close="sitePickerOpen = false" @search="runSearch()" @toggle-site="toggleSite" @toggle-all="toggleAllSites" @update-direct-kind="directKind = $event" @update-direct-query="directQuery = $event" />
       <DiscoverySearchWorkspace :open="resultWorkspaceOpen" :title="detail.work.title" :state="searchState" :active-site-id="activeSiteId" :can-acquire="canAcquire" :busy-token="busyToken" :mixed-supported="mixedSupported" :type-policy="discoveryTypePolicy" :cloud-types="discoveryCloudTypes" :copying-token="copyingToken" :recognitions="resourceRecognitions" :recognizing-tokens="resourceRecognizingTokens" :recognition-errors="resourceRecognitionErrors" :source="recognitionSource" :content-previews="resourceRecognition.contentPreviews.value" :content-errors="resourceRecognition.contentErrors.value" :inspecting-tokens="resourceRecognition.inspectingTokens.value" :coverages="resourceRecognition.coverages.value" @inspect="resourceRecognition.retryContent" @recognize="resourceRecognition.retry" @close="resultWorkspaceOpen = false" @cancel="cancelSearch" @retry="retrySite" @select-site="activeSiteId = $event" @select-resource="openAcquisition" @page="changeSitePage" @copy-resource="copyResourceLink" @update-type-policy="discoveryTypePolicy = $event" @update-cloud-types="discoveryCloudTypes = $event" @refresh="refreshResourceTypes" />
-      <DiscoveryAcquisitionDialog :key="sourceId" :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" :load-share-preview="loadAcquisitionSharePreview" :source="recognitionSource" :content-preview="selectedResource ? resourceRecognition.contentPreviews.value[selectedResource.token] : undefined" @content-preview="resourceRecognition.acceptContent" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" @share-analysis="resourceRecognition.acceptAnalysis" />
+      <DiscoveryAcquisitionDialog :key="sourceId" :open="acquisitionDialogOpen" :resource="selectedResource" :libraries="libraries" :recommendation="routeRecommendation" :route-error="routeError" :loading="loadingTargets" :submitting="submitting" :offline-failure-warning="offlineConfirmation?.warning" :load-share-preview="loadAcquisitionSharePreview" :source="recognitionSource" :content-preview="selectedResource ? resourceRecognition.contentPreviews.value[selectedResource.token] : undefined" @content-preview="resourceRecognition.acceptContent" @close="acquisitionDialogOpen = false" @select-library="loadRouteRecommendation($event)" @retry="loadRouteRecommendation($event)" @confirm="submitAcquisition" @continue-download="continueOfflineAcquisition" @choose-other-resource="chooseOtherAcquisitionResource" @invalidate-confirmation="invalidateAcquisitionConfirmation" @share-analysis="resourceRecognition.acceptAnalysis" />
 
       <div v-if="followOpen" class="follow-layer fixed inset-0 z-[1210] grid place-items-center p-4" @click.self="!subscribing && (followOpen = false)">
         <section class="follow-card glass-panel max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-[28px] p-6 cinema-scrollbar">
