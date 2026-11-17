@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
+import process from 'node:process'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import SevenZip from '7z-wasm'
@@ -17,6 +18,17 @@ const windowsMpvArchive = {
   fileName: 'mpv-dev-lgpl-x86_64-20261009-git-fd9265a905.7z',
   sha256: '7978aa8f00bcdbf21d300c97e96975e7a5b4a1c720d5ad331638cf9d21d7e73c',
 }
+// The upstream rolling releases can retire an old pinned archive. Recover the
+// same runtime from our published package; never silently upgrade libmpv.
+const windowsMpvRecovery = {
+  url: 'https://github.com/yuanjing-hash/OhMyCine/releases/download/v1.1.80/OhMyCine-Player-v1.1.80-windows-x64-standard.zip',
+  archiveName: 'OhMyCine-Player-v1.1.80-windows-x64-standard.zip',
+  archiveSha256: '5f80b7e49dc93e288b96a4a297a17ca3b94f366d070767ae9420c9fcc7299d53',
+  member: 'OhMyCine-Player-v1.1.80-windows-x64/libmpv-2.dll',
+  dllSha256: 'bed9c39249b74554305e128d3f19c1348c7010832c8f4794daa24a9ed881d8e2',
+  importLibrary: 'scripts/runtime/mpv-windows-x86_64-20261009.dll.a',
+  importSha256: 'bef1b89f534bc86b33135e1f04fa2d5064b9d48b5de8bc9866665bbf43def793',
+}
 const wrapperArchives = {
   'linux-x86_64': ['libmpv-wrapper-linux-x86_64.zip', '1583564042f10be25166b52b6fe02db6d87cf9cef34985ba517048c044b7eee0'],
   'windows-x86_64': ['libmpv-wrapper-windows-x86_64.zip', 'd2ff8b2edcd34d2968e544adaa915e5e5c48eb1a0995945005269c2af119a492'],
@@ -25,19 +37,19 @@ const wrapperArchives = {
 }
 
 const targets = {
-  linux: {
+  'linux': {
     osName: 'linux',
     archName: 'x86_64',
     wrapperLibName: 'libmpv-wrapper.so',
     downloadsMpv: false,
   },
-  windows: {
+  'windows': {
     osName: 'windows',
     archName: 'x86_64',
     wrapperLibName: 'libmpv-wrapper.dll',
     downloadsMpv: true,
   },
-  macos: {
+  'macos': {
     osName: 'macos',
     archName: 'x86_64',
     wrapperLibName: 'libmpv-wrapper.dylib',
@@ -56,10 +68,17 @@ function ensureDir(path) {
   mkdirSync(path, { recursive: true })
 }
 
+class DownloadHttpError extends Error {
+  constructor(url, response) {
+    super(`Failed to fetch ${url}: ${response.status} ${response.statusText}`)
+    this.status = response.status
+  }
+}
+
 async function downloadFile(url, destPath) {
   const res = await fetch(url, { signal: AbortSignal.timeout(180_000) })
   if (!res.ok)
-    throw new Error(`Failed to fetch ${url}: ${res.status} ${res.statusText}`)
+    throw new DownloadHttpError(url, res)
   await pipeline(res.body, createWriteStream(destPath))
 }
 
@@ -69,7 +88,7 @@ function verifySha256(path, expectedSha256) {
     throw new Error(`Runtime checksum mismatch for ${basename(path)}: expected ${expectedSha256}, got ${actualSha256}`)
 }
 
-async function extractArchive(archivePath, extractDir) {
+async function extractArchive(archivePath, extractDir, members = []) {
   rmSync(extractDir, { recursive: true, force: true })
   ensureDir(extractDir)
 
@@ -80,7 +99,7 @@ async function extractArchive(archivePath, extractDir) {
   sevenZip.FS.mount(sevenZip.NODEFS, { root: extractDir }, '/archive_dest')
 
   try {
-    sevenZip.callMain(['x', `/archive_source/${basename(archivePath)}`, '-o/archive_dest', '-y'])
+    sevenZip.callMain(['x', `/archive_source/${basename(archivePath)}`, '-o/archive_dest', '-y', ...members])
   }
   catch (error) {
     if (error?.status !== 0)
@@ -163,7 +182,16 @@ async function installWindowsMpv(target) {
   const extractDir = join(tempDir, 'mpv-windows')
 
   console.log(`downloading ${fileName}`)
-  await downloadFile(`${mpvBaseUrl}/${fileName}`, archivePath)
+  try {
+    await downloadFile(`${mpvBaseUrl}/${fileName}`, archivePath)
+  }
+  catch (error) {
+    if (!(error instanceof DownloadHttpError) || ![404, 410].includes(error.status))
+      throw error
+
+    await recoverWindowsMpv()
+    return
+  }
   verifySha256(archivePath, expectedSha256)
   await extractArchive(archivePath, extractDir)
 
@@ -172,6 +200,27 @@ async function installWindowsMpv(target) {
   // mpv.lib, so keep both conventional file names without requiring VS tools.
   moveExtractedFile(extractDir, 'libmpv-2.dll')
   moveExtractedFile(extractDir, 'libmpv.dll.a')
+  copyInstalledFile('libmpv.dll.a', 'mpv.lib')
+}
+
+async function recoverWindowsMpv() {
+  const recovery = windowsMpvRecovery
+  const importLibrary = resolve(rootDir, recovery.importLibrary)
+  verifySha256(importLibrary, recovery.importSha256)
+
+  const archivePath = join(tempDir, recovery.archiveName)
+  const extractDir = join(tempDir, 'mpv-windows-recovery')
+  console.warn('Pinned upstream mpv archive retired; recovering the identical published Windows runtime')
+  await downloadFile(recovery.url, archivePath)
+  verifySha256(archivePath, recovery.archiveSha256)
+  await extractArchive(archivePath, extractDir, [recovery.member])
+
+  const dllPath = findFile(extractDir, 'libmpv-2.dll')
+  if (!dllPath)
+    throw new Error('libmpv-2.dll not found in the pinned recovery package')
+  verifySha256(dllPath, recovery.dllSha256)
+  moveExtractedFile(extractDir, 'libmpv-2.dll')
+  copyFileSync(importLibrary, join(targetDir, 'libmpv.dll.a'))
   copyInstalledFile('libmpv.dll.a', 'mpv.lib')
 }
 
