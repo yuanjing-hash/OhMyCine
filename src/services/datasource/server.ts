@@ -1,12 +1,14 @@
 import type { ServerCredentialValue } from './credentialStore'
 import type { OnlineLibrarySummary } from './serverOnline'
 import type { DataSource, DataSourceConfig, DataSourceMediaChange, HomeSection, MediaAcquisitionState, MediaDetail, MediaIdentity, MediaItem, MediaLibrary, MediaSourceOption, MediaStreamRequest, PlaybackDanmakuTrack, PlaybackRequest, ProviderCollectionOption, ProviderDanmakuComment, ProviderPlaybackHistoryPage, ProviderPlaybackHistoryRequest, ProviderPlaybackProgressInput, SiteActionKey } from './types'
+import type { ServerOfflineFailureWarning } from '@/services/serverOfflineFailure'
 import type { ServerContentPreviewInput, ServerContentSelectionInput } from '@/services/serverResourceContent'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { getAppSetting, setAppSetting } from '@/services/appSettings'
 import { registerServerArtworkSource, unregisterServerArtworkSource } from '@/services/imageCache'
 import { resolveServerArtworkURL } from '@/services/serverArtwork'
 import { getServerAcquisition, getServerDiscoveryDetail } from '@/services/serverDiscovery'
+import { parseServerOfflineFailureWarning, serverOfflineConfirmationCode } from '@/services/serverOfflineFailure'
 import { createCredentialRef, readServerCredential, saveServerCredential } from './credentialStore'
 import { redactSensitiveText } from './errors'
 import { playbackTargetsForItem } from './identityMerge'
@@ -217,8 +219,23 @@ interface ServerMediaChangePage {
   changeCount: number
 }
 
+export interface ServerDiscoveryDownloadInput {
+  result_token: string
+  downloader_id: string
+  media_library_id?: number
+  profile_id?: number
+  priority: number
+  expected_tmdb_id?: number
+  expected_media_type?: 'movie' | 'tv'
+  content_mode?: 'all' | 'files'
+  content_selection_token?: string
+  preview_token?: string
+  selected_entry_tokens?: string[]
+  offline_failure_override_token?: string
+}
+
 export class ServerRequestError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) {
+  constructor(message: string, readonly status: number, readonly code?: string, readonly offlineFailureWarning?: ServerOfflineFailureWarning) {
     super(message)
     this.name = 'ServerRequestError'
   }
@@ -541,7 +558,7 @@ export class ServerDataSource implements DataSource {
     return this.request('/api/v1/player/discovery/content-selection', 'POST', { result_token: payload.result_token, preview_token: payload.preview_token, selected_entry_tokens: [...payload.selected_entry_tokens] })
   }
 
-  async createDiscoveryDownload(payload: { result_token: string, downloader_id: string, media_library_id?: number, profile_id?: number, priority: number, expected_tmdb_id?: number, expected_media_type?: 'movie' | 'tv', content_mode?: 'all' | 'files', content_selection_token?: string, preview_token?: string, selected_entry_tokens?: string[] }): Promise<unknown> {
+  async createDiscoveryDownload(payload: ServerDiscoveryDownloadInput): Promise<unknown> {
     return this.request('/api/v1/player/discovery/downloads', 'POST', payload)
   }
 
@@ -1398,7 +1415,8 @@ export class ServerDataSource implements DataSource {
         const message = typeof envelope.message === 'string' ? envelope.message : `Server 请求失败（HTTP ${response.status}）`
         const rawCode = isRecord(envelope.data) && typeof envelope.data.error_code === 'string' ? envelope.data.error_code : envelope.code
         const code = typeof rawCode === 'string' && /^\w{1,80}$/.test(rawCode) ? rawCode : undefined
-        throw new ServerRequestError(redactSensitiveText(message), response.status, code)
+        const warning = code === serverOfflineConfirmationCode && isRecord(envelope.data) ? parseServerOfflineFailureWarning(envelope.data.offline_failure_warning) : undefined
+        throw new ServerRequestError(redactSensitiveText(message), response.status, code, warning)
       }
       return envelope.data
     }

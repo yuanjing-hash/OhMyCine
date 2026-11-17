@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ServerDataSource } from '@/services/datasource/server'
 import type { ServerLibraryOption, ServerResourceItem, ServerRouteRecommendation } from '@/services/serverDiscovery'
+import type { ServerOfflineFailureWarning } from '@/services/serverOfflineFailure'
 import type { ServerContentPreview, ServerContentSelection } from '@/services/serverResourceContent'
 import type { ShareContentAnalysis } from '@/services/serverShareContent'
 import type { ServerSharePreview, ServerShareSelection } from '@/services/serverSharePreview'
@@ -17,6 +18,7 @@ const props = defineProps<{
   routeError: string
   loading: boolean
   submitting: boolean
+  offlineFailureWarning?: ServerOfflineFailureWarning
   source?: ServerDataSource | null
   contentPreview?: ServerContentPreview
   loadSharePreview: (downloaderId: string) => Promise<ServerSharePreview>
@@ -29,6 +31,9 @@ const emit = defineEmits<{
   confirm: [value: { downloaderId: string, libraryId: number, shareSelection?: ServerShareSelection, contentSelection?: ServerContentSelection, contentMode?: 'all' | 'files' }]
   shareAnalysis: [token: string, analysis: ShareContentAnalysis]
   contentPreview: [token: string, preview: ServerContentPreview]
+  continueDownload: []
+  chooseOtherResource: []
+  invalidateConfirmation: []
 }>()
 
 const wholeResource = ref(false)
@@ -79,7 +84,7 @@ function selectLibrary(id: number) {
 }
 
 function confirm() {
-  if (props.loading || props.routeError || props.submitting || !selectedChoice.value || !libraryId.value || selectionMissing.value)
+  if (props.offlineFailureWarning || props.loading || props.routeError || props.submitting || !selectedChoice.value || !libraryId.value || selectionMissing.value)
     return
   emit('confirm', { downloaderId: downloaderId.value, libraryId: libraryId.value, ...(shareSelection.value ? { shareSelection: shareSelection.value } : {}), ...(contentSelection.value && !wholeResource.value ? { contentSelection: contentSelection.value } : {}), ...(modernContent.value ? { contentMode: wholeResource.value && canGetWholeResource.value ? 'all' as const : 'files' as const } : {}) })
 }
@@ -91,6 +96,7 @@ watch([downloaderId, libraryId, () => props.resource?.token, step], () => {
 watch(wholeResource, () => {
   contentSelection.value = null
 })
+watch([downloaderId, libraryId, () => props.resource?.token, () => props.source, step, wholeResource, shareSelection, contentSelection], () => emit('invalidateConfirmation'), { flush: 'sync' })
 </script>
 
 <template>
@@ -108,7 +114,7 @@ watch(wholeResource, () => {
                 {{ resource?.title }}
               </p>
             </div>
-            <button class="icon-button" type="button" :disabled="submitting" aria-label="关闭" @click="emit('close')">
+            <button v-if="!offlineFailureWarning" class="icon-button" type="button" :disabled="submitting" aria-label="关闭" @click="emit('close')">
               ×
             </button>
           </header>
@@ -117,6 +123,12 @@ watch(wholeResource, () => {
             <span v-for="value in 3" :key="value" :class="{ active: value <= step }" /><small>{{ step }} / 3</small>
           </div>
           <main class="min-h-0 flex-1 overflow-y-auto px-6 py-5 cinema-scrollbar">
+            <div v-if="offlineFailureWarning" class="mb-4 rounded-xl bg-amber-400/10 p-4 text-sm text-amber-100" role="alert" aria-label="历史离线超时提示">
+              <b>此资源在本次路线有离线超时记录</b>
+              <p class="mt-2">
+                此前云端离线在 30 分钟内未完成，已取消获取。可以继续尝试本次选择，或选择其他资源。
+              </p>
+            </div>
             <div v-if="loading" class="py-16 text-center text-sm text-white/45">
               正在计算资源与媒体库的可用路由…
             </div>
@@ -186,7 +198,15 @@ watch(wholeResource, () => {
             </template>
           </main>
 
-          <footer class="flex items-center justify-between gap-3 border-t border-white/8 px-6 py-4">
+          <footer v-if="offlineFailureWarning" class="flex items-center justify-end gap-3 border-t border-white/8 px-6 py-4">
+            <button class="glass-button rounded-full px-4 py-2 text-sm" type="button" :disabled="submitting" @click="emit('chooseOtherResource')">
+              选择其他资源
+            </button>
+            <button class="primary-button" type="button" :disabled="submitting || loading || Boolean(routeError) || !selectedChoice || selectionMissing" @click="!submitting && emit('continueDownload')">
+              继续下载
+            </button>
+          </footer>
+          <footer v-else class="flex items-center justify-between gap-3 border-t border-white/8 px-6 py-4">
             <button class="glass-button rounded-full px-4 py-2 text-sm" type="button" :disabled="submitting" @click="step === 1 ? emit('close') : step = step === 3 ? 2 : 1">
               {{ step === 1 ? '取消' : '上一步' }}
             </button>
