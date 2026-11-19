@@ -55,14 +55,14 @@ internal class AndroidHdrCapabilities(
         }
         val features = manifest.getJSONObject("features")
         manifest.getInt("schemaVersion") == 1
-            && manifest.getString("runtimeId") == "ohmycine-mpv-android-vulkan-2026-04-25-v1"
+            && manifest.getString("runtimeId") == "ohmycine-mpv-android-vulkan-2026-04-25-v2"
             && features.getBoolean("vulkan") && features.getBoolean("vulkanLoader")
             && features.getBoolean("androidvk")
             && features.getBoolean("gpuNext") && features.getBoolean("opengl")
             && features.getBoolean("androidHdrEgl") && features.getBoolean("externalOesHighp")
             && features.getBoolean("androidEglInitV2")
             && features.getBoolean("hdrHighPrecisionFbo") && features.getBoolean("strictHardwareDecode")
-            && features.getBoolean("doviHardwareGuard")
+            && features.getBoolean("doviHdrBaseLayer")
             && features.getBoolean("checkedJni") && features.getBoolean("loadHook")
             && features.getBoolean("endFileReason") && features.getBoolean("playlistEntryIdentity")
     }.getOrDefault(false)

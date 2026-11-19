@@ -189,6 +189,205 @@ def replace(path, old, new):
     path.write_text(data.replace(old, new))
 
 
+def patch_mediacodec_dolby_base_layer(ffmpeg):
+    decoder = ffmpeg / "libavcodec/mediacodecdec.c"
+    if "RPU-preserving output is required." in decoder.read_text():
+        raise RuntimeError("Cached FFmpeg has the previous Dolby Vision patch. Use a fresh --work-dir.")
+
+    replace(decoder, '#include "libavutil/common.h"',
+            '#include "libavutil/common.h"\n#include "libavutil/dovi_meta.h"')
+    hevc_extradata = "static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)"
+    replace(decoder, hevc_extradata, r'''static int hevc_set_dovi_base_layer_color(AVCodecContext *avctx, FFAMediaFormat *format,
+                                         const HEVCSPS *sps,
+                                         enum AVColorTransferCharacteristic base_trc)
+{
+    const H2645VUI *vui = sps && sps->vui_present ? &sps->vui.common : NULL;
+    const H2645VUI *color = vui && vui->colour_description_present_flag ? vui : NULL;
+    enum AVColorTransferCharacteristic trc = color ? color->transfer_characteristics : avctx->color_trc;
+    enum AVColorPrimaries primaries = color ? color->colour_primaries : avctx->color_primaries;
+    enum AVColorSpace matrix = color ? color->matrix_coeffs : avctx->colorspace;
+
+    // Dolby Vision CCID 4 also permits the DVB BT.2020 HLG VUI.
+    int dvb_hlg = base_trc == AVCOL_TRC_ARIB_STD_B67 && color &&
+                  trc == AVCOL_TRC_BT2020_10 && primaries == AVCOL_PRI_BT2020 &&
+                  matrix == AVCOL_SPC_BT2020_NCL && !vui->video_full_range_flag;
+
+    if ((sps && (sps->bit_depth != 10 || sps->bit_depth_chroma != 10 || sps->chroma_format_idc != 1)) ||
+        (trc != AVCOL_TRC_UNSPECIFIED && trc != base_trc && !dvb_hlg) ||
+        (primaries != AVCOL_PRI_UNSPECIFIED && primaries != AVCOL_PRI_BT2020) ||
+        (matrix != AVCOL_SPC_UNSPECIFIED && matrix != AVCOL_SPC_BT2020_NCL)) {
+        av_log(avctx, AV_LOG_ERROR, "Dolby Vision Profile 8 compatibility ID conflicts with the HEVC base layer.\n");
+        return AVERROR_INVALIDDATA;
+    }
+
+    avctx->color_trc = base_trc;
+    avctx->color_primaries = AVCOL_PRI_BT2020;
+    avctx->colorspace = AVCOL_SPC_BT2020_NCL;
+    if (vui && vui->video_signal_type_present_flag)
+        avctx->color_range = vui->video_full_range_flag ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+
+    ff_AMediaFormat_setInt32(format, "color-standard", COLOR_STANDARD_BT2020);
+    ff_AMediaFormat_setInt32(format, "color-transfer", ff_AMediaFormatColorTransfer_from_AVColorTransfer(base_trc));
+    if (avctx->color_range != AVCOL_RANGE_UNSPECIFIED)
+        ff_AMediaFormat_setInt32(format, "color-range", ff_AMediaFormatColorRange_from_AVColorRange(avctx->color_range));
+    return 0;
+}
+
+static int hevc_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format,
+                              enum AVColorTransferCharacteristic dovi_base_trc)''')
+    replace(decoder, "    if (vps && pps && sps) {", """    if (dovi_base_trc != AVCOL_TRC_UNSPECIFIED) {
+        ret = hevc_set_dovi_base_layer_color(avctx, format, sps, dovi_base_trc);
+        if (ret < 0)
+            goto done;
+    }
+
+    if (vps && pps && sps) {""")
+
+    decoder_init = "static av_cold int mediacodec_decode_init(AVCodecContext *avctx)"
+    replace(decoder, decoder_init, r'''static int mediacodec_dovi_base_transfer(AVCodecContext *avctx,
+                                        enum AVColorTransferCharacteristic *base_trc)
+{
+    *base_trc = AVCOL_TRC_UNSPECIFIED;
+    const AVPacketSideData *side = ff_get_coded_side_data(avctx, AV_PKT_DATA_DOVI_CONF);
+    if (!side)
+        return 0;
+    if (!side->data || side->size < sizeof(AVDOVIDecoderConfigurationRecord)) {
+        av_log(avctx, AV_LOG_ERROR, "Invalid Dolby Vision configuration for hardware output.\n");
+        return AVERROR_INVALIDDATA;
+    }
+
+    const AVDOVIDecoderConfigurationRecord *dovi = (const void *)side->data;
+    if (avctx->codec_id == AV_CODEC_ID_HEVC && dovi->dv_profile == 8 &&
+        dovi->bl_present_flag == 1 && dovi->el_present_flag == 0) {
+        if (dovi->dv_bl_signal_compatibility_id == 1) {
+            *base_trc = AVCOL_TRC_SMPTE2084;
+            return 0;
+        }
+        if (dovi->dv_bl_signal_compatibility_id == 4) {
+            *base_trc = AVCOL_TRC_ARIB_STD_B67;
+            return 0;
+        }
+    }
+
+    av_log(avctx, AV_LOG_ERROR,
+           "Dolby Vision profile %u (compatibility ID %u) has no supported independent HDR base layer for MediaCodec output.\n",
+           dovi->dv_profile, dovi->dv_bl_signal_compatibility_id);
+    return AVERROR(ENOSYS);
+}
+
+''' + decoder_init)
+    replace(decoder, """    MediaCodecH264DecContext *s = avctx->priv_data;
+
+    if (s->use_ndk_codec < 0)""", """    MediaCodecH264DecContext *s = avctx->priv_data;
+    enum AVColorTransferCharacteristic dovi_base_trc;
+
+    ret = mediacodec_dovi_base_transfer(avctx, &dovi_base_trc);
+    if (ret < 0)
+        return ret;
+
+    if (s->use_ndk_codec < 0)""")
+    replace(decoder, "ret = hevc_set_extradata(avctx, format);",
+            "ret = hevc_set_extradata(avctx, format, dovi_base_trc);")
+    replace(decoder, "    s->ctx->use_ndk_codec = s->use_ndk_codec;",
+            "    s->ctx->use_ndk_codec = s->use_ndk_codec;\n    s->ctx->dovi_base_trc = dovi_base_trc;")
+    replace(decoder, '    av_log(avctx, AV_LOG_INFO,\n           "MediaCodec started successfully:',
+            r'''    if (dovi_base_trc != AVCOL_TRC_UNSPECIFIED) {
+        av_log(avctx, AV_LOG_WARNING,
+               "OHMYCINE_DOVI_HDR_BASE_LAYER_V1: Dolby Vision Profile 8 hardware decoding uses its %s base layer (Dolby Vision metadata is not applied).\n",
+               dovi_base_trc == AVCOL_TRC_SMPTE2084 ? "HDR10" : "HLG");
+    }
+
+    av_log(avctx, AV_LOG_INFO,
+           "MediaCodec started successfully:''')
+
+    header = ffmpeg / "libavcodec/mediacodecdec_common.h"
+    replace(header, "    void *surface;", """    void *surface;
+    enum AVColorTransferCharacteristic dovi_base_trc;""")
+
+    common = ffmpeg / "libavcodec/mediacodecdec_common.c"
+    replace(common, "    profile = ff_AMediaCodecProfile_getProfileFromAVCodecContext(avctx);",
+            r'''    if (s->dovi_base_trc != AVCOL_TRC_UNSPECIFIED && !s->surface) {
+        av_log(avctx, AV_LOG_ERROR, "Dolby Vision Profile 8 HDR base-layer decoding requires a MediaCodec Surface.\n");
+        return AVERROR(ENOSYS);
+    }
+
+    profile = ff_AMediaCodecProfile_getProfileFromAVCodecContext(avctx);''')
+    replace(common, """    AVMediaCodecBuffer *buffer = NULL;
+
+    frame->buf[0] = NULL;""", r'''    AVMediaCodecBuffer *buffer = NULL;
+
+    // Validate actual frames, after MediaCodec can update its initial output format.
+    if (s->dovi_base_trc != AVCOL_TRC_UNSPECIFIED &&
+        ((avctx->color_trc != AVCOL_TRC_UNSPECIFIED && avctx->color_trc != s->dovi_base_trc) ||
+         (avctx->color_primaries != AVCOL_PRI_UNSPECIFIED && avctx->color_primaries != AVCOL_PRI_BT2020))) {
+        av_log(avctx, AV_LOG_ERROR, "MediaCodec output disagrees with the Dolby Vision Profile 8 HDR base layer.\n");
+        ret = AVERROR_OUTPUT_CHANGED;
+        goto fail;
+    }
+
+    frame->buf[0] = NULL;''')
+    replace(common, r'''        av_log(avctx, AV_LOG_ERROR, "Failed to release output buffer\n");
+        ret = AVERROR_EXTERNAL;
+    }
+
+    return ret;
+}
+
+static int mediacodec_wrap_sw_audio_buffer''',
+            r'''        av_log(avctx, AV_LOG_ERROR, "Failed to release output buffer\n");
+        if (ret != AVERROR_OUTPUT_CHANGED)
+            ret = AVERROR_EXTERNAL;
+    }
+
+    return ret;
+}
+
+static int mediacodec_wrap_sw_audio_buffer''')
+    replace(common, '''    AMEDIAFORMAT_GET_INT32(color_standard, "color-standard", 0);
+    if (color_standard) {
+        avctx->colorspace = ff_AMediaFormatColorStandard_to_AVColorSpace(color_standard);
+        avctx->color_primaries = ff_AMediaFormatColorStandard_to_AVColorPrimaries(color_standard);
+    }
+
+    AMEDIAFORMAT_GET_INT32(color_transfer, "color-transfer", 0);
+    if (color_transfer)
+        avctx->color_trc = ff_AMediaFormatColorTransfer_to_AVColorTransfer(color_transfer);''',
+            '''    // Unspecified readback does not replace the validated coded base colors.
+    // Keep explicitly reported values so a mismatching frame can be rejected.
+    const bool dovi_base_layer = s->dovi_base_trc != AVCOL_TRC_UNSPECIFIED;
+    AMEDIAFORMAT_GET_INT32(color_standard, "color-standard", 0);
+    if (color_standard || dovi_base_layer) {
+        enum AVColorSpace matrix = ff_AMediaFormatColorStandard_to_AVColorSpace(color_standard);
+        enum AVColorPrimaries primaries = ff_AMediaFormatColorStandard_to_AVColorPrimaries(color_standard);
+        if (dovi_base_layer && primaries == AVCOL_PRI_UNSPECIFIED) {
+            matrix = AVCOL_SPC_BT2020_NCL;
+            primaries = AVCOL_PRI_BT2020;
+        }
+        avctx->colorspace = matrix;
+        avctx->color_primaries = primaries;
+    }
+
+    AMEDIAFORMAT_GET_INT32(color_transfer, "color-transfer", 0);
+    if (color_transfer || dovi_base_layer) {
+        enum AVColorTransferCharacteristic trc = ff_AMediaFormatColorTransfer_to_AVColorTransfer(color_transfer);
+        avctx->color_trc = dovi_base_layer && trc == AVCOL_TRC_UNSPECIFIED ? s->dovi_base_trc : trc;
+    }''')
+
+
+def patch_mpv_mediacodec_dolby_output_error(mpv):
+    replace(mpv / "video/decode/vd_lavc.c", '''    int ret = avcodec_receive_frame(avctx, ctx->pic);
+    if (ret < 0) {''', r'''    int ret = avcodec_receive_frame(avctx, ctx->pic);
+    // The managed MediaCodec decoder signals contradictory HDR output here.
+    // Feed the existing forced-EOF error path rather than retrying bad frames.
+    if (ret == AVERROR_OUTPUT_CHANGED && ctx->use_hwdec && avctx->codec &&
+        strcmp(avctx->codec->name, "hevc_mediacodec") == 0) {
+        MP_ERR(vd, "MediaCodec could not deliver the declared Dolby Vision HDR base layer.\n");
+        ctx->force_eof = true;
+        return AVERROR_EOF;
+    }
+    if (ret < 0) {''')
+
+
 def reconfigure_meson(path):
     # Re-resolve static dependency flags as well as changed build options.
     replace(path, "meson setup $build --cross-file", '''meson_reconfigure=()
@@ -396,28 +595,8 @@ def build(work, jobs):
         request_float_fmt ? EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT : EGL_COLOR_COMPONENT_TYPE_FIXED_EXT,""", """        has_float_format_ext ? EGL_COLOR_COMPONENT_TYPE_EXT : EGL_NONE,
         !opts->output_format ? EGL_DONT_CARE :
             request_float_fmt ? EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT : EGL_COLOR_COMPONENT_TYPE_FIXED_EXT,""")
-    # MediaCodec's current external RGB route drops Dolby Vision RPU metadata.
-    # Reject known DV before creating that decoder instead of silently treating
-    # its HEVC base layer as the complete Dolby Vision presentation.
-    mediacodec = scripts / "deps/ffmpeg/libavcodec/mediacodecdec.c"
-    replace(mediacodec, '#include "libavutil/common.h"',
-            '#include "libavutil/common.h"\n#include "libavutil/dovi_meta.h"')
-    replace(mediacodec, """    MediaCodecH264DecContext *s = avctx->priv_data;
-
-    if (s->use_ndk_codec < 0)""", """    MediaCodecH264DecContext *s = avctx->priv_data;
-
-    const AVPacketSideData *dovi_sd = ff_get_coded_side_data(avctx, AV_PKT_DATA_DOVI_CONF);
-    if (dovi_sd) {
-        if (!dovi_sd->data || dovi_sd->size < sizeof(AVDOVIDecoderConfigurationRecord)) {
-            av_log(avctx, AV_LOG_ERROR, "Invalid Dolby Vision configuration for hardware output.\\n");
-            return AVERROR_INVALIDDATA;
-        }
-        const AVDOVIDecoderConfigurationRecord *dovi = (const void *)dovi_sd->data;
-        av_log(avctx, AV_LOG_ERROR, "Dolby Vision profile %u hardware output is unsupported by the current external RGB path; RPU-preserving output is required.\\n", dovi->dv_profile);
-        return AVERROR(ENOSYS);
-    }
-
-    if (s->use_ndk_codec < 0)""")
+    patch_mediacodec_dolby_base_layer(scripts / "deps/ffmpeg")
+    patch_mpv_mediacodec_dolby_output_error(mpv_source)
     # External OES samplers otherwise default to lowp under GLES, which loses
     # the precision supplied by MediaCodec's opaque hardware buffers.
     replace(scripts / "deps/libplacebo/src/dispatch.c",
@@ -533,11 +712,12 @@ def build(work, jobs):
     for marker in [b"OHMYCINE_ANDROID_HDR_EGL_V1",
                    b"OHMYCINE_EGL_FAILURE_V2", b"OHMYCINE_EGL_BOOTSTRAP_V2", b"GLES 3.x +",
                    b"Android HDR requires high precision intermediate textures.",
+                   b"MediaCodec could not deliver the declared Dolby Vision HDR base layer.",
                    b"Hardware decoding failed with software fallback disabled."]:
         if marker not in mpv.read_bytes():
             raise RuntimeError("Built libmpv lacks the hardware HDR patch: " + marker.decode())
-    if b"RPU-preserving output is required." not in (libs / "libavcodec.so").read_bytes():
-        raise RuntimeError("Built FFmpeg lacks the known Dolby Vision hardware guard")
+    if b"OHMYCINE_DOVI_HDR_BASE_LAYER_V1" not in (libs / "libavcodec.so").read_bytes():
+        raise RuntimeError("Built FFmpeg lacks Dolby Vision Profile 8 HDR base-layer support")
     features = (scripts / "deps/mpv/_build-arm64/config.h").read_text()
     if any("#define " + name + " 1" not in features
            for name in ["HAVE_VULKAN", "HAVE_LIBPLACEBO", "HAVE_GL", "HAVE_EGL_ANDROID", "HAVE_LIBASS"]):

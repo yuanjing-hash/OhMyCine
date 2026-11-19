@@ -101,8 +101,10 @@ function verifyFiles(manifest, pathForFile) {
     || !mpv.includes(Buffer.from('Hardware decoding failed with software fallback disabled.'))) {
     throw new Error('Android runtime has no hardware HDR EGL or strict decoder patch')
   }
-  if (!codec.includes(Buffer.from('RPU-preserving output is required.')))
-    throw new Error('Android runtime has no known Dolby Vision hardware guard')
+  if (!codec.includes(Buffer.from('OHMYCINE_DOVI_HDR_BASE_LAYER_V1'))
+    || !mpv.includes(Buffer.from('MediaCodec could not deliver the declared Dolby Vision HDR base layer.'))) {
+    throw new Error('Android runtime has no Dolby Vision Profile 8 HDR base-layer support')
+  }
   if (!jni.includes(Buffer.from('eventEndFile\0')) || !jni.includes(Buffer.from('eventStartFile\0'))
     || !jni.includes(Buffer.from('(IIJJI)V\0')) || !jni.includes(Buffer.from('OHMYCINE_MPV_ENTRY_ID_V1')))
     throw new Error('Android JNI has no authoritative playlist-entry callbacks')

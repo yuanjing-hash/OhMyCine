@@ -49,9 +49,13 @@ This fixed FFmpeg revision's MediaCodec copy output only supports eight-bit
 NV12/YUV420P, so that copy route is not selected. The external hardware buffer
 is imported without a CPU copy or eight-bit texture upload; the actual private
 buffer precision and device display behavior remain physical-device checks.
-Known Dolby Vision configuration is rejected by this hardware RGB route because
-it drops RPU metadata. Explicit software retains the existing RPU processing;
-native Dolby hardware output is not claimed by this patch.
+For single-layer HEVC Dolby Vision Profile 8, the MediaCodec Surface path plays
+the declared HDR10 (compatibility ID 1) or HLG (ID 4) base layer. The decoder
+checks available SPS color and bit-depth information and the reported transfer
+of hardware frames. The startup diagnostic identifies the base layer in use.
+Other known Dolby configurations require a compatible playback route. Explicit
+software decoding retains the existing RPU processing. Diagnostics report the
+source Dolby profile and observed renderer target separately.
 
 `hwdec-software-fallback=no` applies to hardware requests, including decoder
 initialization. The native strict hardware exhaustion branch reports an error
@@ -73,9 +77,11 @@ The builder never installs tools on the host. Output includes the complete JNI
 library set, ELF dependency inspection, CA asset, dependency licenses and a hash
 manifest. The importer checks source/build-input provenance, every file hash,
 required native symbols, the platform Vulkan loader dependency, compiled HDR EGL,
-precision and strict decoder patch markers before copying it to managed Android
+precision, strict decoder and Profile 8 HDR base-layer markers before copying it to managed Android
 build inputs. An interrupted import is retried on the next
 setup call. Generated libraries and cache remain ignored by Git.
+Use a fresh `--work-dir` when upgrading a source checkout with the previous
+Dolby Vision patch applied.
 
 To import a separately built output directory, set
 `OHMYCINE_ANDROID_MPV_RUNTIME` or pass `--runtime-dir <directory>`.
@@ -86,6 +92,6 @@ hash. Normal builds reuse it; dependency rebuilds occur only after input changes
 or cache eviction. No extra cloud test job is added.
 
 This build and the native target metadata do not verify physical HDR display
-activation. Device validation still covers hardware PQ/HLG input, the known Dolby
-hardware boundary, explicit software Dolby input, display activation,
+activation. Device validation still covers hardware PQ/HLG input, the Profile 8
+HDR10/HLG layers, explicit software Dolby input, display activation,
 subtitles, paused/current-frame screenshots, seeking, rotation and surface rebuild.
